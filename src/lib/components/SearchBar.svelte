@@ -9,12 +9,16 @@
       hidden: false
     }),
     searching = false,
-    onSearch
+    stopping = false,
+    onSearch,
+    onStop
   }: {
     query: string;
     options: SearchOptions;
     searching?: boolean;
+    stopping?: boolean;
     onSearch: () => void;
+    onStop: () => void;
   } = $props();
 
   function submit(event: SubmitEvent) {
@@ -40,11 +44,17 @@
   </div>
 
   <div class="actions">
-    <button class="primary" type="submit" disabled={searching}>
-      {searching ? 'Searching' : 'Start Search'}
+    <button class="primary" type="submit" disabled={searching || stopping}>
+      {stopping ? 'Stopping' : searching ? 'Searching' : 'Start Search'}
     </button>
-    <button class="secondary" type="button" disabled title="Cancellation is not implemented yet">
-      Stop
+    <button
+      class="secondary"
+      type="button"
+      disabled={!searching || stopping}
+      title={searching ? 'Stop the running search' : 'No search is running'}
+      onclick={onStop}
+    >
+      {stopping ? 'Stopping' : 'Stop'}
     </button>
   </div>
 

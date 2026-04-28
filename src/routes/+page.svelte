@@ -4,8 +4,14 @@
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
-  import { searchFiles } from '$lib/search';
-  import type { FileResultGroup, SearchMatch, SearchOptions, SearchState } from '$lib/types';
+  import { startSearch as startSearchCommand, stopSearch } from '$lib/search';
+  import type {
+    FileResultGroup,
+    SearchMatch,
+    SearchOptions,
+    SearchState,
+    SearchStreamEvent
+  } from '$lib/types';
 
   let query = $state('');
   let path = $state('');
@@ -23,6 +29,8 @@
   let searchState = $state<SearchState>('idle');
   let errorMessage = $state('');
   let hasSearched = $state(false);
+  let activeSearchId = $state<number | null>(null);
+  let nextSearchId = 1;
 
   const groups = $derived.by(() => groupMatches(matches));
   const selectedIndex = $derived.by(() => {
@@ -59,6 +67,34 @@
     return 'Search failed. Check the folder path and search options.';
   }
 
+  function handleSearchEvent(event: SearchStreamEvent) {
+    if (event.search_id !== activeSearchId) return;
+
+    switch (event.type) {
+      case 'started':
+        searchState = 'searching';
+        errorMessage = '';
+        break;
+      case 'match':
+        if (searchState === 'stopping') return;
+        matches = [...matches, event.result];
+        selected = selected ?? event.result;
+        break;
+      case 'error':
+        errorMessage = event.message;
+        break;
+      case 'finished':
+        searchState = errorMessage && matches.length === 0 ? 'error' : 'done';
+        activeSearchId = null;
+        break;
+      case 'cancelled':
+        searchState = 'done';
+        errorMessage = `Search stopped after ${matches.length} matches.`;
+        activeSearchId = null;
+        break;
+    }
+  }
+
   async function startSearch() {
     const cleanQuery = query.trim();
     const cleanPath = path.trim();
@@ -79,22 +115,40 @@
     errorMessage = '';
     hasSearched = true;
     selected = null;
+    matches = [];
+    const searchId = nextSearchId;
+    nextSearchId += 1;
+    activeSearchId = searchId;
 
     try {
-      const results = await searchFiles({
-        query: cleanQuery,
-        path: cleanPath,
-        regex: options.regex,
-        case_sensitive: options.case_sensitive,
-        hidden: options.hidden
-      });
-
-      matches = results;
-      selected = results[0] ?? null;
-      searchState = 'done';
+      await startSearchCommand(
+        {
+          query: cleanQuery,
+          path: cleanPath,
+          regex: options.regex,
+          case_sensitive: options.case_sensitive,
+          hidden: options.hidden
+        },
+        searchId,
+        handleSearchEvent
+      );
     } catch (error) {
       matches = [];
       selected = null;
+      activeSearchId = null;
+      searchState = 'error';
+      errorMessage = normalizeError(error);
+    }
+  }
+
+  async function stopCurrentSearch() {
+    if (searchState !== 'searching' || activeSearchId === null) return;
+
+    try {
+      searchState = 'stopping';
+      errorMessage = 'Stopping search...';
+      await stopSearch(activeSearchId);
+    } catch (error) {
       searchState = 'error';
       errorMessage = normalizeError(error);
     }
@@ -118,7 +172,14 @@
 </svelte:head>
 
 <main class="app-shell">
-  <SearchBar bind:query bind:options searching={searchState === 'searching'} onSearch={startSearch} />
+  <SearchBar
+    bind:query
+    bind:options
+    searching={searchState === 'searching' || searchState === 'stopping'}
+    stopping={searchState === 'stopping'}
+    onSearch={startSearch}
+    onStop={stopCurrentSearch}
+  />
 
   <div class="workspace">
     <ScopePanel bind:path bind:includePatterns bind:excludePatterns bind:contextLines />

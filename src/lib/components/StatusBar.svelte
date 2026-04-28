@@ -16,6 +16,7 @@
   const labels: Record<SearchState, string> = {
     idle: 'Idle',
     searching: 'Searching...',
+    stopping: 'Stopping...',
     done: 'Done',
     error: 'Error'
   };
@@ -35,6 +36,8 @@
     <span>{filesWithMatches} files</span>
     {#if state === 'searching'}
       <span>Scanning current files</span>
+    {:else if state === 'stopping'}
+      <span>Cancelling search</span>
     {/if}
     <span>Searches current files directly. No index.</span>
   </div>

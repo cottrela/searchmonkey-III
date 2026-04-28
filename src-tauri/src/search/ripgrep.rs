@@ -2,6 +2,7 @@ use super::{SearchMatch, SearchProvider, SearchRequest};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 pub struct RipgrepSidecarProvider {
@@ -12,11 +13,8 @@ impl RipgrepSidecarProvider {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
         Self { app_handle }
     }
-}
 
-#[async_trait]
-impl SearchProvider for RipgrepSidecarProvider {
-    async fn search(&self, request: SearchRequest) -> Result<Vec<SearchMatch>> {
+    fn args(request: SearchRequest) -> Vec<String> {
         let mut args = vec!["--json".to_string(), "--line-number".to_string()];
 
         if !request.regex {
@@ -34,42 +32,54 @@ impl SearchProvider for RipgrepSidecarProvider {
         args.push(request.query);
         args.push(request.path);
 
-        let output = self
+        args
+    }
+
+    pub fn spawn(
+        &self,
+        request: SearchRequest,
+    ) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild)> {
+        Ok(self
             .app_handle
             .shell()
             .sidecar("rg")?
-            .args(args)
-            .output()
-            .await?;
+            .args(Self::args(request))
+            .spawn()?)
+    }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    pub fn parse_match(line: &[u8]) -> Option<SearchMatch> {
+        let json: Value = serde_json::from_slice(line).ok()?;
 
+        if json["type"] != "match" {
+            return None;
+        }
+
+        let data = &json["data"];
+
+        Some(SearchMatch {
+            path: data["path"]["text"].as_str().unwrap_or_default().to_string(),
+            line_number: data["line_number"].as_u64().unwrap_or(0),
+            line_text: data["lines"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_end()
+                .to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl SearchProvider for RipgrepSidecarProvider {
+    async fn search(&self, request: SearchRequest) -> Result<Vec<SearchMatch>> {
+        let (mut rx, _child) = self.spawn(request)?;
         let mut matches = Vec::new();
 
-        for line in stdout.lines() {
-            let json: Value = match serde_json::from_str(line) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-
-            if json["type"] != "match" {
-                continue;
+        while let Some(event) = rx.recv().await {
+            if let CommandEvent::Stdout(line) = event {
+                if let Some(result) = Self::parse_match(&line) {
+                    matches.push(result);
+                }
             }
-
-            let data = &json["data"];
-
-            matches.push(SearchMatch {
-                path: data["path"]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                line_number: data["line_number"].as_u64().unwrap_or(0),
-                line_text: data["lines"]["text"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .trim_end()
-                    .to_string(),
-            });
         }
 
         Ok(matches)

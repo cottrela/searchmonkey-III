@@ -65,6 +65,11 @@
       <span class="spinner" aria-hidden="true"></span>
       <span>Searching current files...</span>
     </div>
+  {:else if state === 'stopping' && groups.length === 0}
+    <div class="empty active-search">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Stopping search...</span>
+    </div>
   {:else if groups.length === 0}
     <div class="empty">No matches found</div>
   {:else}

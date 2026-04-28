@@ -14,9 +14,43 @@ export type SearchMatch = {
 
 export type SearchOptions = Pick<SearchRequest, 'regex' | 'case_sensitive' | 'hidden'>;
 
-export type SearchState = 'idle' | 'searching' | 'done' | 'error';
+export type SearchState = 'idle' | 'searching' | 'stopping' | 'done' | 'error';
 
 export type FileResultGroup = {
   path: string;
   matches: SearchMatch[];
+};
+
+export type SearchStreamEvent =
+  | SearchStartedEvent
+  | SearchMatchEvent
+  | SearchErrorEvent
+  | SearchCompleteEvent
+  | {
+      type: 'cancelled';
+      search_id: number;
+      total_matches: number;
+    };
+
+export type SearchStartedEvent = {
+  type: 'started';
+  search_id: number;
+};
+
+export type SearchMatchEvent = {
+  type: 'match';
+  search_id: number;
+  result: SearchMatch;
+};
+
+export type SearchErrorEvent = {
+  type: 'error';
+  search_id: number;
+  message: string;
+};
+
+export type SearchCompleteEvent = {
+  type: 'finished';
+  search_id: number;
+  total_matches: number;
 };

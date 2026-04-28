@@ -2,7 +2,7 @@ pub mod ripgrep;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
     pub path: String,
@@ -11,11 +11,35 @@ pub struct SearchRequest {
     pub hidden: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchMatch {
     pub path: String,
     pub line_number: u64,
     pub line_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SearchStreamEvent {
+    Started {
+        search_id: u64,
+    },
+    Match {
+        search_id: u64,
+        result: SearchMatch,
+    },
+    Error {
+        search_id: u64,
+        message: String,
+    },
+    Finished {
+        search_id: u64,
+        total_matches: usize,
+    },
+    Cancelled {
+        search_id: u64,
+        total_matches: usize,
+    },
 }
 
 #[async_trait::async_trait]
