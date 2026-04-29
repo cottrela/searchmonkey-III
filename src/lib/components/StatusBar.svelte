@@ -22,7 +22,11 @@
   };
 </script>
 
-<footer class="status-bar" class:error={state === 'error'}>
+<footer
+  class="status-bar"
+  class:active={state === 'searching' || state === 'stopping'}
+  class:error={state === 'error'}
+>
   <div class="state">
     <span class="dot" aria-hidden="true"></span>
     <strong>{labels[state]}</strong>
@@ -77,7 +81,7 @@
     background: var(--ok);
   }
 
-  .status-bar:not(.error) .dot {
+  .status-bar.active:not(.error) .dot {
     animation: status-pulse 1.2s ease-in-out infinite;
   }
 

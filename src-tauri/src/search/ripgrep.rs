@@ -24,7 +24,7 @@ impl RipgrepSidecarProvider {
             "--max-filesize".to_string(),
             "1M".to_string(),
             "--max-count".to_string(),
-            "1000".to_string(),
+            "100000".to_string(),
             "--glob".to_string(),
             "!node_modules/**".to_string(),
             "--glob".to_string(),
@@ -59,6 +59,21 @@ impl RipgrepSidecarProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setpgid(0, 0) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+        }
+
         Ok(command.spawn()?)
     }
 
@@ -72,7 +87,10 @@ impl RipgrepSidecarProvider {
         let data = &json["data"];
 
         Some(SearchMatch {
-            path: data["path"]["text"].as_str().unwrap_or_default().to_string(),
+            path: data["path"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             line_number: data["line_number"].as_u64().unwrap_or(0),
             line_text: data["lines"]["text"]
                 .as_str()

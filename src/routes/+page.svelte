@@ -121,14 +121,19 @@
         break;
       case 'batch':
         if (searchState === 'stopping') return;
-        matches = [...matches, ...event.results].slice(0, 1000);
+        matches = [...matches, ...event.results].slice(0, 100000);
         selected = selected ?? event.results[0] ?? null;
         break;
       case 'error':
         errorMessage = event.message;
         break;
       case 'finished':
-        searchState = errorMessage && matches.length === 0 ? 'error' : 'done';
+        if (searchState === 'stopping') {
+          errorMessage = `Search stopped after ${matches.length} matches.`;
+          searchState = 'done';
+        } else {
+          searchState = errorMessage && matches.length === 0 ? 'error' : 'done';
+        }
         activeSearchId = null;
         break;
       case 'cancelled':
@@ -188,10 +193,18 @@
   async function stopCurrentSearch() {
     if (searchState !== 'searching' || activeSearchId === null) return;
 
+    const searchId = activeSearchId;
+
     try {
       searchState = 'stopping';
       errorMessage = 'Stopping search...';
-      await stopSearch(activeSearchId);
+      await stopSearch(searchId);
+
+      if (activeSearchId === searchId || errorMessage === 'Stopping search...') {
+        searchState = 'done';
+        errorMessage = `Search stopped after ${matches.length} matches.`;
+        activeSearchId = null;
+      }
     } catch (error) {
       searchState = 'error';
       errorMessage = normalizeError(error);

@@ -11,7 +11,7 @@ use search::{
 use tauri::{ipc::Channel, Manager, State};
 
 const SEARCH_BATCH_SIZE: usize = 100;
-const UI_RESULT_LIMIT: usize = 1_000;
+const UI_RESULT_LIMIT: usize = 100_000;
 
 #[derive(Default)]
 struct SearchRuntime {
@@ -253,18 +253,34 @@ fn is_active_search(app: &tauri::AppHandle, search_id: u64) -> bool {
 
 fn kill_child(mut child: Child) -> Result<(), String> {
     let pid = child.id();
-    let kill_result = child.kill().map_err(|err| err.to_string());
 
     #[cfg(unix)]
-    if kill_result.is_ok() {
-        let _ = std::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(pid.to_string())
-            .status();
+    {
+        let group = -(pid as libc::pid_t);
+
+        unsafe {
+            libc::kill(group, libc::SIGTERM);
+        }
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        if child.try_wait().map_err(|err| err.to_string())?.is_none() {
+            unsafe {
+                libc::kill(group, libc::SIGKILL);
+            }
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(());
     }
 
-    let _ = child.wait();
-    kill_result
+    #[cfg(not(unix))]
+    {
+        let kill_result = child.kill().map_err(|err| err.to_string());
+        let _ = child.wait();
+        kill_result
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
