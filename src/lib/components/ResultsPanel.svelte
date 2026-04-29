@@ -70,6 +70,16 @@
 
     return rows.filter((row) => row.top + row.height >= start && row.top <= end);
   });
+  const currentFileRow = $derived.by(() => {
+    let current: Extract<ResultRow, { type: 'file' }> | null = null;
+
+    for (const row of rows) {
+      if (row.top > scrollTop) break;
+      if (row.type === 'file') current = row;
+    }
+
+    return current;
+  });
 
   onMount(() => {
     if (!resultsElement) return;
@@ -353,6 +363,27 @@
       {/each}
     </div>
 
+    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT}
+      <div class="current-file-header" aria-label="Current file">
+        <div class="file-title">
+          <strong title={currentFileRow.path}>{filename(currentFileRow.path)}</strong>
+          <span title={parentPath(currentFileRow.path)}>{parentPath(currentFileRow.path)}</span>
+        </div>
+        <span class="file-actions">
+          <span class="count">{matchLabel(currentFileRow.count)}</span>
+          <button type="button" title="Open file" onclick={() => onOpen(currentFileRow.path)}>Open</button>
+          <details>
+            <summary title="More actions" aria-label="More actions">...</summary>
+            <div class="menu">
+              <button type="button" onclick={() => onReveal(currentFileRow.path)}>Reveal</button>
+              <button type="button" onclick={() => copyText(currentFileRow.path)}>Copy path</button>
+              <button type="button" onclick={() => copyFilename(currentFileRow.path)}>Copy filename</button>
+            </div>
+          </details>
+        </span>
+      </div>
+    {/if}
+
     <div class="virtual-list" style:height={`${totalHeight}px`}>
       {#each visibleRows as row (row.key)}
         {#if row.type === 'file'}
@@ -364,8 +395,14 @@
             <span class="file-actions">
               <span class="count">{matchLabel(row.count)}</span>
               <button type="button" title="Open file" onclick={() => onOpen(row.path)}>Open</button>
-              <button class="hover-action" type="button" title="Reveal file" onclick={() => onReveal(row.path)}>Reveal</button>
-              <button class="hover-action" type="button" title="Copy path" onclick={() => copyText(row.path)}>Copy</button>
+              <details>
+                <summary title="More actions" aria-label="More actions">...</summary>
+                <div class="menu">
+                  <button type="button" onclick={() => onReveal(row.path)}>Reveal</button>
+                  <button type="button" onclick={() => copyText(row.path)}>Copy path</button>
+                  <button type="button" onclick={() => copyFilename(row.path)}>Copy filename</button>
+                </div>
+              </details>
             </span>
           </div>
         {:else}
@@ -397,6 +434,7 @@
 
 <style>
   .results-panel {
+    container-type: inline-size;
     min-width: 0;
     background: var(--surface);
     overflow: auto;
@@ -449,9 +487,28 @@
     animation: spin 0.8s linear infinite;
   }
 
+  .current-file-header {
+    position: sticky;
+    top: 47px;
+    z-index: 3;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    min-height: 50px;
+    border-bottom: 1px solid var(--border);
+    padding: 6px 11px;
+    background: var(--panel);
+    box-shadow: 0 1px 0 rgba(30, 37, 45, 0.04);
+  }
+
+  .current-file-header:has(details[open]) {
+    z-index: 20;
+  }
+
   .virtual-list {
     position: relative;
-    margin: 10px;
+    margin: 0 10px 10px;
     min-height: 0;
   }
 
@@ -465,6 +522,10 @@
     top: 0;
     right: 0;
     left: 0;
+  }
+
+  .file-row:has(details[open]) {
+    z-index: 25;
   }
 
   .file-row {
@@ -519,7 +580,8 @@
     gap: 6px;
   }
 
-  .file-actions button {
+  .file-actions button,
+  .file-actions summary {
     height: 24px;
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -529,21 +591,64 @@
     font: inherit;
     font-size: 11px;
     font-weight: 800;
-    transition: opacity 0.12s ease;
   }
 
-  .file-actions .hover-action {
-    opacity: 0;
+  .file-actions details {
+    position: relative;
+    z-index: 2;
   }
 
-  .file-row:hover .hover-action,
-  .file-row:focus-within .hover-action {
-    opacity: 1;
+  .file-actions details[open] {
+    z-index: 40;
+  }
+
+  .file-actions summary {
+    display: inline-grid;
+    width: 28px;
+    padding: 0;
+    place-items: center;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .file-actions summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .file-actions .menu {
+    position: absolute;
+    top: 28px;
+    right: 0;
+    z-index: 50;
+    display: grid;
+    min-width: 136px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--panel);
+    box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+  }
+
+  .file-actions .menu button {
+    height: 30px;
+    border: 0;
+    border-radius: 4px;
+    padding: 0 8px;
+    background: transparent;
+    text-align: left;
   }
 
   .file-actions button:hover,
-  .file-actions button:focus-visible {
+  .file-actions button:focus-visible,
+  .file-actions summary:hover,
+  .file-actions summary:focus-visible {
     border-color: var(--border-strong);
+    outline: none;
+  }
+
+  .file-actions .menu button:hover,
+  .file-actions .menu button:focus-visible {
+    background: var(--selection);
     outline: none;
   }
 
@@ -605,6 +710,10 @@
   @media (max-width: 599px) {
     .panel-title {
       height: 38px;
+    }
+
+    .current-file-header {
+      display: none;
     }
 
     .virtual-list {
@@ -766,6 +875,23 @@
       margin: 7px 8px 10px;
       color: var(--muted);
       background: var(--surface);
+    }
+  }
+
+  @container (max-width: 420px) {
+    .current-file-header,
+    .file-row {
+      gap: 6px;
+      padding-right: 8px;
+      padding-left: 8px;
+    }
+
+    .count {
+      display: none;
+    }
+
+    .file-title span {
+      display: none;
     }
   }
 

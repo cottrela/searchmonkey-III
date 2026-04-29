@@ -642,20 +642,6 @@
           <h2>Filters</h2>
           <button type="button" onclick={() => (filtersOpen = false)}>Close</button>
         </div>
-        <div class="drawer-search-options" aria-label="Search options">
-          <label class="drawer-toggle">
-            <input type="checkbox" bind:checked={options.regex} />
-            <span>Regex</span>
-          </label>
-          <label class="drawer-toggle">
-            <input type="checkbox" bind:checked={options.case_sensitive} />
-            <span>Case</span>
-          </label>
-          <label class="drawer-toggle">
-            <input type="checkbox" bind:checked={options.hidden} />
-            <span>Hidden</span>
-          </label>
-        </div>
         <ScopePanel
           bind:path
           bind:includePatterns
@@ -785,7 +771,7 @@
   .filters-drawer {
     position: relative;
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     width: min(360px, calc(100vw - 32px));
     height: 100%;
     border-right: 1px solid var(--border);
@@ -806,40 +792,6 @@
   .drawer-header h2 {
     margin: 0;
     font-size: 14px;
-  }
-
-  .drawer-search-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 7px;
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 8px 12px;
-    background: var(--surface);
-  }
-
-  .drawer-toggle {
-    display: inline-flex;
-    align-items: center;
-    height: 26px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    padding: 0 10px;
-    color: var(--muted);
-    background: var(--panel);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .drawer-toggle input {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .drawer-toggle:has(input:checked) {
-    border-color: var(--accent-soft);
-    color: var(--text);
-    background: var(--selection);
   }
 
   .scope-summary button,
@@ -869,7 +821,7 @@
 
   @media (max-width: 1199px) {
     .app-shell {
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
     }
 
     .scope-summary {
@@ -901,23 +853,6 @@
       display: flex;
       gap: 6px;
       justify-content: flex-end;
-    }
-
-    .results-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 36px;
-      border-bottom: 1px solid var(--border);
-      padding: 4px 12px;
-      color: var(--muted);
-      background: var(--surface);
-      font-size: 12px;
-      font-weight: 750;
-    }
-
-    .results-toolbar button:first-of-type {
-      margin-left: auto;
     }
 
     .workspace {

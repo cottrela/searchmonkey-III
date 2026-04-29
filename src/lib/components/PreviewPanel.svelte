@@ -247,30 +247,32 @@
       <div class="desktop-preview-file">
         <div class="desktop-preview-title">
           <h2 title={preview.filePath}>{filename(preview.filePath)}</h2>
-          {#if activeResultNumber}
-            <span>{activeResultNumber} / {total}</span>
-          {/if}
         </div>
         <div class="desktop-preview-path" title={parentPath(preview.filePath)}>
           {parentPath(preview.filePath)}
         </div>
       </div>
-      <div class="desktop-preview-actions">
+      <div class="desktop-header-nav">
         <div class="match-nav" aria-label="Match navigation">
           <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">←</button>
           <span>{activeResultNumber} / {total}</span>
           <button type="button" onclick={onNext} disabled={total < 2} title="Next match">→</button>
         </div>
+      </div>
+      <div class="desktop-preview-actions">
         <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-        <button type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
+        <button class="reveal-action" type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
         <details>
           <summary title="More actions" aria-label="More actions">...</summary>
           <div class="menu">
+            <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
             <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
               Copy match
             </button>
             <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
-            <button type="button" disabled>Open with...</button>
+            <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
+              {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
+            </button>
           </div>
         </details>
       </div>
@@ -283,10 +285,6 @@
     <div class="empty">{errorMessage}</div>
   {:else if preview.filePath}
     <div class="preview-body">
-      <label class="wrap-toggle">
-        <input type="checkbox" bind:checked={wrapLines} disabled={!canWrap} />
-        <span>Wrap lines</span>
-      </label>
       {#if !canWrap}
         <div class="wrap-message">Line wrapping is disabled for previews over 50,000 characters.</div>
       {/if}
@@ -336,6 +334,7 @@
 
 <style>
   .preview-panel {
+    container-type: inline-size;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
@@ -346,10 +345,10 @@
 
   .panel-title {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 12px;
     align-items: center;
-    min-height: 64px;
+    min-height: 56px;
     border-bottom: 1px solid var(--border);
     padding: 7px 10px 7px 14px;
     background: var(--panel);
@@ -377,13 +376,6 @@
     white-space: nowrap;
   }
 
-  .desktop-preview-title span {
-    flex: 0 0 auto;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
   .desktop-preview-path {
     min-width: 0;
     overflow: hidden;
@@ -396,14 +388,21 @@
 
   .desktop-preview-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: flex-end;
     gap: 6px;
+    white-space: nowrap;
+  }
+
+  .desktop-header-nav {
+    display: flex;
+    justify-content: center;
+    white-space: nowrap;
   }
 
   .match-nav {
     display: grid;
-    grid-template-columns: 30px minmax(58px, auto) 30px;
+    grid-template-columns: 26px 78px 26px;
     align-items: center;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -412,8 +411,10 @@
   }
 
   .match-nav button {
+    height: 28px;
     border: 0;
     border-radius: 0;
+    padding: 0;
     background: transparent;
   }
 
@@ -485,23 +486,9 @@
 
   .preview-body {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     min-height: 0;
     padding: 14px;
-  }
-
-  .wrap-toggle {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin-top: 10px;
-    color: var(--text);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .wrap-toggle input {
-    margin: 0;
   }
 
   .wrap-message {
@@ -703,7 +690,6 @@
       padding: 8px;
     }
 
-    .wrap-toggle,
     .wrap-message {
       display: none;
     }
@@ -785,6 +771,28 @@
     .menu button:focus-visible {
       background: var(--selection);
       outline: none;
+    }
+  }
+
+  @container (max-width: 430px) {
+    .panel-title {
+      grid-template-columns: minmax(0, 1fr) auto;
+      min-height: 76px;
+    }
+
+    .desktop-preview-path,
+    .reveal-action {
+      display: none;
+    }
+
+    .desktop-header-nav {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      justify-content: center;
+    }
+
+    .desktop-preview-actions {
+      flex-wrap: nowrap;
     }
   }
 </style>
