@@ -28,13 +28,23 @@
   </div>
 
   <div class="field">
-    <label for="include-patterns">Include patterns</label>
-    <input id="include-patterns" bind:value={includePatterns} placeholder="*.ts, *.svelte (future)" />
+    <label for="include-patterns">Include</label>
+    <input
+      id="include-patterns"
+      bind:value={includePatterns}
+      placeholder="*.txt, *.log, src/**/*.rs"
+      spellcheck="false"
+    />
   </div>
 
   <div class="field">
-    <label for="exclude-patterns">Exclude patterns</label>
-    <input id="exclude-patterns" bind:value={excludePatterns} placeholder="node_modules, dist (future)" />
+    <label for="exclude-patterns">Exclude</label>
+    <input
+      id="exclude-patterns"
+      bind:value={excludePatterns}
+      placeholder="node_modules, target, *.tmp"
+      spellcheck="false"
+    />
   </div>
 
   <button
@@ -79,7 +89,7 @@
     min-width: 0;
     border-right: 1px solid var(--border-subtle);
     background: #fbfcfd;
-    padding: 14px;
+    padding: 12px;
     overflow: auto;
   }
 
@@ -87,7 +97,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
 
   h2 {
@@ -98,8 +108,8 @@
 
   .field {
     display: grid;
-    gap: 5px;
-    margin-bottom: 11px;
+    gap: 4px;
+    margin-bottom: 9px;
   }
 
   label,
@@ -112,15 +122,15 @@
   input {
     width: 100%;
     min-width: 0;
-    height: 32px;
     box-sizing: border-box;
     border: 1px solid var(--border-subtle);
     border-radius: 6px;
-    padding: 0 9px;
     color: var(--text);
     background: var(--input);
     font: inherit;
     font-size: 12px;
+    height: 32px;
+    padding: 0 9px;
   }
 
   input:focus {
@@ -152,8 +162,8 @@
   }
 
   .advanced {
-    margin-top: 12px;
-    padding-top: 12px;
+    margin-top: 10px;
+    padding-top: 10px;
     border-top: 1px solid var(--border-subtle);
   }
 
@@ -162,7 +172,7 @@
     grid-template-columns: auto 1fr auto;
     gap: 8px;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
 
   .check-row input {

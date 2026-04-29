@@ -11,6 +11,7 @@
     startSearch as startSearchCommand,
     stopSearch
   } from '$lib/search';
+  import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import type {
     FileResultGroup,
     FilePreview,
@@ -188,7 +189,9 @@
           path: cleanPath,
           regex: options.regex,
           case_sensitive: options.case_sensitive,
-          hidden: options.hidden
+          hidden: options.hidden,
+          include_patterns: normalizeIncludePatterns(includePatterns),
+          exclude_patterns: normalizeExcludePatterns(excludePatterns)
         },
         searchId,
         handleSearchEvent

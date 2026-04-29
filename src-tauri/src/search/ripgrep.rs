@@ -25,13 +25,18 @@ impl RipgrepSidecarProvider {
             "1M".to_string(),
             "--max-count".to_string(),
             "100000".to_string(),
-            "--glob".to_string(),
-            "!node_modules/**".to_string(),
-            "--glob".to_string(),
-            "!target/**".to_string(),
-            "--glob".to_string(),
-            "!dist/**".to_string(),
+            "--no-messages".to_string(),
         ];
+
+        for pattern in request.include_patterns {
+            args.push("--glob".to_string());
+            args.push(pattern);
+        }
+
+        for pattern in request.exclude_patterns {
+            args.push("--glob".to_string());
+            args.push(format!("!{pattern}"));
+        }
 
         if !request.regex {
             args.push("--fixed-strings".to_string());

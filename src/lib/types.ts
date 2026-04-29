@@ -4,6 +4,8 @@ export type SearchRequest = {
   regex: boolean;
   case_sensitive: boolean;
   hidden: boolean;
+  include_patterns: string[];
+  exclude_patterns: string[];
 };
 
 export type SearchMatch = {

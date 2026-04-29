@@ -9,6 +9,8 @@ pub struct SearchRequest {
     pub regex: bool,
     pub case_sensitive: bool,
     pub hidden: bool,
+    pub include_patterns: Vec<String>,
+    pub exclude_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
