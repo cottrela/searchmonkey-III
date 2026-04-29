@@ -59,6 +59,7 @@
   let elapsedTimer: ReturnType<typeof setInterval> | null = null;
   let resizeFrame = 0;
   let pendingPreviewWidth = 0;
+  let scopePanelVisible = true;
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
@@ -437,7 +438,7 @@
 
   function clampPreviewWidth(width: number) {
     const workspaceWidth = workspaceElement?.getBoundingClientRect().width ?? 0;
-    const scopeWidth = 280;
+    const scopeWidth = scopePanelVisible ? 280 : 0;
     const splitterWidth = 8;
     const availableWidth = Math.max(0, workspaceWidth - scopeWidth - splitterWidth);
     const maxPreviewWidth = Math.max(260, availableWidth - 260);
@@ -450,6 +451,7 @@
 
     event.preventDefault();
     isResizingPreview = true;
+    scopePanelVisible = window.matchMedia('(min-width: 1200px)').matches;
 
     const updatePreviewWidth = (moveEvent: PointerEvent) => {
       const rect = workspaceElement?.getBoundingClientRect();
@@ -560,13 +562,26 @@
     <span class="summary-item folder" title={scopeSummary.folder}>
       <strong>Folder:</strong> {scopeSummary.folder}
     </span>
-    <span class="summary-item"><strong>Include:</strong> {scopeSummary.include}</span>
+    <span class="summary-separator" aria-hidden="true">·</span>
+    <span class="summary-item include"><strong>Include:</strong> {scopeSummary.include}</span>
     {#if scopeSummary.exclude}
-      <span class="summary-item"><strong>Exclude:</strong> {scopeSummary.exclude}</span>
+      <span class="summary-separator exclude-separator" aria-hidden="true">·</span>
+      <span class="summary-item exclude"><strong>Exclude:</strong> {scopeSummary.exclude}</span>
     {/if}
-    <div class="summary-actions">
-      <button type="button" onclick={() => (filtersOpen = true)}>Change</button>
-      <button type="button" onclick={() => (filtersOpen = true)}>Filters</button>
+    <div class="mode-pills" aria-label="Search modes">
+      <button type="button" class:active={options.regex} onclick={() => (options.regex = !options.regex)}>
+        Regex
+      </button>
+      <button
+        type="button"
+        class:active={options.case_sensitive}
+        onclick={() => (options.case_sensitive = !options.case_sensitive)}
+      >
+        Case
+      </button>
+      <button type="button" class:active={options.hidden} onclick={() => (options.hidden = !options.hidden)}>
+        Hidden
+      </button>
     </div>
   </div>
 
@@ -583,7 +598,8 @@
     class:has-preview={Boolean(selected)}
     class:show-preview={compactView === 'preview'}
     class="workspace"
-    style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, ${previewWidth}px)`}
+    style:--preview-width={`${previewWidth}px`}
+    style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, var(--preview-width))`}
   >
     <ScopePanel
       bind:path
@@ -794,7 +810,6 @@
     font-size: 14px;
   }
 
-  .scope-summary button,
   .results-toolbar button,
   .drawer-header button {
     height: 28px;
@@ -808,7 +823,6 @@
     font-weight: 750;
   }
 
-  .scope-summary button:not(:disabled),
   .results-toolbar button:not(:disabled),
   .drawer-header button:not(:disabled) {
     cursor: pointer;
@@ -826,7 +840,9 @@
 
     .scope-summary {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-columns:
+        minmax(160px, 1.4fr) auto minmax(120px, 0.8fr) auto minmax(120px, 0.8fr)
+        auto;
       gap: 8px;
       align-items: center;
       min-height: 36px;
@@ -849,14 +865,37 @@
       color: var(--text);
     }
 
-    .summary-actions {
+    .summary-separator {
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .mode-pills {
       display: flex;
-      gap: 6px;
+      gap: 5px;
       justify-content: flex-end;
     }
 
+    .mode-pills button {
+      height: 24px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      padding: 0 9px;
+      color: var(--muted);
+      background: var(--surface);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .mode-pills button.active {
+      border-color: var(--accent-soft);
+      color: var(--text);
+      background: var(--selection);
+    }
+
     .workspace {
-      grid-template-columns: minmax(260px, 1fr) 8px minmax(260px, 360px) !important;
+      grid-template-columns: minmax(260px, 1fr) 8px minmax(260px, var(--preview-width)) !important;
     }
 
     .workspace > :global(.scope-panel) {
@@ -890,11 +929,11 @@
 
   @media (max-width: 640px) {
     .scope-summary {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) auto minmax(90px, 0.7fr) auto;
     }
 
-    .summary-item:not(.folder),
-    .summary-actions button:first-child {
+    .exclude,
+    .exclude-separator {
       display: none;
     }
   }
@@ -905,11 +944,15 @@
     }
 
     .scope-summary {
+      grid-template-columns: minmax(0, 1fr);
       min-height: 28px;
       padding: 3px 8px;
     }
 
-    .summary-actions {
+    .summary-separator,
+    .include,
+    .exclude,
+    .mode-pills {
       display: none;
     }
 
