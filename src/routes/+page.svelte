@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
   import ScopePanel from '$lib/components/ScopePanel.svelte';
@@ -49,6 +50,8 @@
   let workspaceElement = $state<HTMLElement>();
   let previewWidth = $state(360);
   let isResizingPreview = $state(false);
+  let filtersOpen = $state(false);
+  let compactView = $state<'results' | 'preview'>('results');
   let queuedMatches: SearchMatch[] = [];
   let resultFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -78,6 +81,11 @@
 
     return previewFor(selected.path, previewData);
   });
+  const scopeSummary = $derived.by(() => ({
+    folder: path.trim() || 'No folder selected',
+    include: includePatterns.trim() || 'all files',
+    exclude: excludePatterns.trim()
+  }));
 
   onMount(() => {
     homeDir()
@@ -250,17 +258,69 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
-    if (event.key !== 'Escape') return;
-    if (searchState !== 'searching') return;
+    if (event.key === 'Escape' && searchState === 'searching') {
+      event.preventDefault();
+      void stopCurrentSearch();
+      return;
+    }
 
-    event.preventDefault();
-    void stopCurrentSearch();
+    if (isEditableTarget(event.target)) return;
+
+    if (event.key === 'n' && matches.length) {
+      event.preventDefault();
+      selectOffset(event.shiftKey ? -1 : 1);
+      return;
+    }
+
+    if (event.key === 'ArrowDown' && matches.length) {
+      event.preventDefault();
+      selectOffset(1);
+      return;
+    }
+
+    if (event.key === 'ArrowUp' && matches.length) {
+      event.preventDefault();
+      selectOffset(-1);
+      return;
+    }
+
+    if (event.key === 'Enter' && selected) {
+      event.preventDefault();
+      void openFile(selected.path);
+    }
   }
 
   function selectMatch(match: SearchMatch) {
     scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
     previewViewport = updateViewportForMatch(match);
     selected = match;
+    compactView = 'preview';
+  }
+
+  function isEditableTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) return false;
+    const tagName = target.tagName.toLowerCase();
+    return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
+  }
+
+  async function openFile(filePath: string) {
+    if (!filePath) return;
+
+    try {
+      await openPath(filePath);
+    } catch (error) {
+      errorMessage = normalizeError(error);
+    }
+  }
+
+  async function revealFile(filePath: string) {
+    if (!filePath) return;
+
+    try {
+      await revealItemInDir(filePath);
+    } catch (error) {
+      errorMessage = normalizeError(error);
+    }
   }
 
   function selectOffset(offset: number) {
@@ -374,6 +434,10 @@
     window.addEventListener('pointerup', stopPreviewResize, { once: true });
   }
 
+  function closePreview() {
+    compactView = 'results';
+  }
+
   $effect(() => {
     if (!selected) {
       loadedPreviewKey = '';
@@ -443,13 +507,37 @@
     bind:options
     searching={searchState === 'searching' || searchState === 'stopping'}
     stopping={searchState === 'stopping'}
+    onFilters={() => (filtersOpen = true)}
     onSearch={startSearch}
     onStop={stopCurrentSearch}
   />
 
+  <div class="scope-summary" aria-label="Search scope summary">
+    <span class="summary-item folder" title={scopeSummary.folder}>
+      <strong>Folder:</strong> {scopeSummary.folder}
+    </span>
+    <span class="summary-item"><strong>Include:</strong> {scopeSummary.include}</span>
+    {#if scopeSummary.exclude}
+      <span class="summary-item"><strong>Exclude:</strong> {scopeSummary.exclude}</span>
+    {/if}
+    <div class="summary-actions">
+      <button type="button" onclick={() => (filtersOpen = true)}>Change</button>
+      <button type="button" onclick={() => (filtersOpen = true)}>Filters</button>
+    </div>
+  </div>
+
+  <div class="results-toolbar" aria-label="Results actions">
+    <span>{groups.length} files</span>
+    <span>{matches.length} matches</span>
+    <button type="button" onclick={() => (filtersOpen = true)}>Filters</button>
+    <button type="button" disabled={!selected} onclick={() => (compactView = 'preview')}>Preview</button>
+  </div>
+
   <div
     bind:this={workspaceElement}
     class:resizing={isResizingPreview}
+    class:has-preview={Boolean(selected)}
+    class:show-preview={compactView === 'preview'}
     class="workspace"
     style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, ${previewWidth}px)`}
   >
@@ -468,6 +556,8 @@
       state={searchState}
       {hasSearched}
       onSelect={selectMatch}
+      onOpen={openFile}
+      onReveal={revealFile}
     />
     <button
       type="button"
@@ -481,8 +571,56 @@
       total={matches.length}
       onPrevious={() => selectOffset(-1)}
       onNext={() => selectOffset(1)}
+      onSelect={selectMatch}
+      onOpen={openFile}
+      onReveal={revealFile}
+      onClose={closePreview}
     />
   </div>
+
+  {#if filtersOpen}
+    <div class="drawer-layer" role="presentation">
+      <button
+        class="drawer-backdrop"
+        type="button"
+        aria-label="Close filters"
+        onclick={() => (filtersOpen = false)}
+      ></button>
+      <div
+        class="filters-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search filters"
+        tabindex="-1"
+      >
+        <div class="drawer-header">
+          <h2>Filters</h2>
+          <button type="button" onclick={() => (filtersOpen = false)}>Close</button>
+        </div>
+        <div class="drawer-search-options" aria-label="Search options">
+          <label class="drawer-toggle">
+            <input type="checkbox" bind:checked={options.regex} />
+            <span>Regex</span>
+          </label>
+          <label class="drawer-toggle">
+            <input type="checkbox" bind:checked={options.case_sensitive} />
+            <span>Case</span>
+          </label>
+          <label class="drawer-toggle">
+            <input type="checkbox" bind:checked={options.hidden} />
+            <span>Hidden</span>
+          </label>
+        </div>
+        <ScopePanel
+          bind:path
+          bind:includePatterns
+          bind:excludePatterns
+          bind:contextLines
+          includeHidden={options.hidden}
+        />
+      </div>
+    </div>
+  {/if}
 
   <StatusBar
     state={searchState}
@@ -524,7 +662,6 @@
 
   :global(body) {
     margin: 0;
-    min-width: 900px;
     min-height: 100vh;
     overflow: hidden;
     color: var(--text);
@@ -542,6 +679,11 @@
     width: 100vw;
     height: 100vh;
     background: var(--surface);
+  }
+
+  .scope-summary,
+  .results-toolbar {
+    display: none;
   }
 
   .workspace {
@@ -575,5 +717,222 @@
   .panel-resizer:focus-visible {
     background: var(--selection);
     outline: none;
+  }
+
+  .drawer-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+
+  .drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: rgba(30, 37, 45, 0.24);
+  }
+
+  .filters-drawer {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    width: min(360px, calc(100vw - 32px));
+    height: 100%;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    box-shadow: 0 14px 36px rgba(30, 37, 45, 0.22);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 44px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 12px;
+    background: var(--surface);
+  }
+
+  .drawer-header h2 {
+    margin: 0;
+    font-size: 14px;
+  }
+
+  .drawer-search-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 8px 12px;
+    background: var(--surface);
+  }
+
+  .drawer-toggle {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 0 10px;
+    color: var(--muted);
+    background: var(--panel);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .drawer-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .drawer-toggle:has(input:checked) {
+    border-color: var(--accent-soft);
+    color: var(--text);
+    background: var(--selection);
+  }
+
+  .scope-summary button,
+  .results-toolbar button,
+  .drawer-header button {
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0 9px;
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .scope-summary button:not(:disabled),
+  .results-toolbar button:not(:disabled),
+  .drawer-header button:not(:disabled) {
+    cursor: pointer;
+  }
+
+  .results-toolbar button:disabled {
+    color: var(--muted);
+    background: var(--disabled);
+  }
+
+  @media (max-width: 1199px) {
+    .app-shell {
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    }
+
+    .scope-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 36px;
+      border-bottom: 1px solid var(--border);
+      padding: 5px 12px;
+      color: var(--muted);
+      background: var(--panel);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .summary-item {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .summary-item strong {
+      color: var(--text);
+    }
+
+    .summary-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .results-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 36px;
+      border-bottom: 1px solid var(--border);
+      padding: 4px 12px;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .results-toolbar button:first-of-type {
+      margin-left: auto;
+    }
+
+    .workspace {
+      grid-template-columns: minmax(260px, 1fr) 8px minmax(260px, 360px) !important;
+    }
+
+    .workspace > :global(.scope-panel) {
+      display: none;
+    }
+  }
+
+  @media (max-width: 849px) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr) !important;
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .workspace > :global(.results-panel),
+    .workspace > :global(.preview-panel) {
+      grid-column: 1;
+      grid-row: 1;
+      min-height: 0;
+    }
+
+    .workspace > :global(.preview-panel),
+    .workspace.show-preview > :global(.results-panel),
+    .panel-resizer {
+      display: none;
+    }
+
+    .workspace.show-preview > :global(.preview-panel) {
+      display: grid;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .scope-summary {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .summary-item:not(.folder),
+    .summary-actions button:first-child {
+      display: none;
+    }
+  }
+
+  @media (max-width: 599px) {
+    .app-shell {
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+    }
+
+    .scope-summary {
+      min-height: 28px;
+      padding: 3px 8px;
+    }
+
+    .summary-actions {
+      display: none;
+    }
+
+    .results-toolbar {
+      display: none;
+    }
   }
 </style>

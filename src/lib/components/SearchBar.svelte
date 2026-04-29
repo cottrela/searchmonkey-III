@@ -10,6 +10,7 @@
     }),
     searching = false,
     stopping = false,
+    onFilters,
     onSearch,
     onStop
   }: {
@@ -17,6 +18,7 @@
     options: SearchOptions;
     searching?: boolean;
     stopping?: boolean;
+    onFilters?: () => void;
     onSearch: () => void;
     onStop: () => void;
   } = $props();
@@ -42,7 +44,7 @@
       id="search-query"
       class="query-input"
       bind:value={query}
-      placeholder="Search files (regex supported)..."
+      placeholder="Search files (use Regex for patterns)..."
       autocomplete="off"
       spellcheck="false"
     />
@@ -52,6 +54,9 @@
     <button class="primary" type="submit" disabled={stopping}>
       {searching || stopping ? 'Stop' : 'Search'}
     </button>
+    {#if onFilters}
+      <button class="secondary filters-action" type="button" onclick={onFilters}>Filters &amp; Scope</button>
+    {/if}
     {#if searching || stopping}
       <span class="search-status" aria-live="polite">
         {stopping ? 'Cancelling...' : 'Searching...'}
@@ -66,11 +71,11 @@
     </label>
     <label class="toggle">
       <input type="checkbox" bind:checked={options.case_sensitive} />
-      <span>Case sensitive</span>
+      <span>Case</span>
     </label>
     <label class="toggle">
       <input type="checkbox" bind:checked={options.hidden} />
-      <span>Include hidden files</span>
+      <span>Hidden</span>
     </label>
   </div>
 </form>
@@ -79,16 +84,16 @@
   .search-bar {
     display: grid;
     grid-template-columns: minmax(320px, 1fr) auto;
-    gap: 14px 18px;
+    gap: 8px 12px;
     align-items: end;
-    padding: 18px 20px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
 
   .query-wrap {
     display: grid;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
   }
 
@@ -112,14 +117,14 @@
   }
 
   .query-input {
-    height: 52px;
+    height: 38px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
-    padding: 0 14px;
+    padding: 0 11px;
     color: var(--text);
     background: var(--input);
     font: inherit;
-    font-size: 18px;
+    font-size: 14px;
     font-weight: 650;
   }
 
@@ -138,17 +143,17 @@
   }
 
   button {
-    height: 52px;
+    height: 38px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
-    padding: 0 14px;
+    padding: 0 12px;
     font: inherit;
     font-weight: 700;
   }
 
   .primary {
-    width: 92px;
-    flex: 0 0 92px;
+    width: 82px;
+    flex: 0 0 82px;
   }
 
   button:not(:disabled) {
@@ -167,10 +172,19 @@
     background: var(--disabled);
   }
 
+  .secondary {
+    color: var(--text);
+    background: var(--input);
+  }
+
+  .filters-action {
+    display: none;
+  }
+
   .search-status {
     display: inline-flex;
     align-items: center;
-    height: 52px;
+    height: 38px;
     color: var(--muted);
     font-size: 13px;
     font-weight: 700;
@@ -187,7 +201,7 @@
   .toggle {
     display: inline-flex;
     align-items: center;
-    height: 26px;
+    height: 24px;
     border: 1px solid var(--border-subtle);
     border-radius: 999px;
     padding: 0 11px;
@@ -218,6 +232,12 @@
     box-shadow: 0 0 0 3px var(--focus);
   }
 
+  @media (max-width: 1199px) {
+    .filters-action {
+      display: inline-block;
+    }
+  }
+
   @media (max-width: 760px) {
     .search-bar {
       grid-template-columns: minmax(0, 1fr);
@@ -226,28 +246,51 @@
     .actions {
       justify-content: flex-start;
     }
+
+    .query-meta {
+      display: none;
+    }
   }
 
   @media (max-width: 520px) {
-    .query-meta {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 4px;
+    .search-bar {
+      gap: 6px;
+      padding: 7px 8px;
+    }
+
+    .query-input {
+      height: 32px;
+      font-size: 13px;
     }
 
     .actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
+      display: flex;
+      gap: 6px;
+    }
+
+    button,
+    .search-status {
+      height: 32px;
+    }
+
+    button {
+      padding: 0 10px;
+      font-size: 12px;
+      line-height: 30px;
     }
 
     .primary {
-      width: 100%;
-      flex-basis: auto;
+      width: 70px;
+      flex-basis: 70px;
     }
 
     .search-status {
       height: auto;
       min-height: 20px;
+    }
+
+    .toggles {
+      display: none;
     }
   }
 </style>

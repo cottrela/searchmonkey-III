@@ -20,6 +20,8 @@
     done: 'Done',
     error: 'Error'
   };
+
+  const matchLabel = $derived(`${totalMatches} ${totalMatches === 1 ? 'match' : 'matches'}`);
 </script>
 
 <footer
@@ -36,7 +38,7 @@
   </div>
 
   <div class="metrics">
-    <span>{totalMatches} matches</span>
+    <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
     {#if state === 'searching'}
       <span>Scanning current files</span>
@@ -106,6 +108,21 @@
   .error .message {
     color: var(--danger);
     font-weight: 700;
+  }
+
+  @media (max-width: 599px) {
+    .status-bar {
+      min-height: 32px;
+      padding: 0 10px;
+    }
+
+    .metrics span:not(:first-child) {
+      display: none;
+    }
+
+    .message {
+      max-width: 46vw;
+    }
   }
 
   @keyframes status-pulse {

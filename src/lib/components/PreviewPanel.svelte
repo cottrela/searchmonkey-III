@@ -27,13 +27,21 @@
     errorMessage,
     total,
     onPrevious,
-    onNext
+    onNext,
+    onSelect,
+    onOpen,
+    onReveal,
+    onClose
   }: {
     preview: PreviewState;
     errorMessage: string;
     total: number;
     onPrevious: () => void;
     onNext: () => void;
+    onSelect: (match: PreviewState['matches'][number]) => void;
+    onOpen: (path: string) => void;
+    onReveal: (path: string) => void;
+    onClose: () => void;
   } = $props();
 
   let previewElement = $state<HTMLDivElement>();
@@ -59,6 +67,12 @@
       segments: splitLine(line.text, line.matchRanges, line.isActive)
     }))
   );
+  const activeMatchText = $derived(preview.activeMatch?.line_text ?? '');
+  const activeMatchOnly = $derived.by(() => {
+    const match = preview.activeMatch;
+    if (!match?.submatches.length) return activeMatchText;
+    return match.submatches.map((range) => match.line_text.slice(range.start, range.end)).join(' ');
+  });
 
   function buildSourceLines(
     filePreview: PreviewState['filePreview'],
@@ -144,9 +158,47 @@
     return segments.length ? segments : [{ text, match: false, active }];
   }
 
+  function selectLineMatch(lineNumber: number) {
+    if (!selectionIsCollapsed()) return;
+
+    const lineMatches = preview.matches.filter((match) => match.line_number === lineNumber);
+    if (!lineMatches.length) return;
+
+    const activeIndex = lineMatches.findIndex((match) => match === preview.activeMatch);
+    onSelect(lineMatches[activeIndex >= 0 ? activeIndex : 0]);
+  }
+
+  function handleLineKeydown(event: KeyboardEvent, lineNumber: number) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+
+    event.preventDefault();
+    selectLineMatch(lineNumber);
+  }
+
+  function selectionIsCollapsed() {
+    const selection = window.getSelection();
+    return !selection || selection.isCollapsed;
+  }
+
+  function copyText(text: string) {
+    if (!text) return;
+    void navigator.clipboard?.writeText(text);
+  }
+
+  function filename(filePath: string) {
+    const parts = filePath.split('/').filter(Boolean);
+    return parts.at(-1) || filePath;
+  }
+
+  function parentPath(filePath: string) {
+    const slashIndex = filePath.lastIndexOf('/');
+    if (slashIndex <= 0) return filePath;
+    return filePath.slice(0, slashIndex);
+  }
+
   $effect(() => {
     const target = preview.filePreview
-      ? `${preview.filePath}:${preview.filePreview.start_line}:${preview.filePreview.end_line}:${previewTextLength}`
+      ? `${preview.filePath}:${preview.filePreview.start_line}:${preview.filePreview.end_line}:${preview.activeMatch?.line_number ?? 0}:${previewTextLength}`
       : '';
     if (!previewElement || !sourceLines.length || target === lastScrolledTarget) return;
 
@@ -162,10 +214,51 @@
 </script>
 
 <aside class="preview-panel" aria-label="Match preview">
+  {#if preview.filePath}
+    <div class="mobile-preview-toolbar">
+      <button type="button" onclick={onClose} title="Back to results">← Results</button>
+      <span></span>
+      <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
+      <details>
+        <summary title="More actions" aria-label="More actions">...</summary>
+        <div class="menu">
+          <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+            Copy match
+          </button>
+          <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+            Copy line
+          </button>
+          <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+          <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
+            {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
+          </button>
+        </div>
+      </details>
+    </div>
+    <div class="mobile-preview-file">
+      <strong title={preview.filePath}>{filename(preview.filePath)}</strong>
+      <span title={parentPath(preview.filePath)}>{parentPath(preview.filePath)}</span>
+    </div>
+  {/if}
+
   <div class="panel-title">
-    <h2>Preview</h2>
-    {#if preview.filePath && activeResultNumber}
-      <span>{activeResultNumber} / {total}</span>
+    <div class="title-main">
+      <h2 title={preview.filePath}>{preview.filePath || 'Preview'}</h2>
+      {#if preview.filePath && activeResultNumber}
+        <span>{activeResultNumber} / {total}</span>
+      {/if}
+    </div>
+    {#if preview.filePath}
+      <div class="header-actions">
+        <button class="mobile-back" type="button" onclick={onClose} title="Back to results">Back</button>
+        <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">Prev</button>
+        <button type="button" onclick={onNext} disabled={total < 2} title="Next match">Next</button>
+        <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText} title="Copy match line">Copy match</button>
+        <button type="button" onclick={() => copyText(preview.filePath)} title="Copy path">Copy path</button>
+        <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
+        <button type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
+      </div>
     {/if}
   </div>
 
@@ -173,7 +266,6 @@
     <div class="empty">{errorMessage}</div>
   {:else if preview.filePath}
     <div class="preview-body">
-      <div class="file" title={preview.filePath}>{preview.filePath}</div>
       <label class="wrap-toggle">
         <input type="checkbox" bind:checked={wrapLines} disabled={!canWrap} />
         <span>Wrap lines</span>
@@ -188,24 +280,37 @@
           class:wrap={effectiveWrap}
         >
           {#each renderLines as line (line.number)}
-            <div
-              class="line"
-              data-match={line.isMatch ? 'true' : undefined}
-              data-active-match={line.isActive ? 'true' : undefined}
-            >
-              <span class="gutter">{line.number}</span>
-              <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
-            </div>
+            {#if line.isMatch}
+              <div
+                class="line"
+                role="button"
+                tabindex="0"
+                data-match="true"
+                data-active-match={line.isActive ? 'true' : undefined}
+                onclick={() => selectLineMatch(line.number)}
+                onkeydown={(event) => handleLineKeydown(event, line.number)}
+              >
+                <span class="gutter">{line.number}</span>
+                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+              </div>
+            {:else}
+              <div class="line">
+                <span class="gutter">{line.number}</span>
+                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+              </div>
+            {/if}
           {/each}
         </div>
       {:else}
         <div class="empty inline">Reading file...</div>
       {/if}
 
-      <div class="nav">
-        <button type="button" onclick={onPrevious} disabled={total < 2}>Previous</button>
-        <button type="button" onclick={onNext} disabled={total < 2}>Next</button>
+      <div class="mobile-match-nav">
+        <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">←</button>
+        <span>{activeResultNumber} / {total}</span>
+        <button type="button" onclick={onNext} disabled={total < 2} title="Next match">→</button>
       </div>
+
     </div>
   {:else}
     <div class="empty">Select a match to preview it</div>
@@ -223,41 +328,61 @@
   }
 
   .panel-title {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
     align-items: center;
-    justify-content: space-between;
-    height: 47px;
+    min-height: 47px;
     border-bottom: 1px solid var(--border);
-    padding: 0 14px;
+    padding: 6px 10px 6px 14px;
     background: var(--panel);
   }
 
-  h2 {
-    margin: 0;
-    font-size: 14px;
+  .title-main {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 10px;
   }
 
-  .panel-title span {
+  h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .title-main span {
+    flex: 0 0 auto;
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
   }
 
-  .preview-body {
-    display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-    min-height: 0;
-    padding: 14px;
+  .header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
   }
 
-  .file {
-    overflow: hidden;
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 800;
-    line-height: 18px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .mobile-back {
+    display: none;
+  }
+
+  .mobile-preview-toolbar,
+  .mobile-preview-file,
+  .mobile-match-nav {
+    display: none;
+  }
+
+  .preview-body {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    min-height: 0;
+    padding: 14px;
   }
 
   .wrap-toggle {
@@ -299,6 +424,10 @@
     grid-template-columns: 44px minmax(0, 1fr);
     min-width: max-content;
     min-height: 18px;
+  }
+
+  .line[data-match='true'] {
+    cursor: pointer;
   }
 
   .gutter {
@@ -351,21 +480,15 @@
     background: #ffbd3d;
   }
 
-  .nav {
-    display: flex;
-    gap: 8px;
-    margin-top: 14px;
-  }
-
   button {
-    height: 34px;
+    height: 30px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0 10px;
+    padding: 0 9px;
     color: var(--text);
     background: var(--input);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
   }
 
@@ -389,5 +512,177 @@
 
   .empty.inline {
     min-height: 180px;
+  }
+
+  @media (max-width: 849px) {
+    .panel-title {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .header-actions {
+      justify-content: flex-start;
+    }
+
+    .mobile-back {
+      display: inline-block;
+    }
+  }
+
+  @media (max-width: 599px) {
+    .preview-panel {
+      grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .panel-title {
+      display: none;
+    }
+
+    .mobile-preview-toolbar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 38px;
+      border-bottom: 1px solid var(--border);
+      padding: 5px 8px;
+      background: var(--panel);
+    }
+
+    .mobile-preview-toolbar > span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .mobile-preview-file {
+      display: grid;
+      gap: 1px;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 6px 8px;
+      background: var(--surface);
+    }
+
+    .mobile-preview-file strong,
+    .mobile-preview-file span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mobile-preview-file strong {
+      font-size: 13px;
+    }
+
+    .mobile-preview-file span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .panel-title {
+      min-height: 42px;
+      padding: 5px 8px;
+    }
+
+    .header-actions {
+      gap: 4px;
+    }
+
+    button {
+      height: 28px;
+      padding: 0 7px;
+      font-size: 11px;
+    }
+
+    .preview-body {
+      grid-template-rows: minmax(0, 1fr) auto;
+      padding: 8px;
+    }
+
+    .wrap-toggle,
+    .wrap-message {
+      display: none;
+    }
+
+    .preview {
+      margin-top: 0;
+      font-size: 12px;
+      line-height: 17px;
+    }
+
+    .mobile-match-nav {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 42px;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .mobile-match-nav button {
+      height: 34px;
+      font-size: 16px;
+    }
+
+    .mobile-match-nav span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    details {
+      position: relative;
+    }
+
+    summary {
+      display: inline-grid;
+      width: 30px;
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      place-items: center;
+      color: var(--text);
+      background: var(--input);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 900;
+      list-style: none;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .menu {
+      position: absolute;
+      top: 32px;
+      right: 0;
+      z-index: 5;
+      display: grid;
+      min-width: 150px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px;
+      background: var(--panel);
+      box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+    }
+
+    .menu button {
+      height: 30px;
+      border: 0;
+      border-radius: 4px;
+      padding: 0 8px;
+      background: transparent;
+      font-size: 12px;
+      text-align: left;
+    }
+
+    .menu button:hover,
+    .menu button:focus-visible {
+      background: var(--selection);
+      outline: none;
+    }
   }
 </style>
