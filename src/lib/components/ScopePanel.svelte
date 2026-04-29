@@ -1,14 +1,18 @@
 <script lang="ts">
+  import PathInput from './PathInput.svelte';
+
   let {
     path = $bindable(''),
     includePatterns = $bindable(''),
     excludePatterns = $bindable(''),
-    contextLines = $bindable(0)
+    contextLines = $bindable(0),
+    includeHidden = false
   }: {
     path: string;
     includePatterns: string;
     excludePatterns: string;
     contextLines: number;
+    includeHidden?: boolean;
   } = $props();
 
   let advancedOpen = $state(false);
@@ -24,7 +28,12 @@
 
   <div class="field">
     <label for="search-path">Folder or path</label>
-    <input id="search-path" bind:value={path} placeholder="/Users/name/project" spellcheck="false" />
+    <PathInput
+      id="search-path"
+      bind:value={path}
+      placeholder="/Users/name/project"
+      {includeHidden}
+    />
   </div>
 
   <div class="field">

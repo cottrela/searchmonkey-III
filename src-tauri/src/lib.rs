@@ -1,9 +1,11 @@
 mod search;
 
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use search::{
     ripgrep::RipgrepSidecarProvider, FilePreview, FilePreviewLine, SearchMatch, SearchProvider,
@@ -11,9 +13,11 @@ use search::{
 };
 use tauri::{ipc::Channel, Manager, State};
 
-const SEARCH_BATCH_SIZE: usize = 100;
+const SEARCH_BATCH_SIZE: usize = 500;
+const SEARCH_BATCH_INTERVAL_MS: u64 = 75;
 const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
+const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
 
 #[derive(Default)]
 struct SearchRuntime {
@@ -110,6 +114,59 @@ fn home_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn list_directory(path: String, include_hidden: bool) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_directory_entries(path, include_hidden))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn list_directory_entries(path: String, include_hidden: bool) -> Result<Vec<String>, String> {
+    let path = expand_home_path(&path)?;
+    let entries = std::fs::read_dir(path).map_err(|err| err.to_string())?;
+    let mut suggestions = Vec::new();
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if name.is_empty() {
+            continue;
+        }
+
+        if !include_hidden && name.starts_with('.') {
+            continue;
+        }
+
+        if entry.path().is_dir() {
+            suggestions.push(name);
+        }
+    }
+
+    suggestions.sort_by_key(|name| name.to_lowercase());
+
+    Ok(suggestions
+        .into_iter()
+        .take(DIRECTORY_SUGGESTION_LIMIT)
+        .map(|name| format!("{name}/"))
+        .collect())
+}
+
+fn expand_home_path(path: &str) -> Result<PathBuf, String> {
+    if path == "~" {
+        return home_dir().map(PathBuf::from);
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home_dir().map(|home| Path::new(&home).join(rest));
+    }
+
+    Ok(PathBuf::from(path))
+}
+
+#[tauri::command]
 async fn start_search(
     app: tauri::AppHandle,
     runtime: State<'_, SearchRuntime>,
@@ -160,6 +217,7 @@ async fn start_search(
     thread::spawn(move || {
         let mut total_matches = 0usize;
         let mut batch = Vec::with_capacity(SEARCH_BATCH_SIZE);
+        let mut last_emit = Instant::now();
         let reader = BufReader::new(stdout);
 
         for line in reader.split(b'\n') {
@@ -180,8 +238,12 @@ async fn start_search(
                 batch.push(result);
             }
 
-            if batch.len() >= SEARCH_BATCH_SIZE {
+            if batch.len() >= SEARCH_BATCH_SIZE
+                || (!batch.is_empty()
+                    && last_emit.elapsed() >= Duration::from_millis(SEARCH_BATCH_INTERVAL_MS))
+            {
                 emit_batch(&events_for_stdout, search_id, &mut batch);
+                last_emit = Instant::now();
             }
 
             if total_matches >= UI_RESULT_LIMIT {
@@ -347,10 +409,12 @@ fn kill_child(mut child: Child) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(SearchRuntime::default())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             home_dir,
+            list_directory,
             read_file_preview,
             search_files,
             start_search,

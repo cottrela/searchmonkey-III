@@ -17,6 +17,10 @@ export async function homeDir(): Promise<string> {
   return invoke<string>('home_dir');
 }
 
+export async function listDirectory(path: string, includeHidden = false): Promise<string[]> {
+  return invoke<string[]>('list_directory', { path, includeHidden });
+}
+
 export async function startSearch(
   request: SearchRequest,
   searchId: number,

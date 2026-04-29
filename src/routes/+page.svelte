@@ -44,14 +44,20 @@
   let previewError = $state('');
   let loadedPreviewKey = '';
   let previewLoadId = 0;
+  let previewIsLoading = false;
   let previewViewport = $state<{ path: string; start: number; end: number } | null>(null);
   let workspaceElement = $state<HTMLElement>();
   let previewWidth = $state(360);
   let isResizingPreview = $state(false);
+  let queuedMatches: SearchMatch[] = [];
+  let resultFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
   const PREVIEW_LOAD_TIMEOUT_MS = 4000;
+  const SEARCH_RESULT_FLUSH_MS = 120;
+  const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 300;
+  const MAX_DISPLAYED_MATCHES = 100000;
 
   const groups = $derived.by(() => groupMatches(matches));
   const selectedIndex = $derived.by(() => {
@@ -144,12 +150,13 @@
         break;
       case 'batch':
         if (searchState === 'stopping') return;
-        matches = [...matches, ...event.results].slice(0, 100000);
+        queueMatches(event.results);
         break;
       case 'error':
         errorMessage = event.message;
         break;
       case 'finished':
+        flushQueuedMatches();
         if (searchState === 'stopping') {
           errorMessage = `Search stopped after ${matches.length} matches.`;
           searchState = 'done';
@@ -159,6 +166,7 @@
         activeSearchId = null;
         break;
       case 'cancelled':
+        flushQueuedMatches();
         searchState = 'done';
         errorMessage = `Search stopped after ${matches.length} matches.`;
         activeSearchId = null;
@@ -187,6 +195,8 @@
     hasSearched = true;
     selected = null;
     matches = [];
+    queuedMatches = [];
+    clearResultFlushTimer();
     const searchId = nextSearchId;
     nextSearchId += 1;
     activeSearchId = searchId;
@@ -207,6 +217,8 @@
       );
     } catch (error) {
       matches = [];
+      queuedMatches = [];
+      clearResultFlushTimer();
       selected = null;
       activeSearchId = null;
       searchState = 'error';
@@ -236,6 +248,7 @@
   }
 
   function selectMatch(match: SearchMatch) {
+    scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
     previewViewport = updateViewportForMatch(match);
     selected = match;
   }
@@ -246,8 +259,59 @@
     const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
     const nextIndex = (currentIndex + offset + matches.length) % matches.length;
     const nextMatch = matches[nextIndex];
+    scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
     previewViewport = updateViewportForMatch(nextMatch);
     selected = nextMatch;
+  }
+
+  function queueMatches(nextMatches: SearchMatch[]) {
+    if (!nextMatches.length) return;
+
+    const remainingCapacity = MAX_DISPLAYED_MATCHES - matches.length - queuedMatches.length;
+
+    if (remainingCapacity <= 0) {
+      return;
+    }
+
+    queuedMatches.push(...nextMatches.slice(0, remainingCapacity));
+    scheduleResultFlush();
+  }
+
+  function scheduleResultFlush(delay = previewIsLoading ? SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS : SEARCH_RESULT_FLUSH_MS) {
+    if (!queuedMatches.length) return;
+
+    if (resultFlushTimer) {
+      if (delay === 0) {
+        clearResultFlushTimer();
+      } else {
+        return;
+      }
+    }
+
+    if (delay === 0) {
+      flushQueuedMatches();
+      return;
+    }
+
+    resultFlushTimer = setTimeout(() => {
+      resultFlushTimer = null;
+      flushQueuedMatches();
+    }, delay);
+  }
+
+  function flushQueuedMatches() {
+    if (!queuedMatches.length) return;
+
+    const nextMatches = queuedMatches;
+    queuedMatches = [];
+    matches = [...matches, ...nextMatches].slice(0, MAX_DISPLAYED_MATCHES);
+  }
+
+  function clearResultFlushTimer() {
+    if (!resultFlushTimer) return;
+
+    clearTimeout(resultFlushTimer);
+    resultFlushTimer = null;
   }
 
   function updateViewportForMatch(match: SearchMatch) {
@@ -307,6 +371,7 @@
       previewError = '';
       previewData = null;
       previewViewport = null;
+      previewIsLoading = false;
       return;
     }
 
@@ -325,6 +390,7 @@
     loadedPreviewKey = previewKey;
     previewError = '';
     previewData = null;
+    previewIsLoading = true;
 
     withTimeout(
       readFilePreview(filePath, nextViewport.start, nextViewport.end),
@@ -334,10 +400,14 @@
       .then((filePreview) => {
         if (loadId !== previewLoadId || selected?.path !== filePath) return;
         previewData = filePreview;
+        previewIsLoading = false;
+        scheduleResultFlush(0);
       })
       .catch((error) => {
         if (loadId !== previewLoadId || selected?.path !== filePath) return;
         previewError = normalizeError(error);
+        previewIsLoading = false;
+        scheduleResultFlush(0);
       });
   });
 
@@ -371,7 +441,13 @@
     class="workspace"
     style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, ${previewWidth}px)`}
   >
-    <ScopePanel bind:path bind:includePatterns bind:excludePatterns bind:contextLines />
+    <ScopePanel
+      bind:path
+      bind:includePatterns
+      bind:excludePatterns
+      bind:contextLines
+      includeHidden={options.hidden}
+    />
     <ResultsPanel
       {groups}
       {query}
