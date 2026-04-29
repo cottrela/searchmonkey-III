@@ -15,7 +15,7 @@ use tauri::{ipc::Channel, Manager, State};
 
 const SEARCH_BATCH_SIZE: usize = 500;
 const SEARCH_BATCH_INTERVAL_MS: u64 = 75;
-const UI_RESULT_LIMIT: usize = 100_000;
+const UI_RESULT_LIMIT: usize = 10_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
 

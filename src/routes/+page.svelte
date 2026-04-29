@@ -57,7 +57,7 @@
   const PREVIEW_LOAD_TIMEOUT_MS = 4000;
   const SEARCH_RESULT_FLUSH_MS = 120;
   const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 300;
-  const MAX_DISPLAYED_MATCHES = 100000;
+  const MAX_DISPLAYED_MATCHES = 10000;
 
   const groups = $derived.by(() => groupMatches(matches));
   const selectedIndex = $derived.by(() => {
@@ -175,6 +175,8 @@
   }
 
   async function startSearch() {
+    if (searchState === 'searching' || searchState === 'stopping') return;
+
     const cleanQuery = query.trim();
     const cleanPath = path.trim();
 
@@ -233,10 +235,10 @@
 
     try {
       searchState = 'stopping';
-      errorMessage = 'Stopping search...';
+      errorMessage = '';
       await stopSearch(searchId);
 
-      if (activeSearchId === searchId || errorMessage === 'Stopping search...') {
+      if (activeSearchId === searchId) {
         searchState = 'done';
         errorMessage = `Search stopped after ${matches.length} matches.`;
         activeSearchId = null;
@@ -245,6 +247,14 @@
       searchState = 'error';
       errorMessage = normalizeError(error);
     }
+  }
+
+  function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    if (searchState !== 'searching') return;
+
+    event.preventDefault();
+    void stopCurrentSearch();
   }
 
   function selectMatch(match: SearchMatch) {
@@ -424,6 +434,8 @@
 <svelte:head>
   <title>Searchmonkey III</title>
 </svelte:head>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <main class="app-shell">
   <SearchBar

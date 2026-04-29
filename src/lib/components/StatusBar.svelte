@@ -97,10 +97,15 @@
   .message {
     min-width: 0;
     overflow: hidden;
-    color: var(--danger);
-    font-weight: 700;
+    color: var(--muted);
+    font-weight: 650;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .error .message {
+    color: var(--danger);
+    font-weight: 700;
   }
 
   @keyframes status-pulse {
