@@ -1,17 +1,24 @@
 <script lang="ts">
   import PathInput from './PathInput.svelte';
+  import type { SearchOptions } from '$lib/types';
 
   let {
     path = $bindable(''),
     includePatterns = $bindable(''),
     excludePatterns = $bindable(''),
     contextLines = $bindable(0),
+    options = $bindable<SearchOptions>({
+      regex: false,
+      case_sensitive: false,
+      hidden: false
+    }),
     includeHidden = false
   }: {
     path: string;
     includePatterns: string;
     excludePatterns: string;
     contextLines: number;
+    options: SearchOptions;
     includeHidden?: boolean;
   } = $props();
 
@@ -56,6 +63,21 @@
     />
   </div>
 
+  <div class="search-options" aria-label="Search options">
+    <label class="option-row">
+      <input type="checkbox" bind:checked={options.regex} />
+      <span>Regex</span>
+    </label>
+    <label class="option-row">
+      <input type="checkbox" bind:checked={options.case_sensitive} />
+      <span>Case sensitive</span>
+    </label>
+    <label class="option-row">
+      <input type="checkbox" bind:checked={options.hidden} />
+      <span>Include hidden</span>
+    </label>
+  </div>
+
   <button
     class="advanced-toggle"
     type="button"
@@ -96,9 +118,9 @@
 <style>
   .scope-panel {
     min-width: 0;
-    border-right: 1px solid var(--border-subtle);
-    background: #fbfcfd;
-    padding: 12px;
+    border-right: 1px solid var(--border);
+    background: #f7f9fb;
+    padding: 10px;
     overflow: auto;
   }
 
@@ -122,7 +144,8 @@
   }
 
   label,
-  .check-row span {
+  .check-row span,
+  .option-row span {
     color: var(--muted);
     font-size: 11px;
     font-weight: 650;
@@ -151,6 +174,27 @@
   input:disabled {
     color: var(--muted);
     background: var(--disabled);
+  }
+
+  .search-options {
+    display: grid;
+    gap: 6px;
+    margin: 2px 0 10px;
+    border-top: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 9px 0;
+  }
+
+  .option-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .option-row input {
+    width: auto;
+    height: auto;
   }
 
   .advanced-toggle {

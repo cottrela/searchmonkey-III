@@ -64,20 +64,6 @@
     {/if}
   </div>
 
-  <div class="toggles" aria-label="Search options">
-    <label class="toggle">
-      <input type="checkbox" bind:checked={options.regex} />
-      <span>Regex</span>
-    </label>
-    <label class="toggle">
-      <input type="checkbox" bind:checked={options.case_sensitive} />
-      <span>Case</span>
-    </label>
-    <label class="toggle">
-      <input type="checkbox" bind:checked={options.hidden} />
-      <span>Hidden</span>
-    </label>
-  </div>
 </form>
 
 <style>
@@ -191,47 +177,6 @@
     white-space: nowrap;
   }
 
-  .toggles {
-    display: flex;
-    grid-column: 1 / -1;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .toggle {
-    display: inline-flex;
-    align-items: center;
-    height: 24px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    padding: 0 11px;
-    color: var(--muted);
-    background: var(--panel);
-    font-size: 12px;
-    font-weight: 650;
-    transition:
-      border-color 120ms ease,
-      color 120ms ease,
-      background 120ms ease;
-  }
-
-  .toggle input {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .toggle:has(input:checked) {
-    border-color: var(--accent-soft);
-    color: var(--text);
-    background: var(--selection);
-  }
-
-  .toggle:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--focus);
-  }
-
   @media (max-width: 1199px) {
     .filters-action {
       display: inline-block;
@@ -289,8 +234,5 @@
       min-height: 20px;
     }
 
-    .toggles {
-      display: none;
-    }
   }
 </style>

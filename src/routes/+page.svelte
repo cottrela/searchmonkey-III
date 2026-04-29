@@ -52,8 +52,13 @@
   let isResizingPreview = $state(false);
   let filtersOpen = $state(false);
   let compactView = $state<'results' | 'preview'>('results');
+  let elapsedMs = $state(0);
   let queuedMatches: SearchMatch[] = [];
   let resultFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchStartedAt = 0;
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  let resizeFrame = 0;
+  let pendingPreviewWidth = 0;
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
@@ -155,6 +160,7 @@
       case 'started':
         searchState = 'searching';
         errorMessage = '';
+        startElapsedTimer();
         break;
       case 'batch':
         if (searchState === 'stopping') return;
@@ -172,12 +178,14 @@
           searchState = errorMessage && matches.length === 0 ? 'error' : 'done';
         }
         activeSearchId = null;
+        stopElapsedTimer();
         break;
       case 'cancelled':
         flushQueuedMatches();
         searchState = 'done';
         errorMessage = `Search stopped after ${matches.length} matches.`;
         activeSearchId = null;
+        stopElapsedTimer();
         break;
     }
   }
@@ -202,6 +210,8 @@
 
     searchState = 'searching';
     errorMessage = '';
+    elapsedMs = 0;
+    startElapsedTimer();
     hasSearched = true;
     selected = null;
     matches = [];
@@ -232,6 +242,7 @@
       selected = null;
       activeSearchId = null;
       searchState = 'error';
+      stopElapsedTimer();
       errorMessage = normalizeError(error);
     }
   }
@@ -266,6 +277,12 @@
 
     if (isEditableTarget(event.target)) return;
 
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void startSearch();
+      return;
+    }
+
     if (event.key === 'n' && matches.length) {
       event.preventDefault();
       selectOffset(event.shiftKey ? -1 : 1);
@@ -282,11 +299,6 @@
       event.preventDefault();
       selectOffset(-1);
       return;
-    }
-
-    if (event.key === 'Enter' && selected) {
-      event.preventDefault();
-      void openFile(selected.path);
     }
   }
 
@@ -384,6 +396,27 @@
     resultFlushTimer = null;
   }
 
+  function startElapsedTimer() {
+    searchStartedAt = Date.now();
+    clearElapsedTimer();
+    elapsedTimer = setInterval(() => {
+      elapsedMs = Date.now() - searchStartedAt;
+    }, 100);
+  }
+
+  function stopElapsedTimer() {
+    if (searchStartedAt) {
+      elapsedMs = Date.now() - searchStartedAt;
+    }
+    clearElapsedTimer();
+  }
+
+  function clearElapsedTimer() {
+    if (!elapsedTimer) return;
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+
   function updateViewportForMatch(match: SearchMatch) {
     const currentStart = previewViewport?.path === match.path ? previewViewport.start : 0;
     const currentEnd = previewViewport?.path === match.path ? previewViewport.end : 0;
@@ -421,11 +454,22 @@
     const updatePreviewWidth = (moveEvent: PointerEvent) => {
       const rect = workspaceElement?.getBoundingClientRect();
       if (!rect) return;
-      previewWidth = clampPreviewWidth(rect.right - moveEvent.clientX);
+      pendingPreviewWidth = clampPreviewWidth(rect.right - moveEvent.clientX);
+
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        previewWidth = pendingPreviewWidth;
+      });
     };
 
     const stopPreviewResize = () => {
       isResizingPreview = false;
+      if (resizeFrame) {
+        cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
+        previewWidth = pendingPreviewWidth;
+      }
       window.removeEventListener('pointermove', updatePreviewWidth);
       window.removeEventListener('pointerup', stopPreviewResize);
     };
@@ -546,6 +590,7 @@
       bind:includePatterns
       bind:excludePatterns
       bind:contextLines
+      bind:options
       includeHidden={options.hidden}
     />
     <ResultsPanel
@@ -616,6 +661,7 @@
           bind:includePatterns
           bind:excludePatterns
           bind:contextLines
+          bind:options
           includeHidden={options.hidden}
         />
       </div>
@@ -626,6 +672,7 @@
     state={searchState}
     totalMatches={matches.length}
     filesWithMatches={groups.length}
+    {elapsedMs}
     {errorMessage}
   />
 </main>

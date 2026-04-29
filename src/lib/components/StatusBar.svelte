@@ -5,11 +5,13 @@
     state,
     totalMatches,
     filesWithMatches,
+    elapsedMs = 0,
     errorMessage = ''
   }: {
     state: SearchState;
     totalMatches: number;
     filesWithMatches: number;
+    elapsedMs?: number;
     errorMessage?: string;
   } = $props();
 
@@ -22,6 +24,7 @@
   };
 
   const matchLabel = $derived(`${totalMatches} ${totalMatches === 1 ? 'match' : 'matches'}`);
+  const elapsedLabel = $derived(`${(elapsedMs / 1000).toFixed(2)}s`);
 </script>
 
 <footer
@@ -40,6 +43,9 @@
   <div class="metrics">
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
+    {#if elapsedMs > 0 || state === 'searching' || state === 'done'}
+      <span>{elapsedLabel}</span>
+    {/if}
     {#if state === 'searching'}
       <span>Scanning current files</span>
     {:else if state === 'stopping'}

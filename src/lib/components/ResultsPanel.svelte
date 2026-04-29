@@ -26,7 +26,7 @@
 
   const FULL_LINE_LIMIT = 200;
   const SNIPPET_CONTEXT = 64;
-  const FILE_ROW_HEIGHT = 42;
+  const FILE_ROW_HEIGHT = 50;
   const MATCH_ROW_HEIGHT = 34;
   const OVERSCAN = 12;
   const MOBILE_MATCH_LIMIT = 10;
@@ -218,6 +218,10 @@
     return filePath.slice(0, slashIndex);
   }
 
+  function copyFilename(filePath: string) {
+    copyText(filename(filePath));
+  }
+
   function visibleMobileMatches(group: FileResultGroup) {
     if (expandedFiles.has(group.path)) return group.matches;
     return group.matches.slice(0, MOBILE_MATCH_LIMIT);
@@ -353,12 +357,15 @@
       {#each visibleRows as row (row.key)}
         {#if row.type === 'file'}
           <div class="file-row" style:transform={`translateY(${row.top}px)`}>
-            <span class="file-path" title={row.path}>{row.path}</span>
+            <div class="file-title">
+              <strong title={row.path}>{filename(row.path)}</strong>
+              <span title={parentPath(row.path)}>{parentPath(row.path)}</span>
+            </div>
             <span class="file-actions">
+              <span class="count">{matchLabel(row.count)}</span>
               <button type="button" title="Open file" onclick={() => onOpen(row.path)}>Open</button>
-              <button type="button" title="Reveal file" onclick={() => onReveal(row.path)}>Reveal</button>
-              <button type="button" title="Copy path" onclick={() => copyText(row.path)}>Copy</button>
-              <span class="count">({row.count})</span>
+              <button class="hover-action" type="button" title="Reveal file" onclick={() => onReveal(row.path)}>Reveal</button>
+              <button class="hover-action" type="button" title="Copy path" onclick={() => copyText(row.path)}>Copy</button>
             </span>
           </div>
         {:else}
@@ -465,22 +472,38 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
-    height: 42px;
+    height: 50px;
     border-bottom: 1px solid var(--border-subtle);
     border-radius: 5px 5px 0 0;
-    padding: 0 11px;
+    padding: 6px 11px;
     background: var(--panel);
     user-select: none;
   }
 
-  .file-path {
+  .file-title {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .file-title strong,
+  .file-title span {
     min-width: 0;
     overflow: hidden;
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 700;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .file-title strong {
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  .file-title span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 650;
   }
 
   .count {
@@ -506,12 +529,15 @@
     font: inherit;
     font-size: 11px;
     font-weight: 800;
-    opacity: 0;
     transition: opacity 0.12s ease;
   }
 
-  .file-row:hover .file-actions button,
-  .file-row:focus-within .file-actions button {
+  .file-actions .hover-action {
+    opacity: 0;
+  }
+
+  .file-row:hover .hover-action,
+  .file-row:focus-within .hover-action {
     opacity: 1;
   }
 

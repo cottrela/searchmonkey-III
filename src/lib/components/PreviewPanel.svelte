@@ -243,22 +243,39 @@
   {/if}
 
   <div class="panel-title">
-    <div class="title-main">
-      <h2 title={preview.filePath}>{preview.filePath || 'Preview'}</h2>
-      {#if preview.filePath && activeResultNumber}
-        <span>{activeResultNumber} / {total}</span>
-      {/if}
-    </div>
     {#if preview.filePath}
-      <div class="header-actions">
-        <button class="mobile-back" type="button" onclick={onClose} title="Back to results">Back</button>
-        <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">Prev</button>
-        <button type="button" onclick={onNext} disabled={total < 2} title="Next match">Next</button>
-        <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText} title="Copy match line">Copy match</button>
-        <button type="button" onclick={() => copyText(preview.filePath)} title="Copy path">Copy path</button>
+      <div class="desktop-preview-file">
+        <div class="desktop-preview-title">
+          <h2 title={preview.filePath}>{filename(preview.filePath)}</h2>
+          {#if activeResultNumber}
+            <span>{activeResultNumber} / {total}</span>
+          {/if}
+        </div>
+        <div class="desktop-preview-path" title={parentPath(preview.filePath)}>
+          {parentPath(preview.filePath)}
+        </div>
+      </div>
+      <div class="desktop-preview-actions">
+        <div class="match-nav" aria-label="Match navigation">
+          <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">←</button>
+          <span>{activeResultNumber} / {total}</span>
+          <button type="button" onclick={onNext} disabled={total < 2} title="Next match">→</button>
+        </div>
         <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
         <button type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
+        <details>
+          <summary title="More actions" aria-label="More actions">...</summary>
+          <div class="menu">
+            <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+              Copy match
+            </button>
+            <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+            <button type="button" disabled>Open with...</button>
+          </div>
+        </details>
       </div>
+    {:else}
+      <h2>Preview</h2>
     {/if}
   </div>
 
@@ -332,13 +349,19 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
-    min-height: 47px;
+    min-height: 64px;
     border-bottom: 1px solid var(--border);
-    padding: 6px 10px 6px 14px;
+    padding: 7px 10px 7px 14px;
     background: var(--panel);
   }
 
-  .title-main {
+  .desktop-preview-file {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .desktop-preview-title {
     display: flex;
     min-width: 0;
     align-items: baseline;
@@ -354,22 +377,104 @@
     white-space: nowrap;
   }
 
-  .title-main span {
+  .desktop-preview-title span {
     flex: 0 0 auto;
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
   }
 
-  .header-actions {
+  .desktop-preview-path {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .desktop-preview-actions {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 6px;
   }
 
-  .mobile-back {
+  .match-nav {
+    display: grid;
+    grid-template-columns: 30px minmax(58px, auto) 30px;
+    align-items: center;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--input);
+  }
+
+  .match-nav button {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .match-nav span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .desktop-preview-actions details {
+    position: relative;
+  }
+
+  .desktop-preview-actions summary {
+    display: inline-grid;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    place-items: center;
+    color: var(--text);
+    background: var(--input);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 900;
+    list-style: none;
+  }
+
+  .desktop-preview-actions summary::-webkit-details-marker {
     display: none;
+  }
+
+  .desktop-preview-actions .menu {
+    position: absolute;
+    top: 34px;
+    right: 0;
+    z-index: 6;
+    display: grid;
+    min-width: 142px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--panel);
+    box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+  }
+
+  .desktop-preview-actions .menu button {
+    height: 30px;
+    border: 0;
+    border-radius: 4px;
+    padding: 0 8px;
+    background: transparent;
+    text-align: left;
+  }
+
+  .desktop-preview-actions .menu button:hover,
+  .desktop-preview-actions .menu button:focus-visible {
+    background: var(--selection);
+    outline: none;
   }
 
   .mobile-preview-toolbar,
@@ -519,13 +624,10 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
-    .header-actions {
+    .desktop-preview-actions {
       justify-content: flex-start;
     }
 
-    .mobile-back {
-      display: inline-block;
-    }
   }
 
   @media (max-width: 599px) {
@@ -586,7 +688,7 @@
       padding: 5px 8px;
     }
 
-    .header-actions {
+    .desktop-preview-actions {
       gap: 4px;
     }
 
