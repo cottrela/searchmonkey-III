@@ -11,136 +11,91 @@
   type SourceLine = {
     number: number;
     text: string;
-    active: boolean;
-    truncated: boolean;
+    isMatch: boolean;
+    matchRanges: Array<{ start: number; end: number }>;
   };
 
   type RenderLine = SourceLine & {
     segments: Segment[];
   };
 
-  const PREVIEW_LINE_LIMIT = 3000;
-  const LINE_HEIGHT = 18;
-  const OVERSCAN_LINES = 24;
+  const WRAP_LIMIT = 50_000;
 
   let {
     preview,
     errorMessage,
     total,
-    query,
-    regex,
-    caseSensitive,
     onPrevious,
     onNext
   }: {
     preview: PreviewState;
     errorMessage: string;
     total: number;
-    query: string;
-    regex: boolean;
-    caseSensitive: boolean;
     onPrevious: () => void;
     onNext: () => void;
   } = $props();
 
   let previewElement = $state<HTMLDivElement>();
-  let viewportHeight = $state(0);
-  let scrollTop = $state(0);
   let lastScrolledTarget = '';
-  let pendingScrollFrame = 0;
+  let wrapLines = $state(false);
 
   const activeResultNumber = $derived.by(() => {
     if (preview.activeMatchIndex < 0) return 0;
     return preview.matches[preview.activeMatchIndex]?.line_number ?? 0;
   });
 
-  const sourceLines = $derived.by(() => buildSourceLines(preview.content, preview.matches, preview.activeMatchIndex));
-  const totalHeight = $derived(sourceLines.length * LINE_HEIGHT);
-  const visibleStart = $derived.by(() =>
-    Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN_LINES)
+  const sourceLines = $derived.by(() => buildSourceLines(preview.filePreview));
+  const previewTextLength = $derived.by(() =>
+    sourceLines.reduce((length, line) => length + line.text.length + 1, 0)
   );
-  const visibleCount = $derived.by(() =>
-    Math.ceil(viewportHeight / LINE_HEIGHT) + OVERSCAN_LINES * 2
-  );
-  const visibleEnd = $derived.by(() =>
-    Math.min(sourceLines.length, visibleStart + visibleCount)
-  );
-  const topSpacerHeight = $derived(visibleStart * LINE_HEIGHT);
-  const bottomSpacerHeight = $derived(Math.max(0, totalHeight - visibleEnd * LINE_HEIGHT));
-  const visibleLines = $derived.by(() =>
-    sourceLines.slice(visibleStart, visibleEnd).map((line) => ({
+  const canWrap = $derived(previewTextLength < WRAP_LIMIT);
+  const effectiveWrap = $derived(wrapLines && canWrap);
+  const renderLines = $derived.by(() =>
+    sourceLines.map((line) => ({
       ...line,
-      segments: splitLine(line.text, query, regex, caseSensitive, line.active, line.truncated)
+      segments: splitLine(line.text, line.matchRanges, line.isMatch)
     }))
   );
 
-  function buildSourceLines(
-    content: string,
-    matches: PreviewState['matches'],
-    activeMatchIndex: number
-  ): SourceLine[] {
-    if (!content) return [];
-
-    const allLines = content.split(/\r?\n/);
-    const activeLineNumber =
-      activeMatchIndex >= 0 ? matches[activeMatchIndex]?.line_number : undefined;
-    const limit = Math.min(allLines.length, PREVIEW_LINE_LIMIT);
-    const lines: SourceLine[] = [];
-
-    for (let index = 0; index < limit; index += 1) {
-      const number = index + 1;
-      lines.push({
-        number,
-        text: allLines[index],
-        active: activeLineNumber === number,
-        truncated: false
-      });
-    }
-
-    if (allLines.length > PREVIEW_LINE_LIMIT) {
-      const activeIsOutsideLimit =
-        typeof activeLineNumber === 'number' && activeLineNumber > PREVIEW_LINE_LIMIT;
-
-      lines.push({
-        number: PREVIEW_LINE_LIMIT + 1,
-        active: activeIsOutsideLimit,
-        truncated: true,
-        text: activeIsOutsideLimit
-          ? `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines. Selected match is on line ${activeLineNumber.toLocaleString()}.`
-          : `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines.`
-      });
-    }
-
-    return lines;
+  function buildSourceLines(filePreview: PreviewState['filePreview']): SourceLine[] {
+    return (
+      filePreview?.lines.map((line) => ({
+        number: line.number,
+        text: line.text,
+        isMatch: line.is_match,
+        matchRanges: line.match_ranges
+      })) ?? []
+    );
   }
 
   function splitLine(
     text: string,
-    term: string,
-    isRegex: boolean,
-    useCaseSensitive: boolean,
-    active: boolean,
-    truncated: boolean
+    matchRanges: Array<{ start: number; end: number }>,
+    active: boolean
   ): Segment[] {
-    if (!term || truncated) return [{ text, match: false, active }];
-
-    const spans = isRegex ? regexSpans(text, term, useCaseSensitive) : fixedSpans(text, term, useCaseSensitive);
-    if (!spans.length) return [{ text, match: false, active }];
+    if (!matchRanges.length) return [{ text, match: false, active }];
 
     const segments: Segment[] = [];
     let cursor = 0;
 
-    for (const span of spans) {
-      if (span.start > cursor) {
-        segments.push({ text: text.slice(cursor, span.start), match: false, active });
+    for (const range of matchRanges) {
+      const start = Math.max(0, Math.min(range.start, text.length));
+      const end = Math.max(start, Math.min(range.end, text.length));
+
+      if (end <= cursor) {
+        continue;
+      }
+
+      if (start > cursor) {
+        segments.push({ text: text.slice(cursor, start), match: false, active });
       }
 
       segments.push({
-        text: text.slice(span.start, span.end),
+        text: text.slice(Math.max(start, cursor), end),
         match: true,
         active
       });
-      cursor = span.end;
+      cursor = end;
     }
 
     if (cursor < text.length) {
@@ -150,72 +105,17 @@
     return segments.length ? segments : [{ text, match: false, active }];
   }
 
-  function fixedSpans(text: string, term: string, useCaseSensitive: boolean) {
-    const spans: Array<{ start: number; end: number }> = [];
-    const haystack = useCaseSensitive ? text : text.toLowerCase();
-    const needle = useCaseSensitive ? term : term.toLowerCase();
-    let cursor = 0;
-    let index = haystack.indexOf(needle, cursor);
-
-    while (index !== -1) {
-      spans.push({ start: index, end: index + term.length });
-      cursor = index + term.length;
-      index = haystack.indexOf(needle, cursor);
-    }
-
-    return spans;
-  }
-
-  function regexSpans(text: string, term: string, useCaseSensitive: boolean) {
-    const spans: Array<{ start: number; end: number }> = [];
-
-    try {
-      const expression = new RegExp(term, useCaseSensitive ? 'g' : 'gi');
-      let match: RegExpExecArray | null;
-
-      while ((match = expression.exec(text)) !== null) {
-        if (match[0].length === 0) {
-          expression.lastIndex += 1;
-          continue;
-        }
-
-        spans.push({ start: match.index, end: match.index + match[0].length });
-      }
-    } catch {
-      return [];
-    }
-
-    return spans;
-  }
-
-  function updateScrollPosition() {
-    if (pendingScrollFrame) return;
-
-    pendingScrollFrame = requestAnimationFrame(() => {
-      pendingScrollFrame = 0;
-      scrollTop = previewElement?.scrollTop ?? 0;
-    });
-  }
-
-  function activeLineOffset() {
-    const activeIndex = sourceLines.findIndex((line) => line.active);
-    if (activeIndex < 0) return null;
-
-    return Math.max(0, activeIndex * LINE_HEIGHT - viewportHeight / 2 + LINE_HEIGHT / 2);
-  }
-
   $effect(() => {
-    const target = `${preview.filePath}:${preview.activeMatchIndex}:${preview.content.length}`;
+    const target = `${preview.filePath}:${preview.activeMatchIndex}:${previewTextLength}`;
     if (!previewElement || !sourceLines.length || target === lastScrolledTarget) return;
 
     lastScrolledTarget = target;
 
     tick().then(() => {
-      const offset = activeLineOffset();
-      if (offset === null || !previewElement) return;
+      const activeLine = previewElement?.querySelector<HTMLElement>("[data-active-match='true']");
+      if (!activeLine) return;
 
-      previewElement.scrollTop = offset;
-      scrollTop = offset;
+      activeLine.scrollIntoView({ block: 'center' });
     });
   });
 </script>
@@ -233,25 +133,28 @@
   {:else if preview.filePath}
     <div class="preview-body">
       <div class="file" title={preview.filePath}>{preview.filePath}</div>
-      {#if preview.content}
+      <label class="wrap-toggle">
+        <input type="checkbox" bind:checked={wrapLines} disabled={!canWrap} />
+        <span>Wrap lines</span>
+      </label>
+      {#if !canWrap}
+        <div class="wrap-message">Line wrapping is disabled for previews over 50,000 characters.</div>
+      {/if}
+      {#if preview.filePreview}
         <div
-          bind:clientHeight={viewportHeight}
           bind:this={previewElement}
           class="preview"
-          onscroll={updateScrollPosition}
+          class:wrap={effectiveWrap}
         >
-          <div style:height={`${topSpacerHeight}px`}></div>
-          {#each visibleLines as line (line.number)}
+          {#each renderLines as line (line.number)}
             <div
-              class:truncated={line.truncated}
               class="line"
-              data-active-match={line.active ? 'true' : undefined}
-              data-line={line.truncated ? '' : line.number}
+              data-active-match={line.isMatch ? 'true' : undefined}
             >
-              <span class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</span>
+              <span class="gutter">{line.number}</span>
+              <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
             </div>
           {/each}
-          <div style:height={`${bottomSpacerHeight}px`}></div>
         </div>
       {:else}
         <div class="empty inline">Reading file...</div>
@@ -300,7 +203,7 @@
 
   .preview-body {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     min-height: 0;
     padding: 14px;
   }
@@ -313,6 +216,27 @@
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .wrap-toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 10px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .wrap-toggle input {
+    margin: 0;
+  }
+
+  .wrap-message {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 16px;
   }
 
   .preview {
@@ -329,14 +253,13 @@
   }
 
   .line {
-    display: flex;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
     min-width: max-content;
-    height: 18px;
+    min-height: 18px;
   }
 
-  .line::before {
-    content: attr(data-line);
-    flex: 0 0 44px;
+  .gutter {
     border-right: 1px solid var(--border-subtle);
     padding: 0 6px 0 4px;
     color: var(--muted);
@@ -354,23 +277,20 @@
   }
 
   .source {
-    flex: 0 0 auto;
     padding: 0 8px;
+    overflow-wrap: normal;
     white-space: pre;
+    word-break: normal;
     user-select: text;
   }
 
-  .line.truncated {
-    min-width: 100%;
+  .preview.wrap .line {
+    min-width: 0;
   }
 
-  .line.truncated .source {
-    color: var(--muted);
-    font-family:
-      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-size: 12px;
-    font-weight: 700;
-    white-space: normal;
+  .preview.wrap .source {
+    min-width: 0;
+    white-space: pre-wrap;
   }
 
   .match {

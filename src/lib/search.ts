@@ -1,12 +1,16 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { SearchMatch, SearchRequest, SearchStreamEvent } from './types';
+import type { FilePreview, SearchMatch, SearchRequest, SearchStreamEvent, SearchSubmatch } from './types';
 
 export async function searchFiles(request: SearchRequest): Promise<SearchMatch[]> {
   return invoke<SearchMatch[]>('search_files', { request });
 }
 
-export async function readFile(path: string): Promise<string> {
-  return invoke<string>('read_file', { path });
+export async function readFilePreview(
+  path: string,
+  lineNumber: number,
+  matchRanges: SearchSubmatch[]
+): Promise<FilePreview> {
+  return invoke<FilePreview>('read_file_preview', { path, lineNumber, matchRanges });
 }
 
 export async function homeDir(): Promise<string> {

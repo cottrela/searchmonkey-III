@@ -5,9 +5,15 @@
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
-  import { homeDir, readFile, startSearch as startSearchCommand, stopSearch } from '$lib/search';
+  import {
+    homeDir,
+    readFilePreview,
+    startSearch as startSearchCommand,
+    stopSearch
+  } from '$lib/search';
   import type {
     FileResultGroup,
+    FilePreview,
     PreviewState,
     SearchMatch,
     SearchOptions,
@@ -33,15 +39,9 @@
   let hasSearched = $state(false);
   let activeSearchId = $state<number | null>(null);
   let nextSearchId = 1;
-  let preview = $state<PreviewState>({
-    filePath: '',
-    content: '',
-    matches: [],
-    activeMatchIndex: -1
-  });
+  let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
-  let loadedPreviewPath = '';
-  let loadedPreviewContent = '';
+  let loadedPreviewKey = '';
   let previewLoadId = 0;
   let workspaceElement = $state<HTMLElement>();
   let previewWidth = $state(360);
@@ -52,6 +52,18 @@
     if (!selected) return -1;
     const current = selected;
     return matches.findIndex((match) => sameMatch(match, current));
+  });
+  const preview = $derived.by(() => {
+    if (!selected) {
+      return {
+        filePath: '',
+        filePreview: null,
+        matches: [],
+        activeMatchIndex: -1
+      } satisfies PreviewState;
+    }
+
+    return previewFor(selected.path, previewData);
   });
 
   onMount(() => {
@@ -90,7 +102,7 @@
     return matches.filter((match) => match.path === filePath);
   }
 
-  function previewFor(filePath: string, content: string) {
+  function previewFor(filePath: string, filePreview: PreviewState['filePreview']) {
     const fileMatches = matchesForPath(filePath);
     const activeSelection = selected;
     const activeMatchIndex = activeSelection
@@ -99,7 +111,7 @@
 
     return {
       filePath,
-      content,
+      filePreview,
       matches: fileMatches,
       activeMatchIndex
     };
@@ -257,37 +269,29 @@
 
   $effect(() => {
     if (!selected) {
-      loadedPreviewPath = '';
-      loadedPreviewContent = '';
+      loadedPreviewKey = '';
       previewLoadId += 1;
       previewError = '';
-      preview = {
-        filePath: '',
-        content: '',
-        matches: [],
-        activeMatchIndex: -1
-      };
+      previewData = null;
       return;
     }
 
     const filePath = selected.path;
+    const previewKey = `${filePath}:${selected.line_number}:${JSON.stringify(selected.submatches)}`;
 
-    if (loadedPreviewPath === filePath) {
-      preview = previewFor(filePath, loadedPreviewContent);
+    if (loadedPreviewKey === previewKey) {
       return;
     }
 
     const loadId = ++previewLoadId;
-    loadedPreviewPath = filePath;
-    loadedPreviewContent = '';
+    loadedPreviewKey = previewKey;
     previewError = '';
-    preview = previewFor(filePath, '');
+    previewData = null;
 
-    readFile(filePath)
-      .then((content) => {
+    readFilePreview(filePath, selected.line_number, selected.submatches)
+      .then((filePreview) => {
         if (loadId !== previewLoadId || selected?.path !== filePath) return;
-        loadedPreviewContent = content;
-        preview = previewFor(filePath, content);
+        previewData = filePreview;
       })
       .catch((error) => {
         if (loadId !== previewLoadId || selected?.path !== filePath) return;
@@ -297,7 +301,7 @@
 </script>
 
 <svelte:head>
-  <title>SearchMonkey III</title>
+  <title>Searchmonkey III</title>
 </svelte:head>
 
 <main class="app-shell">
@@ -336,9 +340,6 @@
       {preview}
       errorMessage={previewError}
       total={matches.length}
-      {query}
-      regex={options.regex}
-      caseSensitive={options.case_sensitive}
       onPrevious={() => selectOffset(-1)}
       onNext={() => selectOffset(1)}
     />

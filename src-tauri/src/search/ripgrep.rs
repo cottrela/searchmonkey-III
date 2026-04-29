@@ -1,4 +1,4 @@
-use super::{SearchMatch, SearchProvider, SearchRequest};
+use super::{SearchMatch, SearchProvider, SearchRequest, SearchSubmatch};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -86,19 +86,55 @@ impl RipgrepSidecarProvider {
 
         let data = &json["data"];
 
+        let line_text = data["lines"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_end()
+            .to_string();
+        let submatches = data["submatches"]
+            .as_array()
+            .map(|items| parse_submatches(items, &line_text))
+            .unwrap_or_default();
+
         Some(SearchMatch {
             path: data["path"]["text"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
             line_number: data["line_number"].as_u64().unwrap_or(0),
-            line_text: data["lines"]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .trim_end()
-                .to_string(),
+            line_text,
+            submatches,
         })
     }
+}
+
+fn parse_submatches(items: &[Value], line_text: &str) -> Vec<SearchSubmatch> {
+    let mut submatches = items
+        .iter()
+        .filter_map(|item| {
+            let start = item["start"].as_u64()? as usize;
+            let end = item["end"].as_u64()? as usize;
+
+            if start >= end || end > line_text.len() {
+                return None;
+            }
+
+            Some(SearchSubmatch {
+                start: byte_to_utf16_offset(line_text, start),
+                end: byte_to_utf16_offset(line_text, end),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    submatches.sort_by_key(|submatch| (submatch.start, submatch.end));
+    submatches
+}
+
+fn byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
+    text.char_indices()
+        .take_while(|(index, _)| *index < byte_offset)
+        .map(|(_, character)| character.len_utf16())
+        .sum()
 }
 
 #[async_trait]

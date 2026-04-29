@@ -16,6 +16,29 @@ pub struct SearchMatch {
     pub path: String,
     pub line_number: u64,
     pub line_text: String,
+    pub submatches: Vec<SearchSubmatch>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SearchSubmatch {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePreview {
+    pub path: String,
+    pub start_line: u64,
+    pub lines: Vec<FilePreviewLine>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePreviewLine {
+    pub number: u64,
+    pub text: String,
+    pub is_match: bool,
+    pub match_ranges: Vec<SearchSubmatch>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -6,12 +6,14 @@ use std::sync::Mutex;
 use std::thread;
 
 use search::{
-    ripgrep::RipgrepSidecarProvider, SearchMatch, SearchProvider, SearchRequest, SearchStreamEvent,
+    ripgrep::RipgrepSidecarProvider, FilePreview, FilePreviewLine, SearchMatch, SearchProvider,
+    SearchRequest, SearchStreamEvent, SearchSubmatch,
 };
 use tauri::{ipc::Channel, Manager, State};
 
 const SEARCH_BATCH_SIZE: usize = 100;
 const UI_RESULT_LIMIT: usize = 100_000;
+const PREVIEW_CONTEXT_LINES: u64 = 50;
 
 #[derive(Default)]
 struct SearchRuntime {
@@ -38,8 +40,52 @@ async fn search_files(
 }
 
 #[tauri::command]
-fn read_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|err| err.to_string())
+fn read_file_preview(
+    path: String,
+    line_number: u64,
+    match_ranges: Vec<SearchSubmatch>,
+) -> Result<FilePreview, String> {
+    if line_number == 0 {
+        return Err("Cannot preview a match without a line number.".to_string());
+    }
+
+    let start_line = line_number.saturating_sub(PREVIEW_CONTEXT_LINES).max(1);
+    let end_line = line_number.saturating_add(PREVIEW_CONTEXT_LINES);
+    let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    let mut saw_after_window = false;
+
+    for (index, line) in reader.lines().enumerate() {
+        let number = index as u64 + 1;
+
+        if number < start_line {
+            continue;
+        }
+
+        if number > end_line {
+            saw_after_window = true;
+            break;
+        }
+
+        lines.push(FilePreviewLine {
+            number,
+            text: line.map_err(|err| err.to_string())?,
+            is_match: number == line_number,
+            match_ranges: if number == line_number {
+                match_ranges.clone()
+            } else {
+                Vec::new()
+            },
+        });
+    }
+
+    Ok(FilePreview {
+        path,
+        start_line,
+        lines,
+        truncated: start_line > 1 || saw_after_window,
+    })
 }
 
 #[tauri::command]
@@ -291,7 +337,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             home_dir,
-            read_file,
+            read_file_preview,
             search_files,
             start_search,
             stop_search

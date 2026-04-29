@@ -10,6 +10,26 @@ export type SearchMatch = {
   path: string;
   line_number: number;
   line_text: string;
+  submatches: SearchSubmatch[];
+};
+
+export type SearchSubmatch = {
+  start: number;
+  end: number;
+};
+
+export type FilePreview = {
+  path: string;
+  start_line: number;
+  lines: FilePreviewLine[];
+  truncated: boolean;
+};
+
+export type FilePreviewLine = {
+  number: number;
+  text: string;
+  is_match: boolean;
+  match_ranges: SearchSubmatch[];
 };
 
 export type SearchOptions = Pick<SearchRequest, 'regex' | 'case_sensitive' | 'hidden'>;
@@ -23,7 +43,7 @@ export type FileResultGroup = {
 
 export type PreviewState = {
   filePath: string;
-  content: string;
+  filePreview: FilePreview | null;
   matches: SearchMatch[];
   activeMatchIndex: number;
 };

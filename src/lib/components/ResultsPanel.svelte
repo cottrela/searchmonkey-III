@@ -1,6 +1,14 @@
 <script lang="ts">
   import type { FileResultGroup, SearchMatch, SearchState } from '$lib/types';
 
+  type SnippetPart = {
+    text: string;
+    hit: boolean;
+  };
+
+  const FULL_LINE_LIMIT = 200;
+  const SNIPPET_CONTEXT = 64;
+
   let {
     groups,
     query,
@@ -23,23 +31,59 @@
     return Boolean(a && a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text);
   }
 
-  function snippetParts(text: string, term: string) {
-    if (regex || !term) return [{ text, hit: false }];
+  function snippetParts(match: SearchMatch, term: string): SnippetPart[] {
+    const spans = match.submatches?.length ? match.submatches : fallbackSpans(match.line_text, term);
+    const snippet = snippetWindow(match.line_text, spans);
+    const visibleSpans = spans
+      .map((span) => ({
+        start: Math.max(span.start, snippet.start) - snippet.start,
+        end: Math.min(span.end, snippet.end) - snippet.start
+      }))
+      .filter((span) => span.start < span.end);
 
-    const lowerText = text.toLowerCase();
-    const lowerTerm = term.toLowerCase();
-    const parts: Array<{ text: string; hit: boolean }> = [];
+    const parts = splitSnippet(match.line_text.slice(snippet.start, snippet.end), visibleSpans);
+
+    if (snippet.clippedStart) {
+      parts.unshift({ text: '...', hit: false });
+    }
+
+    if (snippet.clippedEnd) {
+      parts.push({ text: '...', hit: false });
+    }
+
+    return parts;
+  }
+
+  function snippetWindow(text: string, spans: Array<{ start: number; end: number }>) {
+    if (text.length <= FULL_LINE_LIMIT || spans.length === 0) {
+      return { start: 0, end: text.length, clippedStart: false, clippedEnd: false };
+    }
+
+    const anchor = spans[0];
+    const start = Math.max(0, anchor.start - SNIPPET_CONTEXT);
+    const end = Math.min(text.length, anchor.end + SNIPPET_CONTEXT);
+
+    return {
+      start,
+      end,
+      clippedStart: start > 0,
+      clippedEnd: end < text.length
+    };
+  }
+
+  function splitSnippet(text: string, spans: Array<{ start: number; end: number }>): SnippetPart[] {
+    if (!spans.length) return [{ text, hit: false }];
+
+    const parts: SnippetPart[] = [];
     let cursor = 0;
-    let index = lowerText.indexOf(lowerTerm);
 
-    while (index !== -1) {
-      if (index > cursor) {
-        parts.push({ text: text.slice(cursor, index), hit: false });
+    for (const span of spans) {
+      if (span.start > cursor) {
+        parts.push({ text: text.slice(cursor, span.start), hit: false });
       }
 
-      parts.push({ text: text.slice(index, index + term.length), hit: true });
-      cursor = index + term.length;
-      index = lowerText.indexOf(lowerTerm, cursor);
+      parts.push({ text: text.slice(span.start, span.end), hit: true });
+      cursor = span.end;
     }
 
     if (cursor < text.length) {
@@ -47,6 +91,24 @@
     }
 
     return parts.length ? parts : [{ text, hit: false }];
+  }
+
+  function fallbackSpans(text: string, term: string) {
+    if (regex || !term) return [];
+
+    const lowerText = text.toLowerCase();
+    const lowerTerm = term.toLowerCase();
+    const spans: Array<{ start: number; end: number }> = [];
+    let cursor = 0;
+    let index = lowerText.indexOf(lowerTerm);
+
+    while (index !== -1) {
+      spans.push({ start: index, end: index + term.length });
+      cursor = index + term.length;
+      index = lowerText.indexOf(lowerTerm, cursor);
+    }
+
+    return spans;
   }
 </script>
 
@@ -91,7 +153,7 @@
               >
                 <span class="line">{match.line_number}</span>
                 <span class="snippet">
-                  {#each snippetParts(match.line_text, query) as part}
+                  {#each snippetParts(match, query) as part}
                     {#if part.hit}
                       <mark>{part.text}</mark>
                     {:else}
