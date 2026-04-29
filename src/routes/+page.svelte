@@ -44,9 +44,14 @@
   let previewError = $state('');
   let loadedPreviewKey = '';
   let previewLoadId = 0;
+  let previewViewport = $state<{ path: string; start: number; end: number } | null>(null);
   let workspaceElement = $state<HTMLElement>();
   let previewWidth = $state(360);
   let isResizingPreview = $state(false);
+
+  const PREVIEW_CONTEXT_LINES = 50;
+  const PREVIEW_EDGE_MARGIN = 10;
+  const PREVIEW_LOAD_TIMEOUT_MS = 4000;
 
   const groups = $derived.by(() => groupMatches(matches));
   const selectedIndex = $derived.by(() => {
@@ -60,7 +65,8 @@
         filePath: '',
         filePreview: null,
         matches: [],
-        activeMatchIndex: -1
+        activeMatchIndex: -1,
+        activeMatch: null
       } satisfies PreviewState;
     }
 
@@ -99,22 +105,26 @@
     return a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text;
   }
 
-  function matchesForPath(filePath: string) {
-    return matches.filter((match) => match.path === filePath);
-  }
-
   function previewFor(filePath: string, filePreview: PreviewState['filePreview']) {
-    const fileMatches = matchesForPath(filePath);
     const activeSelection = selected;
-    const activeMatchIndex = activeSelection
-      ? fileMatches.findIndex((match) => sameMatch(match, activeSelection))
-      : -1;
+    const viewportStart = filePreview?.start_line ?? previewViewport?.start ?? 0;
+    const viewportEnd = filePreview?.end_line ?? previewViewport?.end ?? 0;
+    const visibleMatches =
+      viewportStart && viewportEnd
+        ? matches.filter(
+            (match) =>
+              match.path === filePath &&
+              match.line_number >= viewportStart &&
+              match.line_number <= viewportEnd
+          )
+        : [];
 
     return {
       filePath,
       filePreview,
-      matches: fileMatches,
-      activeMatchIndex
+      matches: visibleMatches,
+      activeMatchIndex: selectedIndex,
+      activeMatch: activeSelection
     };
   }
 
@@ -135,7 +145,6 @@
       case 'batch':
         if (searchState === 'stopping') return;
         matches = [...matches, ...event.results].slice(0, 100000);
-        selected = selected ?? event.results[0] ?? null;
         break;
       case 'error':
         errorMessage = event.message;
@@ -227,6 +236,7 @@
   }
 
   function selectMatch(match: SearchMatch) {
+    previewViewport = updateViewportForMatch(match);
     selected = match;
   }
 
@@ -235,7 +245,27 @@
 
     const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
     const nextIndex = (currentIndex + offset + matches.length) % matches.length;
-    selected = matches[nextIndex];
+    const nextMatch = matches[nextIndex];
+    previewViewport = updateViewportForMatch(nextMatch);
+    selected = nextMatch;
+  }
+
+  function updateViewportForMatch(match: SearchMatch) {
+    const currentStart = previewViewport?.path === match.path ? previewViewport.start : 0;
+    const currentEnd = previewViewport?.path === match.path ? previewViewport.end : 0;
+    const selectedLine = match.line_number;
+    const isVisible =
+      selectedLine >= currentStart + PREVIEW_EDGE_MARGIN &&
+      selectedLine <= currentEnd - PREVIEW_EDGE_MARGIN;
+
+    if (isVisible) {
+      return previewViewport;
+    }
+
+    const start = Math.max(1, selectedLine - PREVIEW_CONTEXT_LINES);
+    const end = selectedLine + PREVIEW_CONTEXT_LINES;
+
+    return { path: match.path, start, end };
   }
 
   function clampPreviewWidth(width: number) {
@@ -276,11 +306,16 @@
       previewLoadId += 1;
       previewError = '';
       previewData = null;
+      previewViewport = null;
       return;
     }
 
     const filePath = selected.path;
-    const previewKey = `${filePath}:${selected.line_number}:${JSON.stringify(selected.submatches)}`;
+    const nextViewport = updateViewportForMatch(selected);
+
+    if (!nextViewport) return;
+
+    const previewKey = `${filePath}:${nextViewport.start}:${nextViewport.end}`;
 
     if (loadedPreviewKey === previewKey) {
       return;
@@ -291,7 +326,11 @@
     previewError = '';
     previewData = null;
 
-    readFilePreview(filePath, selected.line_number, selected.submatches)
+    withTimeout(
+      readFilePreview(filePath, nextViewport.start, nextViewport.end),
+      PREVIEW_LOAD_TIMEOUT_MS,
+      'Preview is taking too long. Search is still usable; try another result or a smaller file.'
+    )
       .then((filePreview) => {
         if (loadId !== previewLoadId || selected?.path !== filePath) return;
         previewData = filePreview;
@@ -301,6 +340,15 @@
         previewError = normalizeError(error);
       });
   });
+
+  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+  }
 </script>
 
 <svelte:head>

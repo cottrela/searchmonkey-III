@@ -12,6 +12,7 @@
     number: number;
     text: string;
     isMatch: boolean;
+    isActive: boolean;
     matchRanges: Array<{ start: number; end: number }>;
   };
 
@@ -41,10 +42,12 @@
 
   const activeResultNumber = $derived.by(() => {
     if (preview.activeMatchIndex < 0) return 0;
-    return preview.matches[preview.activeMatchIndex]?.line_number ?? 0;
+    return preview.activeMatchIndex + 1;
   });
 
-  const sourceLines = $derived.by(() => buildSourceLines(preview.filePreview));
+  const sourceLines = $derived.by(() =>
+    buildSourceLines(preview.filePreview, preview.matches, preview.activeMatch)
+  );
   const previewTextLength = $derived.by(() =>
     sourceLines.reduce((length, line) => length + line.text.length + 1, 0)
   );
@@ -53,19 +56,55 @@
   const renderLines = $derived.by(() =>
     sourceLines.map((line) => ({
       ...line,
-      segments: splitLine(line.text, line.matchRanges, line.isMatch)
+      segments: splitLine(line.text, line.matchRanges, line.isActive)
     }))
   );
 
-  function buildSourceLines(filePreview: PreviewState['filePreview']): SourceLine[] {
+  function buildSourceLines(
+    filePreview: PreviewState['filePreview'],
+    matches: PreviewState['matches'],
+    active: PreviewState['matches'][number] | null
+  ): SourceLine[] {
+    const matchesByLine = new Map<number, PreviewState['matches']>();
+
+    for (const match of matches) {
+      const lineMatches = matchesByLine.get(match.line_number);
+
+      if (lineMatches) {
+        lineMatches.push(match);
+      } else {
+        matchesByLine.set(match.line_number, [match]);
+      }
+    }
+
     return (
       filePreview?.lines.map((line) => ({
         number: line.number,
         text: line.text,
-        isMatch: line.is_match,
-        matchRanges: line.match_ranges
+        isMatch: matchesByLine.has(line.number),
+        isActive: active?.line_number === line.number,
+        matchRanges: mergeMatchRanges(matchesByLine.get(line.number) ?? [])
       })) ?? []
     );
+  }
+
+  function mergeMatchRanges(matches: PreviewState['matches']): Array<{ start: number; end: number }> {
+    const ranges = matches
+      .flatMap((match) => match.submatches)
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged: Array<{ start: number; end: number }> = [];
+
+    for (const range of ranges) {
+      const previous = merged.at(-1);
+
+      if (previous && range.start <= previous.end) {
+        previous.end = Math.max(previous.end, range.end);
+      } else {
+        merged.push({ start: range.start, end: range.end });
+      }
+    }
+
+    return merged;
   }
 
   function splitLine(
@@ -106,7 +145,9 @@
   }
 
   $effect(() => {
-    const target = `${preview.filePath}:${preview.activeMatchIndex}:${previewTextLength}`;
+    const target = preview.filePreview
+      ? `${preview.filePath}:${preview.filePreview.start_line}:${preview.filePreview.end_line}:${previewTextLength}`
+      : '';
     if (!previewElement || !sourceLines.length || target === lastScrolledTarget) return;
 
     lastScrolledTarget = target;
@@ -124,7 +165,7 @@
   <div class="panel-title">
     <h2>Preview</h2>
     {#if preview.filePath && activeResultNumber}
-      <span>{preview.activeMatchIndex + 1} / {preview.matches.length}</span>
+      <span>{activeResultNumber} / {total}</span>
     {/if}
   </div>
 
@@ -149,7 +190,8 @@
           {#each renderLines as line (line.number)}
             <div
               class="line"
-              data-active-match={line.isMatch ? 'true' : undefined}
+              data-match={line.isMatch ? 'true' : undefined}
+              data-active-match={line.isActive ? 'true' : undefined}
             >
               <span class="gutter">{line.number}</span>
               <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
@@ -274,6 +316,10 @@
     background: #fff4cf;
     outline: 1px solid #c88f16;
     outline-offset: -1px;
+  }
+
+  .line[data-match='true']:not([data-active-match='true']) {
+    background: #fff9e8;
   }
 
   .source {

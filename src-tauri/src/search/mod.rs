@@ -31,6 +31,7 @@ pub struct SearchSubmatch {
 pub struct FilePreview {
     pub path: String,
     pub start_line: u64,
+    pub end_line: u64,
     pub lines: Vec<FilePreviewLine>,
     pub truncated: bool,
 }

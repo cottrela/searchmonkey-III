@@ -23,6 +23,7 @@ export type SearchSubmatch = {
 export type FilePreview = {
   path: string;
   start_line: number;
+  end_line: number;
   lines: FilePreviewLine[];
   truncated: boolean;
 };
@@ -48,6 +49,7 @@ export type PreviewState = {
   filePreview: FilePreview | null;
   matches: SearchMatch[];
   activeMatchIndex: number;
+  activeMatch: SearchMatch | null;
 };
 
 export type SearchStreamEvent =

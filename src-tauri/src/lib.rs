@@ -7,13 +7,13 @@ use std::thread;
 
 use search::{
     ripgrep::RipgrepSidecarProvider, FilePreview, FilePreviewLine, SearchMatch, SearchProvider,
-    SearchRequest, SearchStreamEvent, SearchSubmatch,
+    SearchRequest, SearchStreamEvent,
 };
 use tauri::{ipc::Channel, Manager, State};
 
 const SEARCH_BATCH_SIZE: usize = 100;
 const UI_RESULT_LIMIT: usize = 100_000;
-const PREVIEW_CONTEXT_LINES: u64 = 50;
+const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 
 #[derive(Default)]
 struct SearchRuntime {
@@ -40,17 +40,25 @@ async fn search_files(
 }
 
 #[tauri::command]
-fn read_file_preview(
+async fn read_file_preview(
     path: String,
-    line_number: u64,
-    match_ranges: Vec<SearchSubmatch>,
+    start_line: u64,
+    end_line: u64,
 ) -> Result<FilePreview, String> {
-    if line_number == 0 {
-        return Err("Cannot preview a match without a line number.".to_string());
+    if start_line == 0 || end_line == 0 || start_line > end_line {
+        return Err("Preview line range is invalid.".to_string());
     }
 
-    let start_line = line_number.saturating_sub(PREVIEW_CONTEXT_LINES).max(1);
-    let end_line = line_number.saturating_add(PREVIEW_CONTEXT_LINES);
+    tauri::async_runtime::spawn_blocking(move || read_file_preview_range(path, start_line, end_line))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn read_file_preview_range(
+    path: String,
+    start_line: u64,
+    end_line: u64,
+) -> Result<FilePreview, String> {
     let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
     let reader = BufReader::new(file);
     let mut lines = Vec::new();
@@ -59,7 +67,12 @@ fn read_file_preview(
     for (index, line) in reader.lines().enumerate() {
         let number = index as u64 + 1;
 
+        if number > PREVIEW_MAX_SCAN_LINES {
+            return Err("Preview skipped because the match is too deep in a large file.".to_string());
+        }
+
         if number < start_line {
+            line.map_err(|err| err.to_string())?;
             continue;
         }
 
@@ -68,21 +81,22 @@ fn read_file_preview(
             break;
         }
 
+        let text = line.map_err(|err| err.to_string())?;
+
         lines.push(FilePreviewLine {
             number,
-            text: line.map_err(|err| err.to_string())?,
-            is_match: number == line_number,
-            match_ranges: if number == line_number {
-                match_ranges.clone()
-            } else {
-                Vec::new()
-            },
+            text,
+            is_match: false,
+            match_ranges: Vec::new(),
         });
     }
+
+    let actual_end_line = lines.last().map(|line| line.number).unwrap_or(start_line);
 
     Ok(FilePreview {
         path,
         start_line,
+        end_line: actual_end_line,
         lines,
         truncated: start_line > 1 || saw_after_window,
     })
