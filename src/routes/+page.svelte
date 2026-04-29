@@ -75,10 +75,10 @@
         searchState = 'searching';
         errorMessage = '';
         break;
-      case 'match':
+      case 'batch':
         if (searchState === 'stopping') return;
-        matches = [...matches, event.result];
-        selected = selected ?? event.result;
+        matches = [...matches, ...event.results].slice(0, 1000);
+        selected = selected ?? event.results[0] ?? null;
         break;
       case 'error':
         errorMessage = event.message;

@@ -24,9 +24,9 @@ pub enum SearchStreamEvent {
     Started {
         search_id: u64,
     },
-    Match {
+    Batch {
         search_id: u64,
-        result: SearchMatch,
+        results: Vec<SearchMatch>,
     },
     Error {
         search_id: u64,

@@ -23,7 +23,7 @@ export type FileResultGroup = {
 
 export type SearchStreamEvent =
   | SearchStartedEvent
-  | SearchMatchEvent
+  | SearchBatchEvent
   | SearchErrorEvent
   | SearchCompleteEvent
   | {
@@ -37,10 +37,10 @@ export type SearchStartedEvent = {
   search_id: number;
 };
 
-export type SearchMatchEvent = {
-  type: 'match';
+export type SearchBatchEvent = {
+  type: 'batch';
   search_id: number;
-  result: SearchMatch;
+  results: SearchMatch[];
 };
 
 export type SearchErrorEvent = {

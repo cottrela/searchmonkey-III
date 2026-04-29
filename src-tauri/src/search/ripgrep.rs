@@ -2,20 +2,36 @@ use super::{SearchMatch, SearchProvider, SearchRequest};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
-use tauri_plugin_shell::ShellExt;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 
 pub struct RipgrepSidecarProvider {
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
 }
 
 impl RipgrepSidecarProvider {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
-        Self { app_handle }
+        Self {
+            _app_handle: app_handle,
+        }
     }
 
-    fn args(request: SearchRequest) -> Vec<String> {
-        let mut args = vec!["--json".to_string(), "--line-number".to_string()];
+    pub fn args(request: SearchRequest) -> Vec<String> {
+        let mut args = vec![
+            "--json".to_string(),
+            "--line-number".to_string(),
+            "--max-filesize".to_string(),
+            "1M".to_string(),
+            "--max-count".to_string(),
+            "1000".to_string(),
+            "--glob".to_string(),
+            "!node_modules/**".to_string(),
+            "--glob".to_string(),
+            "!target/**".to_string(),
+            "--glob".to_string(),
+            "!dist/**".to_string(),
+        ];
 
         if !request.regex {
             args.push("--fixed-strings".to_string());
@@ -35,16 +51,15 @@ impl RipgrepSidecarProvider {
         args
     }
 
-    pub fn spawn(
-        &self,
-        request: SearchRequest,
-    ) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild)> {
-        Ok(self
-            .app_handle
-            .shell()
-            .sidecar("rg")?
+    pub fn spawn(&self, request: SearchRequest) -> Result<Child> {
+        let mut command = Command::new(sidecar_path("rg")?);
+        command
             .args(Self::args(request))
-            .spawn()?)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        Ok(command.spawn()?)
     }
 
     pub fn parse_match(line: &[u8]) -> Option<SearchMatch> {
@@ -71,17 +86,51 @@ impl RipgrepSidecarProvider {
 #[async_trait]
 impl SearchProvider for RipgrepSidecarProvider {
     async fn search(&self, request: SearchRequest) -> Result<Vec<SearchMatch>> {
-        let (mut rx, _child) = self.spawn(request)?;
+        let mut child = self.spawn(request)?;
         let mut matches = Vec::new();
 
-        while let Some(event) = rx.recv().await {
-            if let CommandEvent::Stdout(line) = event {
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+
+            for line in reader.split(b'\n') {
+                let line = line?;
                 if let Some(result) = Self::parse_match(&line) {
                     matches.push(result);
                 }
             }
         }
 
+        let _ = child.wait();
         Ok(matches)
     }
+}
+
+pub fn sidecar_path(program: &str) -> Result<PathBuf> {
+    let exe_path = std::env::current_exe()?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Current executable has no parent directory"))?;
+    let base_dir = if exe_dir.ends_with("deps") {
+        exe_dir.parent().unwrap_or(exe_dir)
+    } else {
+        exe_dir
+    };
+
+    let mut command_path = base_dir.join(Path::new(program));
+
+    #[cfg(windows)]
+    {
+        if command_path.extension().is_none() {
+            command_path.as_mut_os_string().push(".exe");
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if command_path.extension().is_some_and(|ext| ext == "exe") {
+            command_path.set_extension("");
+        }
+    }
+
+    Ok(command_path)
 }
