@@ -9,6 +9,10 @@ export async function readFile(path: string): Promise<string> {
   return invoke<string>('read_file', { path });
 }
 
+export async function homeDir(): Promise<string> {
+  return invoke<string>('home_dir');
+}
+
 export async function startSearch(
   request: SearchRequest,
   searchId: number,

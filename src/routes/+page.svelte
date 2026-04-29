@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
-  import { readFile, startSearch as startSearchCommand, stopSearch } from '$lib/search';
+  import { homeDir, readFile, startSearch as startSearchCommand, stopSearch } from '$lib/search';
   import type {
     FileResultGroup,
     PreviewState,
@@ -51,6 +52,16 @@
     if (!selected) return -1;
     const current = selected;
     return matches.findIndex((match) => sameMatch(match, current));
+  });
+
+  onMount(() => {
+    homeDir()
+      .then((home) => {
+        if (!path) path = home;
+      })
+      .catch(() => {
+        if (!path) path = '/';
+      });
   });
 
   function groupMatches(searchMatches: SearchMatch[]): FileResultGroup[] {

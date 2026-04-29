@@ -8,14 +8,20 @@
     active: boolean;
   };
 
-  type PreviewLine = {
+  type SourceLine = {
     number: number;
-    segments: Segment[];
+    text: string;
     active: boolean;
     truncated: boolean;
   };
 
+  type RenderLine = SourceLine & {
+    segments: Segment[];
+  };
+
   const PREVIEW_LINE_LIMIT = 3000;
+  const LINE_HEIGHT = 18;
+  const OVERSCAN_LINES = 24;
 
   let {
     preview,
@@ -38,57 +44,58 @@
   } = $props();
 
   let previewElement = $state<HTMLDivElement>();
+  let viewportHeight = $state(0);
+  let scrollTop = $state(0);
+  let lastScrolledTarget = '';
+  let pendingScrollFrame = 0;
 
   const activeResultNumber = $derived.by(() => {
     if (preview.activeMatchIndex < 0) return 0;
     return preview.matches[preview.activeMatchIndex]?.line_number ?? 0;
   });
 
-  const previewLines = $derived.by(() =>
-    buildPreviewLines(
-      preview.content,
-      preview.matches,
-      preview.activeMatchIndex,
-      query,
-      regex,
-      caseSensitive
-    )
+  const sourceLines = $derived.by(() => buildSourceLines(preview.content, preview.matches, preview.activeMatchIndex));
+  const totalHeight = $derived(sourceLines.length * LINE_HEIGHT);
+  const visibleStart = $derived.by(() =>
+    Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN_LINES)
+  );
+  const visibleCount = $derived.by(() =>
+    Math.ceil(viewportHeight / LINE_HEIGHT) + OVERSCAN_LINES * 2
+  );
+  const visibleEnd = $derived.by(() =>
+    Math.min(sourceLines.length, visibleStart + visibleCount)
+  );
+  const topSpacerHeight = $derived(visibleStart * LINE_HEIGHT);
+  const bottomSpacerHeight = $derived(Math.max(0, totalHeight - visibleEnd * LINE_HEIGHT));
+  const visibleLines = $derived.by(() =>
+    sourceLines.slice(visibleStart, visibleEnd).map((line) => ({
+      ...line,
+      segments: splitLine(line.text, query, regex, caseSensitive, line.active, line.truncated)
+    }))
   );
 
-  function buildPreviewLines(
+  function buildSourceLines(
     content: string,
     matches: PreviewState['matches'],
-    activeMatchIndex: number,
-    term: string,
-    isRegex: boolean,
-    useCaseSensitive: boolean
-  ): PreviewLine[] {
+    activeMatchIndex: number
+  ): SourceLine[] {
     if (!content) return [];
 
     const allLines = content.split(/\r?\n/);
-    const matchIndexesByLine = new Map<number, number[]>();
-    matches.forEach((match, index) => {
-      const indexes = matchIndexesByLine.get(match.line_number) ?? [];
-      indexes.push(index);
-      matchIndexesByLine.set(match.line_number, indexes);
-    });
-
     const activeLineNumber =
       activeMatchIndex >= 0 ? matches[activeMatchIndex]?.line_number : undefined;
     const limit = Math.min(allLines.length, PREVIEW_LINE_LIMIT);
-    const visibleLines = allLines.slice(0, limit);
-    const lines = visibleLines.map((line, index) => {
-      const number = index + 1;
-      const matchIndexes = matchIndexesByLine.get(number) ?? [];
-      const active = matchIndexes.includes(activeMatchIndex);
+    const lines: SourceLine[] = [];
 
-      return {
+    for (let index = 0; index < limit; index += 1) {
+      const number = index + 1;
+      lines.push({
         number,
-        active,
-        truncated: false,
-        segments: splitLine(line, term, isRegex, useCaseSensitive, active)
-      };
-    });
+        text: allLines[index],
+        active: activeLineNumber === number,
+        truncated: false
+      });
+    }
 
     if (allLines.length > PREVIEW_LINE_LIMIT) {
       const activeIsOutsideLimit =
@@ -98,15 +105,9 @@
         number: PREVIEW_LINE_LIMIT + 1,
         active: activeIsOutsideLimit,
         truncated: true,
-        segments: [
-          {
-            text: activeIsOutsideLimit
-              ? `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines. Selected match is on line ${activeLineNumber.toLocaleString()}.`
-              : `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines.`,
-            match: false,
-            active: activeIsOutsideLimit
-          }
-        ]
+        text: activeIsOutsideLimit
+          ? `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines. Selected match is on line ${activeLineNumber.toLocaleString()}.`
+          : `Preview truncated at ${PREVIEW_LINE_LIMIT.toLocaleString()} lines.`
       });
     }
 
@@ -118,9 +119,10 @@
     term: string,
     isRegex: boolean,
     useCaseSensitive: boolean,
-    active: boolean
+    active: boolean,
+    truncated: boolean
   ): Segment[] {
-    if (!term) return [{ text, match: false, active }];
+    if (!term || truncated) return [{ text, match: false, active }];
 
     const spans = isRegex ? regexSpans(text, term, useCaseSensitive) : fixedSpans(text, term, useCaseSensitive);
     if (!spans.length) return [{ text, match: false, active }];
@@ -186,17 +188,34 @@
     return spans;
   }
 
+  function updateScrollPosition() {
+    if (pendingScrollFrame) return;
+
+    pendingScrollFrame = requestAnimationFrame(() => {
+      pendingScrollFrame = 0;
+      scrollTop = previewElement?.scrollTop ?? 0;
+    });
+  }
+
+  function activeLineOffset() {
+    const activeIndex = sourceLines.findIndex((line) => line.active);
+    if (activeIndex < 0) return null;
+
+    return Math.max(0, activeIndex * LINE_HEIGHT - viewportHeight / 2 + LINE_HEIGHT / 2);
+  }
+
   $effect(() => {
-    preview.filePath;
-    preview.content;
-    preview.activeMatchIndex;
+    const target = `${preview.filePath}:${preview.activeMatchIndex}:${preview.content.length}`;
+    if (!previewElement || !sourceLines.length || target === lastScrolledTarget) return;
+
+    lastScrolledTarget = target;
 
     tick().then(() => {
-      const activeLine = previewElement?.querySelector('[data-active-match="true"]');
-      activeLine?.scrollIntoView({
-        block: 'center',
-        behavior: 'smooth'
-      });
+      const offset = activeLineOffset();
+      if (offset === null || !previewElement) return;
+
+      previewElement.scrollTop = offset;
+      scrollTop = offset;
     });
   });
 </script>
@@ -215,17 +234,24 @@
     <div class="preview-body">
       <div class="file" title={preview.filePath}>{preview.filePath}</div>
       {#if preview.content}
-        <div class="preview" bind:this={previewElement}>
-          {#each previewLines as line (line.number)}
+        <div
+          bind:clientHeight={viewportHeight}
+          bind:this={previewElement}
+          class="preview"
+          onscroll={updateScrollPosition}
+        >
+          <div style:height={`${topSpacerHeight}px`}></div>
+          {#each visibleLines as line (line.number)}
             <div
               class:truncated={line.truncated}
               class="line"
               data-active-match={line.active ? 'true' : undefined}
+              data-line={line.truncated ? '' : line.number}
             >
-              <span class="gutter">{line.truncated ? '' : line.number}</span>
               <span class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</span>
             </div>
           {/each}
+          <div style:height={`${bottomSpacerHeight}px`}></div>
         </div>
       {:else}
         <div class="empty inline">Reading file...</div>
@@ -243,8 +269,10 @@
 
 <style>
   .preview-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
-    border-left: 1px solid var(--border);
+    min-height: 0;
     background: var(--panel);
     overflow: hidden;
   }
@@ -273,7 +301,7 @@
   .preview-body {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: calc(100vh - 104px);
+    min-height: 0;
     padding: 14px;
   }
 
@@ -297,12 +325,26 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 13px;
     line-height: 18px;
+    contain: content;
   }
 
   .line {
-    display: grid;
-    grid-template-columns: 44px max-content;
-    min-height: 18px;
+    display: flex;
+    min-width: max-content;
+    height: 18px;
+  }
+
+  .line::before {
+    content: attr(data-line);
+    flex: 0 0 44px;
+    border-right: 1px solid var(--border-subtle);
+    padding: 0 6px 0 4px;
+    color: var(--muted);
+    background: #f1f4f6;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    user-select: none;
   }
 
   .line[data-active-match='true'] {
@@ -311,26 +353,21 @@
     outline-offset: -1px;
   }
 
-  .gutter {
-    position: sticky;
-    left: 0;
-    border-right: 1px solid var(--border-subtle);
-    padding: 0 6px 0 4px;
-    color: var(--muted);
-    background: #f1f4f6;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    user-select: none;
-  }
-
   .source {
+    flex: 0 0 auto;
     padding: 0 8px;
     white-space: pre;
+    user-select: text;
+  }
+
+  .line.truncated {
+    min-width: 100%;
   }
 
   .line.truncated .source {
     color: var(--muted);
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family:
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 12px;
     font-weight: 700;
     white-space: normal;

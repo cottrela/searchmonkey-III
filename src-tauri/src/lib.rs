@@ -43,6 +43,13 @@ fn read_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn home_dir() -> Result<String, String> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Could not resolve the current user's home directory".to_string())
+}
+
+#[tauri::command]
 async fn start_search(
     app: tauri::AppHandle,
     runtime: State<'_, SearchRuntime>,
@@ -267,6 +274,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            home_dir,
             read_file,
             search_files,
             start_search,
