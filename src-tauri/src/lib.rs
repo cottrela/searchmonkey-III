@@ -38,6 +38,11 @@ async fn search_files(
 }
 
 #[tauri::command]
+fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 async fn start_search(
     app: tauri::AppHandle,
     runtime: State<'_, SearchRuntime>,
@@ -52,7 +57,9 @@ async fn start_search(
             .map_err(|_| "Search state is unavailable".to_string())?;
 
         if current.is_some() {
-            return Err("A search is already running. Stop it before starting another.".to_string());
+            return Err(
+                "A search is already running. Stop it before starting another.".to_string(),
+            );
         }
     }
 
@@ -157,11 +164,7 @@ async fn start_search(
     Ok(search_id)
 }
 
-fn emit_batch(
-    events: &Channel<SearchStreamEvent>,
-    search_id: u64,
-    batch: &mut Vec<SearchMatch>,
-) {
+fn emit_batch(events: &Channel<SearchStreamEvent>, search_id: u64, batch: &mut Vec<SearchMatch>) {
     if batch.is_empty() {
         return;
     }
@@ -176,7 +179,10 @@ fn take_active_child(app: &tauri::AppHandle, search_id: u64) -> Option<Child> {
         .lock()
         .ok()
         .and_then(|mut current| {
-            if current.as_ref().is_some_and(|running| running.id == search_id) {
+            if current
+                .as_ref()
+                .is_some_and(|running| running.id == search_id)
+            {
                 current.as_mut().and_then(|running| running.child.take())
             } else {
                 None
@@ -186,17 +192,17 @@ fn take_active_child(app: &tauri::AppHandle, search_id: u64) -> Option<Child> {
 
 fn clear_active_search(app: &tauri::AppHandle, search_id: u64) {
     if let Ok(mut current) = app.state::<SearchRuntime>().current.lock() {
-        if current.as_ref().is_some_and(|running| running.id == search_id) {
+        if current
+            .as_ref()
+            .is_some_and(|running| running.id == search_id)
+        {
             current.take();
         }
     }
 }
 
 #[tauri::command]
-async fn stop_search(
-    runtime: State<'_, SearchRuntime>,
-    search_id: u64,
-) -> Result<(), String> {
+async fn stop_search(runtime: State<'_, SearchRuntime>, search_id: u64) -> Result<(), String> {
     let running = {
         let mut current = runtime
             .current
@@ -231,7 +237,11 @@ fn is_active_search(app: &tauri::AppHandle, search_id: u64) -> bool {
     app.state::<SearchRuntime>()
         .current
         .lock()
-        .is_ok_and(|current| current.as_ref().is_some_and(|running| running.id == search_id))
+        .is_ok_and(|current| {
+            current
+                .as_ref()
+                .is_some_and(|running| running.id == search_id)
+        })
 }
 
 fn kill_child(mut child: Child) -> Result<(), String> {
@@ -257,6 +267,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            read_file,
             search_files,
             start_search,
             stop_search

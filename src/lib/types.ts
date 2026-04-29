@@ -21,6 +21,13 @@ export type FileResultGroup = {
   matches: SearchMatch[];
 };
 
+export type PreviewState = {
+  filePath: string;
+  content: string;
+  matches: SearchMatch[];
+  activeMatchIndex: number;
+};
+
 export type SearchStreamEvent =
   | SearchStartedEvent
   | SearchBatchEvent

@@ -5,6 +5,10 @@ export async function searchFiles(request: SearchRequest): Promise<SearchMatch[]
   return invoke<SearchMatch[]>('search_files', { request });
 }
 
+export async function readFile(path: string): Promise<string> {
+  return invoke<string>('read_file', { path });
+}
+
 export async function startSearch(
   request: SearchRequest,
   searchId: number,

@@ -4,9 +4,10 @@
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
-  import { startSearch as startSearchCommand, stopSearch } from '$lib/search';
+  import { readFile, startSearch as startSearchCommand, stopSearch } from '$lib/search';
   import type {
     FileResultGroup,
+    PreviewState,
     SearchMatch,
     SearchOptions,
     SearchState,
@@ -31,6 +32,19 @@
   let hasSearched = $state(false);
   let activeSearchId = $state<number | null>(null);
   let nextSearchId = 1;
+  let preview = $state<PreviewState>({
+    filePath: '',
+    content: '',
+    matches: [],
+    activeMatchIndex: -1
+  });
+  let previewError = $state('');
+  let loadedPreviewPath = '';
+  let loadedPreviewContent = '';
+  let previewLoadId = 0;
+  let workspaceElement = $state<HTMLElement>();
+  let previewWidth = $state(360);
+  let isResizingPreview = $state(false);
 
   const groups = $derived.by(() => groupMatches(matches));
   const selectedIndex = $derived.by(() => {
@@ -59,6 +73,25 @@
 
   function sameMatch(a: SearchMatch, b: SearchMatch) {
     return a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text;
+  }
+
+  function matchesForPath(filePath: string) {
+    return matches.filter((match) => match.path === filePath);
+  }
+
+  function previewFor(filePath: string, content: string) {
+    const fileMatches = matchesForPath(filePath);
+    const activeSelection = selected;
+    const activeMatchIndex = activeSelection
+      ? fileMatches.findIndex((match) => sameMatch(match, activeSelection))
+      : -1;
+
+    return {
+      filePath,
+      content,
+      matches: fileMatches,
+      activeMatchIndex
+    };
   }
 
   function normalizeError(error: unknown) {
@@ -165,6 +198,78 @@
     const nextIndex = (currentIndex + offset + matches.length) % matches.length;
     selected = matches[nextIndex];
   }
+
+  function clampPreviewWidth(width: number) {
+    const workspaceWidth = workspaceElement?.getBoundingClientRect().width ?? 0;
+    const scopeWidth = 280;
+    const splitterWidth = 8;
+    const availableWidth = Math.max(0, workspaceWidth - scopeWidth - splitterWidth);
+    const maxPreviewWidth = Math.max(260, availableWidth - 260);
+
+    return Math.min(Math.max(width, 260), maxPreviewWidth);
+  }
+
+  function startPreviewResize(event: PointerEvent) {
+    if (!workspaceElement) return;
+
+    event.preventDefault();
+    isResizingPreview = true;
+
+    const updatePreviewWidth = (moveEvent: PointerEvent) => {
+      const rect = workspaceElement?.getBoundingClientRect();
+      if (!rect) return;
+      previewWidth = clampPreviewWidth(rect.right - moveEvent.clientX);
+    };
+
+    const stopPreviewResize = () => {
+      isResizingPreview = false;
+      window.removeEventListener('pointermove', updatePreviewWidth);
+      window.removeEventListener('pointerup', stopPreviewResize);
+    };
+
+    window.addEventListener('pointermove', updatePreviewWidth);
+    window.addEventListener('pointerup', stopPreviewResize, { once: true });
+  }
+
+  $effect(() => {
+    if (!selected) {
+      loadedPreviewPath = '';
+      loadedPreviewContent = '';
+      previewLoadId += 1;
+      previewError = '';
+      preview = {
+        filePath: '',
+        content: '',
+        matches: [],
+        activeMatchIndex: -1
+      };
+      return;
+    }
+
+    const filePath = selected.path;
+
+    if (loadedPreviewPath === filePath) {
+      preview = previewFor(filePath, loadedPreviewContent);
+      return;
+    }
+
+    const loadId = ++previewLoadId;
+    loadedPreviewPath = filePath;
+    loadedPreviewContent = '';
+    previewError = '';
+    preview = previewFor(filePath, '');
+
+    readFile(filePath)
+      .then((content) => {
+        if (loadId !== previewLoadId || selected?.path !== filePath) return;
+        loadedPreviewContent = content;
+        preview = previewFor(filePath, content);
+      })
+      .catch((error) => {
+        if (loadId !== previewLoadId || selected?.path !== filePath) return;
+        previewError = normalizeError(error);
+      });
+  });
 </script>
 
 <svelte:head>
@@ -181,7 +286,12 @@
     onStop={stopCurrentSearch}
   />
 
-  <div class="workspace">
+  <div
+    bind:this={workspaceElement}
+    class:resizing={isResizingPreview}
+    class="workspace"
+    style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, ${previewWidth}px)`}
+  >
     <ScopePanel bind:path bind:includePatterns bind:excludePatterns bind:contextLines />
     <ResultsPanel
       {groups}
@@ -192,12 +302,19 @@
       {hasSearched}
       onSelect={selectMatch}
     />
+    <button
+      type="button"
+      aria-label="Resize results and preview panels"
+      class="panel-resizer"
+      onpointerdown={startPreviewResize}
+    ></button>
     <PreviewPanel
-      {selected}
-      {selectedIndex}
+      {preview}
+      errorMessage={previewError}
       total={matches.length}
       {query}
       regex={options.regex}
+      caseSensitive={options.case_sensitive}
       onPrevious={() => selectOffset(-1)}
       onNext={() => selectOffset(1)}
     />
@@ -265,7 +382,34 @@
 
   .workspace {
     display: grid;
-    grid-template-columns: 280px minmax(360px, 1fr) 320px;
     min-height: 0;
+  }
+
+  .workspace.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  .workspace.resizing :global(*) {
+    user-select: none;
+  }
+
+  .panel-resizer {
+    width: 8px;
+    min-width: 8px;
+    height: 100%;
+    border: 0;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    padding: 0;
+    background: var(--surface);
+    cursor: col-resize;
+  }
+
+  .panel-resizer:hover,
+  .panel-resizer:focus-visible {
+    background: var(--selection);
+    outline: none;
   }
 </style>
