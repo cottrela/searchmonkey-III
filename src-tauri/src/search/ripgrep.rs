@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::UNIX_EPOCH;
 
 pub struct RipgrepSidecarProvider {
     _app_handle: tauri::AppHandle,
@@ -21,45 +22,124 @@ impl RipgrepSidecarProvider {
         let mut args = vec![
             "--json".to_string(),
             "--line-number".to_string(),
-            "--max-filesize".to_string(),
-            "1M".to_string(),
-            "--max-count".to_string(),
-            "100000".to_string(),
             "--no-messages".to_string(),
         ];
 
-        for pattern in request.include_patterns {
+        if !request.min_file_size.trim().is_empty() {
+            args.push("--min-filesize".to_string());
+            args.push(request.min_file_size.trim().to_string());
+        }
+
+        if !request.max_file_size.trim().is_empty() {
+            args.push("--max-filesize".to_string());
+            args.push(request.max_file_size.trim().to_string());
+        }
+
+        if request.max_matches > Some(0) {
+            args.push("--max-count".to_string());
+            args.push(request.max_matches.unwrap().to_string());
+        }
+
+        if request.context_lines > 0 {
+            args.push("--context".to_string());
+            args.push(request.context_lines.min(20).to_string());
+        }
+
+        let SearchRequest {
+            query,
+            path,
+            regex,
+            case_sensitive,
+            hidden,
+            include_patterns,
+            exclude_patterns,
+            follow_symlinks,
+            multiline,
+            skip_binary,
+            encoding,
+            respect_gitignore,
+            ignore_node_modules,
+            ignore_build_artifacts,
+            ..
+        } = request;
+
+        for pattern in include_patterns {
             args.push("--glob".to_string());
             args.push(pattern);
         }
 
-        for pattern in request.exclude_patterns {
+        for pattern in exclude_patterns {
             args.push("--glob".to_string());
             args.push(format!("!{pattern}"));
         }
 
-        if !request.regex {
+        if ignore_node_modules {
+            args.push("--glob".to_string());
+            args.push("!**/node_modules/**".to_string());
+        }
+
+        if ignore_build_artifacts {
+            for pattern in [
+                "!**/dist/**",
+                "!**/build/**",
+                "!**/target/**",
+                "!**/.svelte-kit/**",
+                "!**/.next/**",
+                "!**/coverage/**",
+            ] {
+                args.push("--glob".to_string());
+                args.push(pattern.to_string());
+            }
+        }
+
+        if !regex {
             args.push("--fixed-strings".to_string());
         }
 
-        if !request.case_sensitive {
+        if !case_sensitive {
             args.push("--ignore-case".to_string());
         }
 
-        if request.hidden {
+        if hidden {
             args.push("--hidden".to_string());
         }
 
-        args.push(request.query);
-        args.push(request.path);
+        if follow_symlinks {
+            args.push("--follow".to_string());
+        }
+
+        if multiline {
+            args.push("--multiline".to_string());
+        }
+
+        if !skip_binary {
+            args.push("--text".to_string());
+        }
+
+        if encoding == "utf-8" || encoding == "ascii" {
+            args.push("--encoding".to_string());
+            args.push(encoding);
+        }
+
+        if !respect_gitignore {
+            args.push("--no-ignore".to_string());
+        }
+
+        args.push(query);
+        args.push(path);
 
         args
     }
 
     pub fn spawn(&self, request: SearchRequest) -> Result<Child> {
-        let mut command = Command::new(sidecar_path("rg")?);
+        let program = sidecar_path("rg")?;
+        let args = Self::args(request);
+
+        eprintln!("searchmonkey rg command: {}", debug_command_line(&program, &args));
+
+        let mut command = Command::new(program);
         command
-            .args(Self::args(request))
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -109,8 +189,52 @@ impl RipgrepSidecarProvider {
             line_number: data["line_number"].as_u64().unwrap_or(0),
             line_text,
             submatches,
+            file_size: None,
+            modified_secs: None,
         })
     }
+}
+
+pub fn add_file_metadata(result: &mut SearchMatch) {
+    let Ok(metadata) = std::fs::metadata(&result.path) else {
+        return;
+    };
+
+    result.file_size = Some(metadata.len());
+    result.modified_secs = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+}
+
+pub fn matches_modified_filter(result: &SearchMatch, modified_after: Option<u64>) -> bool {
+    match modified_after {
+        Some(after) => result.modified_secs.is_some_and(|modified| modified >= after),
+        None => true,
+    }
+}
+
+fn debug_command_line(program: &Path, args: &[String]) -> String {
+    std::iter::once(shell_quote(&program.to_string_lossy()))
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_./:=,@%+".contains(character))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn parse_submatches(items: &[Value], line_text: &str) -> Vec<SearchSubmatch> {
@@ -145,6 +269,7 @@ fn byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
 #[async_trait]
 impl SearchProvider for RipgrepSidecarProvider {
     async fn search(&self, request: SearchRequest) -> Result<Vec<SearchMatch>> {
+        let modified_after = request.modified_after;
         let mut child = self.spawn(request)?;
         let mut matches = Vec::new();
 
@@ -153,7 +278,11 @@ impl SearchProvider for RipgrepSidecarProvider {
 
             for line in reader.split(b'\n') {
                 let line = line?;
-                if let Some(result) = Self::parse_match(&line) {
+                if let Some(mut result) = Self::parse_match(&line) {
+                    add_file_metadata(&mut result);
+                    if !matches_modified_filter(&result, modified_after) {
+                        continue;
+                    }
                     matches.push(result);
                 }
             }

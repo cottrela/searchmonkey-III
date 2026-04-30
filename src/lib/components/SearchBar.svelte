@@ -1,13 +1,9 @@
 <script lang="ts">
-  import type { SearchOptions } from '$lib/types';
+  import { defaultSearchOptions, type SearchOptions } from '$lib/types';
 
   let {
     query = $bindable(''),
-    options = $bindable<SearchOptions>({
-      regex: false,
-      case_sensitive: false,
-      hidden: false
-    }),
+    options = $bindable<SearchOptions>(defaultSearchOptions()),
     searching = false,
     stopping = false,
     onFilters,

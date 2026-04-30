@@ -188,6 +188,8 @@ async fn start_search(
     }
 
     let provider = RipgrepSidecarProvider::new(app.clone());
+    let result_limit = request.max_matches.unwrap_or(UI_RESULT_LIMIT).max(1);
+    let modified_after = request.modified_after;
     let mut child = provider.spawn(request).map_err(|err| err.to_string())?;
     let stdout = child
         .stdout
@@ -229,12 +231,17 @@ async fn start_search(
                 continue;
             };
 
-            let Some(result) = RipgrepSidecarProvider::parse_match(&line) else {
+            let Some(mut result) = RipgrepSidecarProvider::parse_match(&line) else {
                 continue;
             };
 
+            search::ripgrep::add_file_metadata(&mut result);
+            if !search::ripgrep::matches_modified_filter(&result, modified_after) {
+                continue;
+            }
+
             total_matches += 1;
-            if total_matches <= UI_RESULT_LIMIT {
+            if total_matches <= result_limit {
                 batch.push(result);
             }
 
@@ -246,7 +253,7 @@ async fn start_search(
                 last_emit = Instant::now();
             }
 
-            if total_matches >= UI_RESULT_LIMIT {
+            if total_matches >= result_limit {
                 break;
             }
         }

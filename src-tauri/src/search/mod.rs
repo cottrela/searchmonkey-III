@@ -11,6 +11,18 @@ pub struct SearchRequest {
     pub hidden: bool,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
+    pub follow_symlinks: bool,
+    pub multiline: bool,
+    pub context_lines: u64,
+    pub min_file_size: String,
+    pub max_file_size: String,
+    pub modified_after: Option<u64>,
+    pub skip_binary: bool,
+    pub encoding: String,
+    pub max_matches: Option<usize>,
+    pub respect_gitignore: bool,
+    pub ignore_node_modules: bool,
+    pub ignore_build_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +31,8 @@ pub struct SearchMatch {
     pub line_number: u64,
     pub line_text: String,
     pub submatches: Vec<SearchSubmatch>,
+    pub file_size: Option<u64>,
+    pub modified_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

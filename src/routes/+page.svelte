@@ -13,10 +13,12 @@
     stopSearch
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
+  import { defaultSearchOptions } from '$lib/types';
   import type {
     FileResultGroup,
     FilePreview,
     PreviewState,
+    SearchCriteria,
     SearchMatch,
     SearchOptions,
     SearchState,
@@ -28,11 +30,9 @@
   let includePatterns = $state('');
   let excludePatterns = $state('');
   let contextLines = $state(0);
-  let options = $state<SearchOptions>({
-    regex: false,
-    case_sensitive: false,
-    hidden: false
-  });
+  let options = $state<SearchOptions>(defaultSearchOptions());
+  let recentSearches = $state<SearchCriteria[]>([]);
+  let savedSearches = $state<SearchCriteria[]>([]);
 
   let matches = $state<SearchMatch[]>([]);
   let selected = $state<SearchMatch | null>(null);
@@ -67,8 +67,35 @@
   const SEARCH_RESULT_FLUSH_MS = 120;
   const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 300;
   const MAX_DISPLAYED_MATCHES = 10000;
+  const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
+  const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
+  const FILE_TYPE_PATTERNS: Record<string, string[]> = {
+    text: ['*.txt', '*.md', '*.markdown', '*.rst', '*.csv', '*.tsv', '*.json', '*.yaml', '*.yml', '*.toml', '*.xml'],
+    code: [
+      '*.c',
+      '*.cc',
+      '*.cpp',
+      '*.cs',
+      '*.css',
+      '*.go',
+      '*.java',
+      '*.js',
+      '*.jsx',
+      '*.kt',
+      '*.php',
+      '*.py',
+      '*.rb',
+      '*.rs',
+      '*.svelte',
+      '*.swift',
+      '*.ts',
+      '*.tsx',
+      '*.vue'
+    ],
+    logs: ['*.log', '*.out', '*.err', '*.trace']
+  };
 
-  const groups = $derived.by(() => groupMatches(matches));
+  const groups = $derived.by(() => sortGroups(groupMatches(matches), options.sort_by));
   const selectedIndex = $derived.by(() => {
     if (!selected) return -1;
     const current = selected;
@@ -94,6 +121,9 @@
   }));
 
   onMount(() => {
+    recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
+    savedSearches = loadCriteria(SAVED_SEARCHES_KEY);
+
     homeDir()
       .then((home) => {
         if (!path) path = home;
@@ -119,6 +149,164 @@
       path: filePath,
       matches: fileMatches
     }));
+  }
+
+  function sortGroups(resultGroups: FileResultGroup[], sortBy: SearchOptions['sort_by']) {
+    const nextGroups = resultGroups.map((group) => ({ ...group, matches: [...group.matches] }));
+
+    if (sortBy === 'file_name') {
+      return nextGroups.sort((a, b) => filename(a.path).localeCompare(filename(b.path)));
+    }
+
+    if (sortBy === 'modified_date') {
+      return nextGroups.sort((a, b) => (b.matches[0]?.modified_secs ?? 0) - (a.matches[0]?.modified_secs ?? 0));
+    }
+
+    if (sortBy === 'match_count') {
+      return nextGroups.sort((a, b) => b.matches.length - a.matches.length || a.path.localeCompare(b.path));
+    }
+
+    return nextGroups;
+  }
+
+  function filename(filePath: string) {
+    const parts = filePath.split('/').filter(Boolean);
+    return parts.at(-1) || filePath;
+  }
+
+  function includePatternsForType() {
+    if (options.file_type === 'all') return [];
+    if (options.file_type === 'custom') {
+      return options.custom_file_type
+        .split(',')
+        .map((pattern) => pattern.trim())
+        .flatMap((pattern) => customFileTypePattern(pattern));
+    }
+
+    return FILE_TYPE_PATTERNS[options.file_type] ?? [];
+  }
+
+  function customFileTypePattern(pattern: string) {
+    if (!pattern) return [];
+    if (pattern.includes('*')) return [pattern];
+
+    const mimePatterns: Record<string, string[]> = {
+      'application/json': ['*.json'],
+      'application/javascript': ['*.js'],
+      'application/typescript': ['*.ts'],
+      'application/xml': ['*.xml'],
+      'text/plain': ['*.txt'],
+      'text/markdown': ['*.md', '*.markdown'],
+      'text/csv': ['*.csv'],
+      'text/tab-separated-values': ['*.tsv'],
+      'text/x-python': ['*.py'],
+      'text/x-rust': ['*.rs'],
+      'text/x-go': ['*.go']
+    };
+
+    if (pattern === 'text/*') return FILE_TYPE_PATTERNS.text;
+    if (pattern === 'application/*') return ['*.json', '*.js', '*.ts', '*.xml', '*.toml', '*.yaml', '*.yml'];
+
+    return mimePatterns[pattern.toLowerCase()] ?? [];
+  }
+
+  function searchModeRegex() {
+    return options.search_mode === 'regex' || options.regex;
+  }
+
+  function setSearchMode(mode: SearchOptions['search_mode']) {
+    options.search_mode = mode;
+    options.regex = mode === 'regex';
+  }
+
+  function currentCriteria(name = query.trim() || filename(path.trim()) || 'Untitled search'): SearchCriteria {
+    return {
+      id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
+      name,
+      query,
+      path,
+      includePatterns,
+      excludePatterns,
+      options: snapshotSearchOptions()
+    };
+  }
+
+  function snapshotSearchOptions(): SearchOptions {
+    return {
+      regex: options.regex,
+      case_sensitive: options.case_sensitive,
+      hidden: options.hidden,
+      follow_symlinks: options.follow_symlinks,
+      multiline: options.multiline,
+      context_lines: options.context_lines,
+      min_file_size: options.min_file_size,
+      max_file_size: options.max_file_size,
+      modified_after: options.modified_after,
+      skip_binary: options.skip_binary,
+      encoding: options.encoding,
+      max_matches: options.max_matches,
+      respect_gitignore: options.respect_gitignore,
+      ignore_node_modules: options.ignore_node_modules,
+      ignore_build_artifacts: options.ignore_build_artifacts,
+      search_mode: options.search_mode,
+      modified_preset: options.modified_preset,
+      modified_custom_days: options.modified_custom_days,
+      file_type: options.file_type,
+      custom_file_type: options.custom_file_type,
+      sort_by: options.sort_by,
+      show_line_numbers: options.show_line_numbers,
+      show_file_headers: options.show_file_headers,
+      group_by_file: options.group_by_file
+    };
+  }
+
+  function applyCriteria(criteria: SearchCriteria | undefined) {
+    if (!criteria) return;
+
+    query = criteria.query;
+    path = criteria.path;
+    includePatterns = criteria.includePatterns;
+    excludePatterns = criteria.excludePatterns;
+    options = { ...defaultSearchOptions(), ...criteria.options };
+    contextLines = options.context_lines;
+  }
+
+  function saveCurrentCriteria() {
+    const criteria = currentCriteria();
+    savedSearches = [criteria, ...savedSearches.filter((search) => search.name !== criteria.name)].slice(0, 20);
+    saveCriteria(SAVED_SEARCHES_KEY, savedSearches);
+  }
+
+  function rememberRecentSearch() {
+    const criteria = currentCriteria();
+    recentSearches = [
+      criteria,
+      ...recentSearches.filter(
+        (search) =>
+          search.query !== criteria.query ||
+          search.path !== criteria.path ||
+          search.includePatterns !== criteria.includePatterns ||
+          search.excludePatterns !== criteria.excludePatterns
+      )
+    ].slice(0, 12);
+    saveCriteria(RECENT_SEARCHES_KEY, recentSearches);
+  }
+
+  function loadCriteria(key: string) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) ?? '[]');
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map((criteria) => ({
+        ...criteria,
+        options: { ...defaultSearchOptions(), ...criteria.options }
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  function saveCriteria(key: string, criteria: SearchCriteria[]) {
+    localStorage.setItem(key, JSON.stringify(criteria));
   }
 
   function sameMatch(a: SearchMatch, b: SearchMatch) {
@@ -221,17 +409,31 @@
     const searchId = nextSearchId;
     nextSearchId += 1;
     activeSearchId = searchId;
+    rememberRecentSearch();
 
     try {
+      const includeFromType = includePatternsForType();
       await startSearchCommand(
         {
           query: cleanQuery,
           path: cleanPath,
-          regex: options.regex,
+          regex: searchModeRegex(),
           case_sensitive: options.case_sensitive,
           hidden: options.hidden,
-          include_patterns: normalizeIncludePatterns(includePatterns),
-          exclude_patterns: normalizeExcludePatterns(excludePatterns)
+          include_patterns: [...normalizeIncludePatterns(includePatterns), ...includeFromType],
+          exclude_patterns: normalizeExcludePatterns(excludePatterns),
+          follow_symlinks: options.follow_symlinks,
+          multiline: options.multiline,
+          context_lines: options.context_lines,
+          min_file_size: options.min_file_size,
+          max_file_size: options.max_file_size,
+          modified_after: options.modified_after,
+          skip_binary: options.skip_binary,
+          encoding: options.encoding,
+          max_matches: options.max_matches,
+          respect_gitignore: options.respect_gitignore,
+          ignore_node_modules: options.ignore_node_modules,
+          ignore_build_artifacts: options.ignore_build_artifacts
         },
         searchId,
         handleSearchEvent
@@ -569,7 +771,11 @@
       <span class="summary-item exclude"><strong>Exclude:</strong> {scopeSummary.exclude}</span>
     {/if}
     <div class="mode-pills" aria-label="Search modes">
-      <button type="button" class:active={options.regex} onclick={() => (options.regex = !options.regex)}>
+      <button
+        type="button"
+        class:active={options.search_mode === 'regex'}
+        onclick={() => setSearchMode(options.search_mode === 'regex' ? 'literal' : 'regex')}
+      >
         Regex
       </button>
       <button
@@ -602,17 +808,25 @@
     style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, var(--preview-width))`}
   >
     <ScopePanel
+      bind:query
       bind:path
       bind:includePatterns
       bind:excludePatterns
       bind:contextLines
       bind:options
       includeHidden={options.hidden}
+      {recentSearches}
+      {savedSearches}
+      onApplyCriteria={applyCriteria}
+      onSaveCriteria={saveCurrentCriteria}
     />
     <ResultsPanel
       {groups}
       {query}
-      regex={options.regex}
+      regex={searchModeRegex()}
+      showLineNumbers={options.show_line_numbers}
+      showFileHeaders={options.show_file_headers}
+      groupByFile={options.group_by_file}
       {selected}
       state={searchState}
       {hasSearched}
@@ -659,12 +873,17 @@
           <button type="button" onclick={() => (filtersOpen = false)}>Close</button>
         </div>
         <ScopePanel
+          bind:query
           bind:path
           bind:includePatterns
           bind:excludePatterns
           bind:contextLines
           bind:options
           includeHidden={options.hidden}
+          {recentSearches}
+          {savedSearches}
+          onApplyCriteria={applyCriteria}
+          onSaveCriteria={saveCurrentCriteria}
         />
       </div>
     </div>

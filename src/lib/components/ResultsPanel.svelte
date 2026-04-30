@@ -35,6 +35,9 @@
     groups,
     query,
     regex,
+    showLineNumbers = true,
+    showFileHeaders = true,
+    groupByFile = true,
     selected,
     state: searchState,
     hasSearched,
@@ -45,6 +48,9 @@
     groups: FileResultGroup[];
     query: string;
     regex: boolean;
+    showLineNumbers?: boolean;
+    showFileHeaders?: boolean;
+    groupByFile?: boolean;
     selected: SearchMatch | null;
     state: SearchState;
     hasSearched: boolean;
@@ -103,15 +109,17 @@
     let top = 0;
 
     for (const group of resultGroups) {
-      nextRows.push({
-        type: 'file',
-        key: `file:${group.path}`,
-        path: group.path,
-        count: group.matches.length,
-        top,
-        height: FILE_ROW_HEIGHT
-      });
-      top += FILE_ROW_HEIGHT;
+      if (groupByFile && showFileHeaders) {
+        nextRows.push({
+          type: 'file',
+          key: `file:${group.path}`,
+          path: group.path,
+          count: group.matches.length,
+          top,
+          height: FILE_ROW_HEIGHT
+        });
+        top += FILE_ROW_HEIGHT;
+      }
 
       for (const [index, match] of group.matches.entries()) {
         nextRows.push({
@@ -308,7 +316,8 @@
     <div class="mobile-groups">
       {#each groups as group (group.path)}
         <section class="mobile-file-group" aria-label={filename(group.path)}>
-          <div class="mobile-file-header">
+          {#if showFileHeaders}
+            <div class="mobile-file-header">
             <div class="mobile-file-title">
               <strong title={group.path}>{filename(group.path)}</strong>
               <span title={parentPath(group.path)}>{parentPath(group.path)}</span>
@@ -330,17 +339,21 @@
               </details>
             </div>
           </div>
+          {/if}
 
           <div class="mobile-matches">
             {#each visibleMobileMatches(group) as match, index (`${match.path}:${match.line_number}:${index}`)}
               <button
                 type="button"
                 class:selected={sameMatch(selected, match)}
+                class:no-lines={!showLineNumbers}
                 data-selected-match={sameMatch(selected, match) ? 'true' : undefined}
                 class="match-row mobile-match-row"
                 onclick={() => onSelect(match)}
               >
-                <span class="line">{match.line_number}</span>
+                {#if showLineNumbers}
+                  <span class="line">{match.line_number}</span>
+                {/if}
                 <span class="snippet">
                   {#each snippetParts(match, query) as part}
                     {#if part.hit}
@@ -363,7 +376,7 @@
       {/each}
     </div>
 
-    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT}
+    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && showFileHeaders}
       <div class="current-file-header" aria-label="Current file">
         <div class="file-title">
           <strong title={currentFileRow.path}>{filename(currentFileRow.path)}</strong>
@@ -410,11 +423,14 @@
               <button
                 type="button"
                 class:selected={sameMatch(selected, row.match)}
+                class:no-lines={!showLineNumbers}
                 data-selected-match={sameMatch(selected, row.match) ? 'true' : undefined}
                 class="match-row"
                 onclick={() => onSelect(row.match)}
               >
-                <span class="line">{row.match.line_number}</span>
+                {#if showLineNumbers}
+                  <span class="line">{row.match.line_number}</span>
+                {/if}
                 <span class="snippet">
                   {#each snippetParts(row.match, query) as part}
                     {#if part.hit}
@@ -667,6 +683,10 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+  }
+
+  .match-row.no-lines {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .match-row:last-child {
