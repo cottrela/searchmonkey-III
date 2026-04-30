@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { FileResultGroup, SearchMatch, SearchState } from '$lib/types';
+  import { defaultSearchOptions, type FileResultGroup, type SearchMatch, type SearchOptions, type SearchState } from '$lib/types';
 
   type SnippetPart = {
     text: string;
@@ -35,9 +35,7 @@
     groups,
     query,
     regex,
-    showLineNumbers = true,
-    showFileHeaders = true,
-    groupByFile = true,
+    options = $bindable<SearchOptions>(defaultSearchOptions()),
     selected,
     state: searchState,
     hasSearched,
@@ -48,9 +46,7 @@
     groups: FileResultGroup[];
     query: string;
     regex: boolean;
-    showLineNumbers?: boolean;
-    showFileHeaders?: boolean;
-    groupByFile?: boolean;
+    options: SearchOptions;
     selected: SearchMatch | null;
     state: SearchState;
     hasSearched: boolean;
@@ -109,7 +105,7 @@
     let top = 0;
 
     for (const group of resultGroups) {
-      if (groupByFile && showFileHeaders) {
+      if (options.group_by_file) {
         nextRows.push({
           type: 'file',
           key: `file:${group.path}`,
@@ -292,10 +288,33 @@
 
 <section bind:this={resultsElement} class="results-panel" aria-label="Search results" onscroll={updateScrollMetrics}>
   <div class="panel-title">
-    <h2>Results</h2>
-    {#if groups.length}
-      <span>{groups.length} files</span>
-    {/if}
+    <h2>Results <span>({groups.length} files, {groups.reduce((total, group) => total + group.matches.length, 0)} matches)</span></h2>
+    <div class="result-controls" aria-label="Result display settings">
+      <label>
+        <span>Sort</span>
+        <select bind:value={options.sort_by}>
+          <option value="relevance">Relevance</option>
+          <option value="file_name">File name</option>
+          <option value="modified_date">Modified</option>
+          <option value="match_count">Matches</option>
+        </select>
+      </label>
+      <label>
+        <span>Order</span>
+        <select bind:value={options.sort_direction}>
+          <option value="desc">High to low</option>
+          <option value="asc">Low to high</option>
+        </select>
+      </label>
+      <label class="toggle-control">
+        <input type="checkbox" bind:checked={options.group_by_file} />
+        <span>Group</span>
+      </label>
+      <label class="toggle-control">
+        <input type="checkbox" bind:checked={options.show_line_numbers} />
+        <span>Lines</span>
+      </label>
+    </div>
   </div>
 
   {#if !hasSearched}
@@ -316,7 +335,7 @@
     <div class="mobile-groups">
       {#each groups as group (group.path)}
         <section class="mobile-file-group" aria-label={filename(group.path)}>
-          {#if showFileHeaders}
+          {#if options.group_by_file}
             <div class="mobile-file-header">
             <div class="mobile-file-title">
               <strong title={group.path}>{filename(group.path)}</strong>
@@ -346,12 +365,12 @@
               <button
                 type="button"
                 class:selected={sameMatch(selected, match)}
-                class:no-lines={!showLineNumbers}
+                class:no-lines={!options.show_line_numbers}
                 data-selected-match={sameMatch(selected, match) ? 'true' : undefined}
                 class="match-row mobile-match-row"
                 onclick={() => onSelect(match)}
               >
-                {#if showLineNumbers}
+                {#if options.show_line_numbers}
                   <span class="line">{match.line_number}</span>
                 {/if}
                 <span class="snippet">
@@ -376,7 +395,7 @@
       {/each}
     </div>
 
-    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && showFileHeaders}
+    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && options.group_by_file}
       <div class="current-file-header" aria-label="Current file">
         <div class="file-title">
           <strong title={currentFileRow.path}>{filename(currentFileRow.path)}</strong>
@@ -423,12 +442,12 @@
               <button
                 type="button"
                 class:selected={sameMatch(selected, row.match)}
-                class:no-lines={!showLineNumbers}
+                class:no-lines={!options.show_line_numbers}
                 data-selected-match={sameMatch(selected, row.match) ? 'true' : undefined}
                 class="match-row"
                 onclick={() => onSelect(row.match)}
               >
-                {#if showLineNumbers}
+                {#if options.show_line_numbers}
                   <span class="line">{row.match.line_number}</span>
                 {/if}
                 <span class="snippet">
@@ -460,12 +479,13 @@
     position: sticky;
     top: 0;
     z-index: 1;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
     align-items: center;
-    justify-content: space-between;
-    height: 47px;
+    min-height: 47px;
     border-bottom: 1px solid var(--border);
-    padding: 0 14px;
+    padding: 6px 14px;
     background: var(--surface);
   }
 
@@ -474,10 +494,51 @@
     font-size: 14px;
   }
 
-  .panel-title span {
+  h2 span {
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
+  }
+
+  .result-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .result-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .result-controls select {
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0 7px;
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+  }
+
+  .toggle-control {
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0 8px;
+    background: var(--input);
+  }
+
+  .toggle-control input {
+    width: auto;
+    height: auto;
   }
 
   .empty {
@@ -729,7 +790,21 @@
 
   @media (max-width: 599px) {
     .panel-title {
-      height: 38px;
+      grid-template-columns: minmax(0, 1fr);
+      min-height: 38px;
+      gap: 5px;
+    }
+
+    .result-controls {
+      justify-content: flex-start;
+    }
+
+    .result-controls label:not(.toggle-control) > span {
+      display: none;
+    }
+
+    .toggle-control span {
+      display: inline;
     }
 
     .current-file-header {

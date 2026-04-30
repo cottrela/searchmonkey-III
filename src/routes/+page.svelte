@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
+  import RegexTester from '$lib/components/RegexTester.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
@@ -51,6 +52,12 @@
   let previewWidth = $state(360);
   let isResizingPreview = $state(false);
   let filtersOpen = $state(false);
+  let regexTesterOpen = $state(false);
+  let saveDialogOpen = $state(false);
+  let saveSearchName = $state('');
+  let saveIncludeFilters = $state(true);
+  let saveIncludePath = $state(true);
+  let saveIncludeOptions = $state(true);
   let compactView = $state<'results' | 'preview'>('results');
   let elapsedMs = $state(0);
   let queuedMatches: SearchMatch[] = [];
@@ -95,7 +102,7 @@
     logs: ['*.log', '*.out', '*.err', '*.trace']
   };
 
-  const groups = $derived.by(() => sortGroups(groupMatches(matches), options.sort_by));
+  const groups = $derived.by(() => sortGroups(groupMatches(matches), options.sort_by, options.sort_direction));
   const selectedIndex = $derived.by(() => {
     if (!selected) return -1;
     const current = selected;
@@ -119,6 +126,7 @@
     include: includePatterns.trim() || 'all files',
     exclude: excludePatterns.trim()
   }));
+  const regexSamples = $derived(matches.slice(0, 300));
 
   onMount(() => {
     recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
@@ -151,22 +159,31 @@
     }));
   }
 
-  function sortGroups(resultGroups: FileResultGroup[], sortBy: SearchOptions['sort_by']) {
+  function sortGroups(
+    resultGroups: FileResultGroup[],
+    sortBy: SearchOptions['sort_by'],
+    direction: SearchOptions['sort_direction']
+  ) {
     const nextGroups = resultGroups.map((group) => ({ ...group, matches: [...group.matches] }));
+    const multiplier = direction === 'desc' ? -1 : 1;
 
     if (sortBy === 'file_name') {
-      return nextGroups.sort((a, b) => filename(a.path).localeCompare(filename(b.path)));
+      return nextGroups.sort((a, b) => multiplier * filename(a.path).localeCompare(filename(b.path)));
     }
 
     if (sortBy === 'modified_date') {
-      return nextGroups.sort((a, b) => (b.matches[0]?.modified_secs ?? 0) - (a.matches[0]?.modified_secs ?? 0));
+      return nextGroups.sort(
+        (a, b) => multiplier * ((a.matches[0]?.modified_secs ?? 0) - (b.matches[0]?.modified_secs ?? 0))
+      );
     }
 
     if (sortBy === 'match_count') {
-      return nextGroups.sort((a, b) => b.matches.length - a.matches.length || a.path.localeCompare(b.path));
+      return nextGroups.sort(
+        (a, b) => multiplier * (a.matches.length - b.matches.length) || a.path.localeCompare(b.path)
+      );
     }
 
-    return nextGroups;
+    return direction === 'desc' ? nextGroups : nextGroups.reverse();
   }
 
   function filename(filePath: string) {
@@ -219,15 +236,18 @@
     options.regex = mode === 'regex';
   }
 
-  function currentCriteria(name = query.trim() || filename(path.trim()) || 'Untitled search'): SearchCriteria {
+  function currentCriteria(
+    name = query.trim() || filename(path.trim()) || 'Untitled search',
+    settings = { includeFilters: true, includePath: true, includeOptions: true }
+  ): SearchCriteria {
     return {
       id: `${Date.now()}:${Math.random().toString(16).slice(2)}`,
       name,
       query,
-      path,
-      includePatterns,
-      excludePatterns,
-      options: snapshotSearchOptions()
+      path: settings.includePath ? path : '',
+      includePatterns: settings.includeFilters ? includePatterns : '',
+      excludePatterns: settings.includeFilters ? excludePatterns : '',
+      options: settings.includeOptions ? snapshotSearchOptions() : defaultSearchOptions()
     };
   }
 
@@ -254,8 +274,8 @@
       file_type: options.file_type,
       custom_file_type: options.custom_file_type,
       sort_by: options.sort_by,
+      sort_direction: options.sort_direction,
       show_line_numbers: options.show_line_numbers,
-      show_file_headers: options.show_file_headers,
       group_by_file: options.group_by_file
     };
   }
@@ -271,9 +291,38 @@
     contextLines = options.context_lines;
   }
 
+  function openSaveDialog() {
+    saveSearchName = query.trim() || filename(path.trim()) || 'Untitled search';
+    saveIncludeFilters = true;
+    saveIncludePath = true;
+    saveIncludeOptions = true;
+    saveDialogOpen = true;
+  }
+
   function saveCurrentCriteria() {
-    const criteria = currentCriteria();
+    const cleanName = saveSearchName.trim() || query.trim() || filename(path.trim()) || 'Untitled search';
+    const criteria = currentCriteria(cleanName, {
+      includeFilters: saveIncludeFilters,
+      includePath: saveIncludePath,
+      includeOptions: saveIncludeOptions
+    });
     savedSearches = [criteria, ...savedSearches.filter((search) => search.name !== criteria.name)].slice(0, 20);
+    saveCriteria(SAVED_SEARCHES_KEY, savedSearches);
+    saveDialogOpen = false;
+  }
+
+  function renameSavedSearch(criteria: SearchCriteria) {
+    const nextName = window.prompt('Rename saved search', criteria.name)?.trim();
+    if (!nextName) return;
+
+    savedSearches = savedSearches.map((search) => (search.id === criteria.id ? { ...search, name: nextName } : search));
+    saveCriteria(SAVED_SEARCHES_KEY, savedSearches);
+  }
+
+  function deleteSavedSearch(criteria: SearchCriteria) {
+    if (!window.confirm(`Delete "${criteria.name}"?`)) return;
+
+    savedSearches = savedSearches.filter((search) => search.id !== criteria.id);
     saveCriteria(SAVED_SEARCHES_KEY, savedSearches);
   }
 
@@ -472,6 +521,16 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'r' && searchModeRegex()) {
+      event.preventDefault();
+      if (regexTesterOpen) {
+        closeRegexTester();
+      } else {
+        openRegexTester();
+      }
+      return;
+    }
+
     if (event.key === 'Escape' && searchState === 'searching') {
       event.preventDefault();
       void stopCurrentSearch();
@@ -686,6 +745,22 @@
     compactView = 'results';
   }
 
+  function openRegexTester() {
+    regexTesterOpen = true;
+    compactView = 'preview';
+  }
+
+  function closeRegexTester() {
+    regexTesterOpen = false;
+    compactView = 'results';
+  }
+
+  $effect(() => {
+    if (!searchModeRegex()) {
+      closeRegexTester();
+    }
+  });
+
   $effect(() => {
     if (!selected) {
       loadedPreviewKey = '';
@@ -755,7 +830,13 @@
     bind:options
     searching={searchState === 'searching' || searchState === 'stopping'}
     stopping={searchState === 'stopping'}
+    {savedSearches}
     onFilters={() => (filtersOpen = true)}
+    onRegexTester={openRegexTester}
+    onApplyCriteria={applyCriteria}
+    onSaveRequest={openSaveDialog}
+    onRenameCriteria={renameSavedSearch}
+    onDeleteCriteria={deleteSavedSearch}
     onSearch={startSearch}
     onStop={stopCurrentSearch}
   />
@@ -801,32 +882,25 @@
   <div
     bind:this={workspaceElement}
     class:resizing={isResizingPreview}
-    class:has-preview={Boolean(selected)}
-    class:show-preview={compactView === 'preview'}
+    class:has-preview={Boolean(selected) || regexTesterOpen}
+    class:show-preview={compactView === 'preview' || regexTesterOpen}
     class="workspace"
     style:--preview-width={`${previewWidth}px`}
     style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, var(--preview-width))`}
   >
     <ScopePanel
-      bind:query
       bind:path
       bind:includePatterns
       bind:excludePatterns
       bind:contextLines
       bind:options
       includeHidden={options.hidden}
-      {recentSearches}
-      {savedSearches}
-      onApplyCriteria={applyCriteria}
-      onSaveCriteria={saveCurrentCriteria}
     />
     <ResultsPanel
       {groups}
       {query}
       regex={searchModeRegex()}
-      showLineNumbers={options.show_line_numbers}
-      showFileHeaders={options.show_file_headers}
-      groupByFile={options.group_by_file}
+      bind:options
       {selected}
       state={searchState}
       {hasSearched}
@@ -840,17 +914,26 @@
       class="panel-resizer"
       onpointerdown={startPreviewResize}
     ></button>
-    <PreviewPanel
-      {preview}
-      errorMessage={previewError}
-      total={matches.length}
-      onPrevious={() => selectOffset(-1)}
-      onNext={() => selectOffset(1)}
-      onSelect={selectMatch}
-      onOpen={openFile}
-      onReveal={revealFile}
-      onClose={closePreview}
-    />
+    {#if regexTesterOpen && searchModeRegex()}
+      <RegexTester
+        bind:query
+        bind:options
+        samples={regexSamples}
+        onClose={closeRegexTester}
+      />
+    {:else}
+      <PreviewPanel
+        {preview}
+        errorMessage={previewError}
+        total={matches.length}
+        onPrevious={() => selectOffset(-1)}
+        onNext={() => selectOffset(1)}
+        onSelect={selectMatch}
+        onOpen={openFile}
+        onReveal={revealFile}
+        onClose={closePreview}
+      />
+    {/if}
   </div>
 
   {#if filtersOpen}
@@ -873,18 +956,53 @@
           <button type="button" onclick={() => (filtersOpen = false)}>Close</button>
         </div>
         <ScopePanel
-          bind:query
           bind:path
           bind:includePatterns
           bind:excludePatterns
           bind:contextLines
           bind:options
           includeHidden={options.hidden}
-          {recentSearches}
-          {savedSearches}
-          onApplyCriteria={applyCriteria}
-          onSaveCriteria={saveCurrentCriteria}
         />
+      </div>
+    </div>
+  {/if}
+
+  {#if saveDialogOpen}
+    <div class="modal-layer" role="presentation">
+      <button
+        class="modal-backdrop"
+        type="button"
+        aria-label="Close save search"
+        onclick={() => (saveDialogOpen = false)}
+      ></button>
+      <div class="save-dialog" role="dialog" aria-modal="true" aria-label="Save search">
+        <form onsubmit={(event) => { event.preventDefault(); saveCurrentCriteria(); }}>
+          <header>
+            <h2>Save Search</h2>
+            <button type="button" onclick={() => (saveDialogOpen = false)}>Close</button>
+          </header>
+          <div class="save-body">
+            <div class="field">
+              <label for="saved-search-name">Save search as</label>
+              <input id="saved-search-name" type="text" bind:value={saveSearchName} placeholder="Name" autocomplete="off" />
+            </div>
+            <label class="check-row">
+              <input type="checkbox" bind:checked={saveIncludeFilters} />
+              <span>Include filters</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" bind:checked={saveIncludePath} />
+              <span>Include path</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" bind:checked={saveIncludeOptions} />
+              <span>Include options</span>
+            </label>
+          </div>
+          <footer>
+            <button class="primary-save" type="submit">Save</button>
+          </footer>
+        </form>
       </div>
     </div>
   {/if}
@@ -993,7 +1111,17 @@
     z-index: 20;
   }
 
-  .drawer-backdrop {
+  .modal-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+  }
+
+  .drawer-backdrop,
+  .modal-backdrop {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -1001,6 +1129,107 @@
     border: 0;
     padding: 0;
     background: rgba(30, 37, 45, 0.24);
+  }
+
+  .save-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(360px, calc(100vw - 36px));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: 0 18px 42px rgba(30, 37, 45, 0.22);
+  }
+
+  .save-dialog form {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .save-dialog header,
+  .save-dialog footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    background: var(--surface);
+  }
+
+  .save-dialog footer {
+    justify-content: flex-end;
+    border-top: 1px solid var(--border);
+    border-bottom: 0;
+  }
+
+  .save-dialog h2 {
+    margin: 0;
+    font-size: 14px;
+  }
+
+  .save-body {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .save-body .field {
+    display: grid;
+    gap: 5px;
+  }
+
+  .save-body label,
+  .save-body .check-row span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .save-body input[type='text'],
+  .save-body input:not([type]) {
+    width: 100%;
+    height: 34px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 0 9px;
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .save-body input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--focus);
+    outline: none;
+  }
+
+  .save-body .check-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .save-dialog button {
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0 9px;
+    color: var(--text);
+    background: var(--input);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .save-dialog .primary-save {
+    border-color: var(--accent);
+    color: #ffffff;
+    background: var(--accent);
   }
 
   .filters-drawer {
@@ -1129,19 +1358,22 @@
     }
 
     .workspace > :global(.results-panel),
-    .workspace > :global(.preview-panel) {
+    .workspace > :global(.preview-panel),
+    .workspace > :global(.regex-panel) {
       grid-column: 1;
       grid-row: 1;
       min-height: 0;
     }
 
     .workspace > :global(.preview-panel),
+    .workspace > :global(.regex-panel),
     .workspace.show-preview > :global(.results-panel),
     .panel-resizer {
       display: none;
     }
 
-    .workspace.show-preview > :global(.preview-panel) {
+    .workspace.show-preview > :global(.preview-panel),
+    .workspace.show-preview > :global(.regex-panel) {
       display: grid;
     }
   }

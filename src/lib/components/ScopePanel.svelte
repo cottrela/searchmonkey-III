@@ -1,45 +1,24 @@
 <script lang="ts">
   import PathInput from './PathInput.svelte';
-  import { defaultSearchOptions, type SearchCriteria, type SearchOptions } from '$lib/types';
+  import { defaultSearchOptions, type SearchOptions } from '$lib/types';
 
   let {
-    query = $bindable(''),
     path = $bindable(''),
     includePatterns = $bindable(''),
     excludePatterns = $bindable(''),
     contextLines = $bindable(0),
     options = $bindable<SearchOptions>(defaultSearchOptions()),
-    includeHidden = false,
-    recentSearches = [],
-    savedSearches = [],
-    onApplyCriteria,
-    onSaveCriteria
+    includeHidden = false
   }: {
-    query: string;
     path: string;
     includePatterns: string;
     excludePatterns: string;
     contextLines: number;
     options: SearchOptions;
     includeHidden?: boolean;
-    recentSearches?: SearchCriteria[];
-    savedSearches?: SearchCriteria[];
-    onApplyCriteria?: (criteria: SearchCriteria) => void;
-    onSaveCriteria?: () => void;
   } = $props();
 
   let advancedOpen = $state(false);
-  let regexPattern = $state('');
-  let regexTestText = $state(`src/main.rs
-src/utils/helpers.rs
-tests/test_search.rs
-README.md
-
-Error: failed to connect
-Warning: retrying request
-Info: operation completed`);
-
-  const regexMatches = $derived.by(() => testRegex(regexPattern || query, regexTestText));
 
   function setSearchMode(mode: SearchOptions['search_mode']) {
     options.search_mode = mode;
@@ -62,31 +41,6 @@ Info: operation completed`);
             : Math.max(1, options.modified_custom_days || 1);
 
     options.modified_after = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
-  }
-
-  function testRegex(pattern: string, text: string) {
-    if (!pattern || !text) return [];
-
-    try {
-      const flags = options.case_sensitive ? 'g' : 'gi';
-      const expression = new RegExp(pattern, flags);
-      const matches: Array<{ start: number; end: number; text: string }> = [];
-      let match: RegExpExecArray | null;
-
-      while ((match = expression.exec(text)) && matches.length < 20) {
-        matches.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          text: match[0] || '(empty)'
-        });
-
-        if (match[0] === '') expression.lastIndex += 1;
-      }
-
-      return matches;
-    } catch {
-      return [];
-    }
   }
 
   $effect(() => {
@@ -264,69 +218,6 @@ Info: operation completed`);
         </div>
       </section>
 
-      <section class="advanced-section">
-        <h3>Results</h3>
-        <div class="field">
-          <label for="sort-by">Sort results</label>
-          <select id="sort-by" bind:value={options.sort_by}>
-            <option value="relevance">Relevance</option>
-            <option value="file_name">File name</option>
-            <option value="modified_date">Modified date</option>
-            <option value="match_count">Match count</option>
-          </select>
-        </div>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={options.show_line_numbers} />
-          <span>Line numbers</span>
-        </label>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={options.show_file_headers} />
-          <span>File headers</span>
-        </label>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={options.group_by_file} />
-          <span>Group by file</span>
-        </label>
-      </section>
-
-      <section class="advanced-section">
-        <h3>Search history</h3>
-        <div class="field">
-          <label for="recent-searches">Recent searches</label>
-          <select id="recent-searches" onchange={(event) => onApplyCriteria?.(recentSearches[Number(event.currentTarget.value)])}>
-            <option value="">Select recent</option>
-            {#each recentSearches as search, index}
-              <option value={index}>{search.name}</option>
-            {/each}
-          </select>
-        </div>
-        <button class="panel-button" type="button" onclick={() => onSaveCriteria?.()}>Save criteria</button>
-        {#if savedSearches.length}
-          <div class="saved-list" aria-label="Saved searches">
-            {#each savedSearches as search}
-              <button type="button" onclick={() => onApplyCriteria?.(search)}>★ {search.name}</button>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <details class="advanced-section power-tools">
-        <summary>Power tools</summary>
-        <div class="field">
-          <label for="regex-pattern">Regex tester pattern</label>
-          <input id="regex-pattern" bind:value={regexPattern} placeholder="Pattern" spellcheck="false" />
-        </div>
-        <div class="field">
-          <label for="regex-test-text">Test text</label>
-          <textarea id="regex-test-text" bind:value={regexTestText} spellcheck="false"></textarea>
-        </div>
-        <div class="regex-matches">
-          <span>{regexMatches.length} matches</span>
-          {#each regexMatches as match}
-            <code>{match.text}</code>
-          {/each}
-        </div>
-      </details>
     </div>
   {/if}
 </aside>
@@ -368,8 +259,7 @@ Info: operation completed`);
   }
 
   input,
-  select,
-  textarea {
+  select {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
@@ -383,15 +273,8 @@ Info: operation completed`);
     padding: 0 9px;
   }
 
-  textarea {
-    height: 76px;
-    padding: 8px 9px;
-    resize: vertical;
-  }
-
   input:focus,
-  select:focus,
-  textarea:focus {
+  select:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--focus);
     outline: none;
@@ -454,8 +337,7 @@ Info: operation completed`);
     margin-bottom: 10px;
   }
 
-  h3,
-  .power-tools summary {
+  h3 {
     margin: 0;
     color: var(--text);
     font-size: 12px;
@@ -497,46 +379,4 @@ Info: operation completed`);
     gap: 8px;
   }
 
-  .panel-button,
-  .saved-list button {
-    height: 30px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    color: var(--text);
-    background: var(--input);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 750;
-    cursor: pointer;
-  }
-
-  .saved-list {
-    display: grid;
-    gap: 6px;
-  }
-
-  .saved-list button {
-    overflow: hidden;
-    padding: 0 8px;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .regex-matches {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .regex-matches code {
-    border: 1px solid var(--border-subtle);
-    border-radius: 4px;
-    padding: 2px 5px;
-    color: var(--text);
-    background: #fff8d9;
-  }
 </style>

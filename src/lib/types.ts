@@ -53,6 +53,7 @@ export type SearchMode = 'literal' | 'regex';
 export type ModifiedPreset = 'any' | '24h' | '7d' | '30d' | 'custom';
 export type FileTypeFilter = 'all' | 'text' | 'code' | 'logs' | 'custom';
 export type ResultSort = 'relevance' | 'file_name' | 'modified_date' | 'match_count';
+export type ResultSortDirection = 'desc' | 'asc';
 
 export type SearchOptions = Pick<
   SearchRequest,
@@ -78,8 +79,8 @@ export type SearchOptions = Pick<
   file_type: FileTypeFilter;
   custom_file_type: string;
   sort_by: ResultSort;
+  sort_direction: ResultSortDirection;
   show_line_numbers: boolean;
-  show_file_headers: boolean;
   group_by_file: boolean;
 };
 
@@ -116,8 +117,8 @@ export function defaultSearchOptions(): SearchOptions {
     file_type: 'all',
     custom_file_type: '',
     sort_by: 'relevance',
+    sort_direction: 'desc',
     show_line_numbers: true,
-    show_file_headers: true,
     group_by_file: true
   };
 }
