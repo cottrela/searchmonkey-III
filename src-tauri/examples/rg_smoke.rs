@@ -8,6 +8,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri_app_lib::search::runner::{run_rg_child, SearchRunOptions};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 const DEFAULT_PATH: &str = "/Users/acottrell/Documents/Pebl Legal Action";
 const DEFAULT_QUERY: &str = "a";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
@@ -83,6 +89,9 @@ fn run_scenario(scenario: Scenario, config: &Config) -> std::io::Result<()> {
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
+
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
 
     if scenario.stderr_null {
         command.stderr(Stdio::null());

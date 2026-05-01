@@ -7,6 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::UNIX_EPOCH;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 pub struct RipgrepSidecarProvider {
     _app_handle: tauri::AppHandle,
 }
@@ -141,6 +147,9 @@ impl RipgrepSidecarProvider {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
 
         #[cfg(unix)]
         {
