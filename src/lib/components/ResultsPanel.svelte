@@ -26,8 +26,8 @@
 
   const FULL_LINE_LIMIT = 200;
   const SNIPPET_CONTEXT = 64;
-  const FILE_ROW_HEIGHT = 50;
-  const MATCH_ROW_HEIGHT = 34;
+  const FILE_ROW_HEIGHT = 46;
+  const MATCH_ROW_HEIGHT = 30;
   const OVERSCAN = 12;
   const MOBILE_MATCH_LIMIT = 10;
 
@@ -62,6 +62,7 @@
   let expandedFiles = $state<Set<string>>(new Set());
 
   const rows = $derived.by(() => buildRows(groups));
+  const matchTotal = $derived.by(() => groups.reduce((total, group) => total + group.matches.length, 0));
   const totalHeight = $derived.by(() => {
     const last = rows.at(-1);
     return last ? last.top + last.height : 0;
@@ -257,6 +258,10 @@
     return `${count} ${count === 1 ? 'match' : 'matches'}`;
   }
 
+  function formatCount(count: number) {
+    return new Intl.NumberFormat().format(count);
+  }
+
   function updateScrollMetrics() {
     if (!resultsElement) return;
 
@@ -288,7 +293,10 @@
 
 <section bind:this={resultsElement} class="results-panel" aria-label="Search results" onscroll={updateScrollMetrics}>
   <div class="panel-title">
-    <h2>Results <span>({groups.length} files, {groups.reduce((total, group) => total + group.matches.length, 0)} matches)</span></h2>
+    <div class="title-block">
+      <h2>Results</h2>
+      <span>{formatCount(groups.length)} files · {formatCount(matchTotal)} matches</span>
+    </div>
     <div class="result-controls" aria-label="Result display settings">
       <label>
         <span>Sort</span>
@@ -319,15 +327,10 @@
 
   {#if !hasSearched}
     <div class="empty">Choose a folder and search text files</div>
-  {:else if searchState === 'searching' && groups.length === 0}
+  {:else if (searchState === 'starting' || searchState === 'running' || searchState === 'cancelling') && groups.length === 0}
     <div class="empty active-search">
       <span class="spinner" aria-hidden="true"></span>
-      <span>Searching current files...</span>
-    </div>
-  {:else if searchState === 'stopping' && groups.length === 0}
-    <div class="empty active-search">
-      <span class="spinner" aria-hidden="true"></span>
-      <span>Stopping search...</span>
+      <span>{searchState === 'cancelling' ? 'Cancelling search...' : 'Searching current files...'}</span>
     </div>
   {:else if groups.length === 0}
     <div class="empty">No matches found</div>
@@ -480,10 +483,10 @@
     top: 0;
     z-index: 1;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
     align-items: center;
-    min-height: 47px;
+    min-height: 54px;
     border-bottom: 1px solid var(--border);
     padding: 6px 14px;
     background: var(--surface);
@@ -494,7 +497,14 @@
     font-size: 14px;
   }
 
-  h2 span {
+  .title-block {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
+  .title-block span {
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
@@ -504,7 +514,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
 
   .result-controls label {
@@ -566,13 +576,13 @@
 
   .current-file-header {
     position: sticky;
-    top: 47px;
+    top: 54px;
     z-index: 3;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
-    min-height: 50px;
+    min-height: 46px;
     border-bottom: 1px solid var(--border);
     padding: 6px 11px;
     background: var(--panel);
@@ -610,7 +620,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
-    height: 50px;
+    height: 46px;
     border-bottom: 1px solid var(--border-subtle);
     border-radius: 5px 5px 0 0;
     padding: 6px 11px;
@@ -734,11 +744,11 @@
     grid-template-columns: 54px minmax(0, 1fr);
     gap: 8px;
     width: 100%;
-    height: 34px;
+    height: 30px;
     border: 0;
     border-bottom: 1px solid var(--border-subtle);
     border-radius: 0;
-    padding: 7px 9px;
+    padding: 5px 9px;
     color: var(--text);
     background: transparent;
     font: inherit;
@@ -770,7 +780,7 @@
     overflow: hidden;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
-    line-height: 19px;
+    line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -779,7 +789,7 @@
     border-radius: 3px;
     padding: 0 1px;
     color: #241800;
-    background: #ffd86b;
+    background: #ffe6a3;
   }
 
   @media (max-width: 1199px) {
@@ -797,6 +807,11 @@
 
     .result-controls {
       justify-content: flex-start;
+    }
+
+    .title-block {
+      display: grid;
+      gap: 1px;
     }
 
     .result-controls label:not(.toggle-control) > span {
@@ -961,8 +976,8 @@
 
     .mobile-match-row {
       grid-template-columns: 46px minmax(0, 1fr);
-      height: 36px;
-      padding: 8px;
+      height: 34px;
+      padding: 7px 8px;
     }
 
     .show-more {

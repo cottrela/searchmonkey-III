@@ -1,4 +1,5 @@
 pub mod ripgrep;
+pub mod runner;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,28 +59,22 @@ pub struct FilePreviewLine {
     pub match_ranges: Vec<SearchSubmatch>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum SearchState {
+    Starting,
+    Running,
+    Cancelling,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SearchStreamEvent {
-    Started {
-        search_id: u64,
-    },
-    Batch {
-        search_id: u64,
-        results: Vec<SearchMatch>,
-    },
-    Error {
-        search_id: u64,
-        message: String,
-    },
-    Finished {
-        search_id: u64,
-        total_matches: usize,
-    },
-    Cancelled {
-        search_id: u64,
-        total_matches: usize,
-    },
+pub struct SearchStatus {
+    pub search_id: u64,
+    pub state: SearchState,
+    pub total_matches: usize,
+    pub error_message: Option<String>,
 }
 
 #[async_trait::async_trait]

@@ -35,11 +35,6 @@ impl RipgrepSidecarProvider {
             args.push(request.max_file_size.trim().to_string());
         }
 
-        if request.max_matches > Some(0) {
-            args.push("--max-count".to_string());
-            args.push(request.max_matches.unwrap().to_string());
-        }
-
         if request.context_lines > 0 {
             args.push("--context".to_string());
             args.push(request.context_lines.min(20).to_string());
@@ -135,14 +130,17 @@ impl RipgrepSidecarProvider {
         let program = sidecar_path("rg")?;
         let args = Self::args(request);
 
-        eprintln!("searchmonkey rg command: {}", debug_command_line(&program, &args));
+        eprintln!(
+            "searchmonkey rg command: {}",
+            debug_command_line(&program, &args)
+        );
 
         let mut command = Command::new(program);
         command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::null());
 
         #[cfg(unix)]
         {
@@ -210,7 +208,9 @@ pub fn add_file_metadata(result: &mut SearchMatch) {
 
 pub fn matches_modified_filter(result: &SearchMatch, modified_after: Option<u64>) -> bool {
     match modified_after {
-        Some(after) => result.modified_secs.is_some_and(|modified| modified >= after),
+        Some(after) => result
+            .modified_secs
+            .is_some_and(|modified| modified >= after),
         None => true,
     }
 }
@@ -238,7 +238,7 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn parse_submatches(items: &[Value], line_text: &str) -> Vec<SearchSubmatch> {
-    let mut submatches = items
+    let mut ranges = items
         .iter()
         .filter_map(|item| {
             let start = item["start"].as_u64()? as usize;
@@ -248,9 +248,29 @@ fn parse_submatches(items: &[Value], line_text: &str) -> Vec<SearchSubmatch> {
                 return None;
             }
 
+            Some((start, end))
+        })
+        .collect::<Vec<_>>();
+
+    ranges.sort_by_key(|range| (range.0, range.1));
+
+    if line_text.is_ascii() {
+        return ranges
+            .into_iter()
+            .map(|(start, end)| SearchSubmatch { start, end })
+            .collect();
+    }
+
+    let offsets = byte_to_utf16_offsets(
+        line_text,
+        ranges.iter().flat_map(|(start, end)| [*start, *end]),
+    );
+    let mut submatches = ranges
+        .into_iter()
+        .filter_map(|(start, end)| {
             Some(SearchSubmatch {
-                start: byte_to_utf16_offset(line_text, start),
-                end: byte_to_utf16_offset(line_text, end),
+                start: *offsets.get(&start)?,
+                end: *offsets.get(&end)?,
             })
         })
         .collect::<Vec<_>>();
@@ -259,11 +279,33 @@ fn parse_submatches(items: &[Value], line_text: &str) -> Vec<SearchSubmatch> {
     submatches
 }
 
-fn byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
-    text.char_indices()
-        .take_while(|(index, _)| *index < byte_offset)
-        .map(|(_, character)| character.len_utf16())
-        .sum()
+fn byte_to_utf16_offsets<I>(text: &str, byte_offsets: I) -> std::collections::HashMap<usize, usize>
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut requested = byte_offsets.into_iter().collect::<Vec<_>>();
+    requested.sort_unstable();
+    requested.dedup();
+
+    let mut resolved = std::collections::HashMap::with_capacity(requested.len());
+    let mut requested_index = 0usize;
+    let mut utf16_offset = 0usize;
+
+    for (byte_index, character) in text.char_indices() {
+        while requested_index < requested.len() && requested[requested_index] <= byte_index {
+            resolved.insert(requested[requested_index], utf16_offset);
+            requested_index += 1;
+        }
+
+        utf16_offset += character.len_utf16();
+    }
+
+    while requested_index < requested.len() {
+        resolved.insert(requested[requested_index], utf16_offset);
+        requested_index += 1;
+    }
+
+    resolved
 }
 
 #[async_trait]

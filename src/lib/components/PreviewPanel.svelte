@@ -26,6 +26,7 @@
     preview,
     errorMessage,
     total,
+    drilldown = false,
     onPrevious,
     onNext,
     onSelect,
@@ -36,6 +37,7 @@
     preview: PreviewState;
     errorMessage: string;
     total: number;
+    drilldown?: boolean;
     onPrevious: () => void;
     onNext: () => void;
     onSelect: (match: PreviewState['matches'][number]) => void;
@@ -213,15 +215,46 @@
   });
 </script>
 
-<aside class="preview-panel" aria-label="Match preview">
+<aside class="preview-panel" class:drilldown aria-label="Match preview">
   {#if preview.filePath}
     <div class="mobile-preview-toolbar">
       <button type="button" onclick={onClose} title="Back to results">← Results</button>
       <span></span>
-      <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-      <details>
+      <div class="drilldown-actions">
+        <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
+        <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+        <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+          Copy match
+        </button>
+        <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+          Copy line
+        </button>
+        <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+        <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
+          {effectiveWrap ? 'Disable wrap' : 'Wrap'}
+        </button>
+      </div>
+      <details class="compact-actions">
         <summary title="More actions" aria-label="More actions">...</summary>
         <div class="menu">
+          <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
+          <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+            Copy match
+          </button>
+          <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+            Copy line
+          </button>
+          <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+          <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
+            {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
+          </button>
+        </div>
+      </details>
+      <details class="mobile-actions">
+        <summary title="More actions" aria-label="More actions">...</summary>
+        <div class="menu">
+          <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
           <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
           <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
             Copy match
@@ -402,7 +435,7 @@
 
   .match-nav {
     display: grid;
-    grid-template-columns: 26px 78px 26px;
+    grid-template-columns: 24px 64px 24px;
     align-items: center;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -411,7 +444,7 @@
   }
 
   .match-nav button {
-    height: 28px;
+    height: 24px;
     border: 0;
     border-radius: 0;
     padding: 0;
@@ -420,7 +453,7 @@
 
   .match-nav span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 800;
     text-align: center;
     white-space: nowrap;
@@ -482,6 +515,71 @@
   .mobile-preview-file,
   .mobile-match-nav {
     display: none;
+  }
+
+  .preview-panel.drilldown {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .preview-panel.drilldown .panel-title {
+    display: none;
+  }
+
+  .preview-panel.drilldown .mobile-preview-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    min-height: 38px;
+    border-bottom: 1px solid var(--border);
+    padding: 5px 8px;
+    background: var(--panel);
+  }
+
+  .drilldown-actions {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .compact-actions,
+  .mobile-actions {
+    display: none;
+  }
+
+  .preview-panel.drilldown .drilldown-actions {
+    display: flex;
+  }
+
+  .preview-panel.drilldown .compact-actions {
+    display: none;
+  }
+
+  .preview-panel.drilldown .mobile-preview-file {
+    display: grid;
+    gap: 1px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 6px 8px;
+    background: var(--surface);
+  }
+
+  .preview-panel.drilldown .mobile-preview-file strong,
+  .preview-panel.drilldown .mobile-preview-file span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .preview-panel.drilldown .mobile-preview-file strong {
+    font-size: 13px;
+  }
+
+  .preview-panel.drilldown .mobile-preview-file span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
   }
 
   .preview-body {
@@ -564,12 +662,12 @@
     border-radius: 3px;
     padding: 0 1px;
     color: #241800;
-    background: #ffd86b;
+    background: #ffc94d;
   }
 
   .match.active {
     outline: 1px solid #b06b00;
-    background: #ffbd3d;
+    background: #ffad1f;
   }
 
   button {
@@ -635,6 +733,17 @@
       border-bottom: 1px solid var(--border);
       padding: 5px 8px;
       background: var(--panel);
+    }
+
+    .drilldown-actions,
+    .compact-actions,
+    .preview-panel.drilldown .drilldown-actions,
+    .preview-panel.drilldown .compact-actions {
+      display: none;
+    }
+
+    .mobile-actions {
+      display: block;
     }
 
     .mobile-preview-toolbar > span {

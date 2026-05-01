@@ -1,33 +1,48 @@
-mod search;
+pub mod search;
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Child;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use search::{
-    ripgrep::RipgrepSidecarProvider, FilePreview, FilePreviewLine, SearchMatch, SearchProvider,
-    SearchRequest, SearchStreamEvent,
+    ripgrep::RipgrepSidecarProvider,
+    runner::{run_rg_child, SearchRunOptions},
+    FilePreview, FilePreviewLine, SearchMatch, SearchProvider, SearchRequest, SearchState,
+    SearchStatus,
 };
-use tauri::{ipc::Channel, Manager, State};
+use tauri::State;
 
-const SEARCH_BATCH_SIZE: usize = 500;
-const SEARCH_BATCH_INTERVAL_MS: u64 = 75;
-const UI_RESULT_LIMIT: usize = 10_000;
+const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
 
 #[derive(Default)]
-struct SearchRuntime {
-    current: Mutex<Option<RunningSearch>>,
+struct SearchSessions {
+    next_id: AtomicU64,
+    sessions: Mutex<std::collections::HashMap<u64, Arc<SearchSession>>>,
 }
 
-struct RunningSearch {
-    id: u64,
-    child: Option<Child>,
-    events: Channel<SearchStreamEvent>,
+struct SearchSession {
+    status: Mutex<SearchStatus>,
+    results: Mutex<Vec<SearchMatch>>,
+    child_pid: Mutex<Option<u32>>,
+}
+
+impl SearchSession {
+    fn new(search_id: u64) -> Self {
+        Self {
+            status: Mutex::new(SearchStatus {
+                search_id,
+                state: SearchState::Starting,
+                total_matches: 0,
+                error_message: None,
+            }),
+            results: Mutex::new(Vec::new()),
+            child_pid: Mutex::new(None),
+        }
+    }
 }
 
 #[tauri::command]
@@ -53,9 +68,11 @@ async fn read_file_preview(
         return Err("Preview line range is invalid.".to_string());
     }
 
-    tauri::async_runtime::spawn_blocking(move || read_file_preview_range(path, start_line, end_line))
-        .await
-        .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        read_file_preview_range(path, start_line, end_line)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 fn read_file_preview_range(
@@ -72,7 +89,9 @@ fn read_file_preview_range(
         let number = index as u64 + 1;
 
         if number > PREVIEW_MAX_SCAN_LINES {
-            return Err("Preview skipped because the match is too deep in a large file.".to_string());
+            return Err(
+                "Preview skipped because the match is too deep in a large file.".to_string(),
+            );
         }
 
         if number < start_line {
@@ -169,263 +188,211 @@ fn expand_home_path(path: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 async fn start_search(
     app: tauri::AppHandle,
-    runtime: State<'_, SearchRuntime>,
     request: SearchRequest,
-    search_id: u64,
-    events: Channel<SearchStreamEvent>,
+    sessions: State<'_, SearchSessions>,
 ) -> Result<u64, String> {
-    {
-        let current = runtime
-            .current
-            .lock()
-            .map_err(|_| "Search state is unavailable".to_string())?;
-
-        if current.is_some() {
-            return Err(
-                "A search is already running. Stop it before starting another.".to_string(),
-            );
-        }
-    }
-
+    let search_id = sessions.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let session = Arc::new(SearchSession::new(search_id));
     let provider = RipgrepSidecarProvider::new(app.clone());
     let result_limit = request.max_matches.unwrap_or(UI_RESULT_LIMIT).max(1);
     let modified_after = request.modified_after;
     let mut child = provider.spawn(request).map_err(|err| err.to_string())?;
+    let child_pid = child.id();
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "ripgrep stdout was not available".to_string())?;
-    let stderr = child.stderr.take();
+    *session
+        .child_pid
+        .lock()
+        .map_err(|_| "search process handle is unavailable".to_string())? = Some(child_pid);
+    sessions
+        .sessions
+        .lock()
+        .map_err(|_| "search session store is unavailable".to_string())?
+        .insert(search_id, session.clone());
 
-    {
-        let mut current = runtime
-            .current
-            .lock()
-            .map_err(|_| "Search state is unavailable".to_string())?;
+    set_search_state(&session, SearchState::Running, None);
 
-        *current = Some(RunningSearch {
-            id: search_id,
-            child: Some(child),
-            events: events.clone(),
-        });
-    }
-
-    events
-        .send(SearchStreamEvent::Started { search_id })
-        .map_err(|err| err.to_string())?;
-
-    let app_for_stdout = app.clone();
-    let events_for_stdout = events.clone();
     thread::spawn(move || {
-        let mut total_matches = 0usize;
-        let mut batch = Vec::with_capacity(SEARCH_BATCH_SIZE);
-        let mut last_emit = Instant::now();
-        let reader = BufReader::new(stdout);
+        let summary = run_rg_child(
+            child,
+            stdout,
+            SearchRunOptions {
+                search_id,
+                result_limit,
+                modified_after,
+            },
+            |result, total_matches| {
+                if let Ok(mut results) = session.results.lock() {
+                    results.push(result);
+                }
+                if let Ok(mut status) = session.status.lock() {
+                    status.total_matches = total_matches;
+                }
+            },
+        );
 
-        for line in reader.split(b'\n') {
-            if !is_active_search(&app_for_stdout, search_id) {
-                break;
-            }
-
-            let Ok(line) = line else {
-                continue;
-            };
-
-            let Some(mut result) = RipgrepSidecarProvider::parse_match(&line) else {
-                continue;
-            };
-
-            search::ripgrep::add_file_metadata(&mut result);
-            if !search::ripgrep::matches_modified_filter(&result, modified_after) {
-                continue;
-            }
-
-            total_matches += 1;
-            if total_matches <= result_limit {
-                batch.push(result);
-            }
-
-            if batch.len() >= SEARCH_BATCH_SIZE
-                || (!batch.is_empty()
-                    && last_emit.elapsed() >= Duration::from_millis(SEARCH_BATCH_INTERVAL_MS))
-            {
-                emit_batch(&events_for_stdout, search_id, &mut batch);
-                last_emit = Instant::now();
-            }
-
-            if total_matches >= result_limit {
-                break;
-            }
+        if let Ok(mut status) = session.status.lock() {
+            status.total_matches = summary.total_matches;
         }
-
-        emit_batch(&events_for_stdout, search_id, &mut batch);
-
-        if let Some(mut child) = take_active_child(&app_for_stdout, search_id) {
-            let _ = child.kill();
-            let _ = child.wait();
+        let current_state = session
+            .status
+            .lock()
+            .ok()
+            .map(|status| status.state.clone())
+            .unwrap_or(SearchState::Failed);
+        let final_state = if current_state == SearchState::Cancelling {
+            SearchState::Cancelled
+        } else {
+            summary.final_state
+        };
+        set_search_state(&session, final_state, summary.error_message);
+        if let Ok(mut session_child_pid) = session.child_pid.lock() {
+            *session_child_pid = None;
         }
-
-        if is_active_search(&app_for_stdout, search_id) {
-            clear_active_search(&app_for_stdout, search_id);
-        }
-
-        let _ = events_for_stdout.send(SearchStreamEvent::Finished {
-            search_id,
-            total_matches,
-        });
     });
-
-    if let Some(stderr) = stderr {
-        let app_for_stderr = app.clone();
-        let events_for_stderr = events.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-
-            for line in reader.lines() {
-                if !is_active_search(&app_for_stderr, search_id) {
-                    break;
-                }
-
-                let Ok(message) = line else {
-                    continue;
-                };
-
-                if !message.trim().is_empty() {
-                    let _ = events_for_stderr.send(SearchStreamEvent::Error { search_id, message });
-                }
-            }
-        });
-    }
 
     Ok(search_id)
 }
 
-fn emit_batch(events: &Channel<SearchStreamEvent>, search_id: u64, batch: &mut Vec<SearchMatch>) {
-    if batch.is_empty() {
-        return;
-    }
-
-    let results = std::mem::take(batch);
-    let _ = events.send(SearchStreamEvent::Batch { search_id, results });
-}
-
-fn take_active_child(app: &tauri::AppHandle, search_id: u64) -> Option<Child> {
-    app.state::<SearchRuntime>()
-        .current
+#[tauri::command]
+fn get_search_status(
+    sessions: State<'_, SearchSessions>,
+    search_id: u64,
+) -> Result<SearchStatus, String> {
+    let session = find_session(&sessions, search_id)?;
+    session
+        .status
         .lock()
-        .ok()
-        .and_then(|mut current| {
-            if current
-                .as_ref()
-                .is_some_and(|running| running.id == search_id)
-            {
-                current.as_mut().and_then(|running| running.child.take())
-            } else {
-                None
-            }
-        })
-}
-
-fn clear_active_search(app: &tauri::AppHandle, search_id: u64) {
-    if let Ok(mut current) = app.state::<SearchRuntime>().current.lock() {
-        if current
-            .as_ref()
-            .is_some_and(|running| running.id == search_id)
-        {
-            current.take();
-        }
-    }
+        .map(|status| status.clone())
+        .map_err(|_| "search status is unavailable".to_string())
 }
 
 #[tauri::command]
-async fn stop_search(runtime: State<'_, SearchRuntime>, search_id: u64) -> Result<(), String> {
-    let running = {
-        let mut current = runtime
-            .current
-            .lock()
-            .map_err(|_| "Search state is unavailable".to_string())?;
+fn get_results(
+    sessions: State<'_, SearchSessions>,
+    search_id: u64,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<SearchMatch>, String> {
+    let session = find_session(&sessions, search_id)?;
+    let results = session
+        .results
+        .lock()
+        .map_err(|_| "search results are unavailable".to_string())?;
+    if offset >= results.len() {
+        return Ok(Vec::new());
+    }
 
-        match current.as_ref().map(|running| running.id) {
-            Some(active_id) if active_id == search_id => current.take(),
-            Some(_) => return Err("The active search does not match the stop request.".to_string()),
-            None => None,
-        }
-    };
+    let end = offset.saturating_add(limit).min(results.len());
+    Ok(results[offset..end].to_vec())
+}
 
-    if let Some(mut running) = running {
-        if let Some(child) = running.child.take() {
-            kill_child(child)?;
-        }
+#[tauri::command]
+fn cancel_search(sessions: State<'_, SearchSessions>, search_id: u64) -> Result<(), String> {
+    let session = find_session(&sessions, search_id)?;
+    set_search_state(&session, SearchState::Cancelling, None);
 
-        running
-            .events
-            .send(SearchStreamEvent::Cancelled {
-                search_id,
-                total_matches: 0,
-            })
-            .map_err(|err| err.to_string())?;
+    let child_pid = session
+        .child_pid
+        .lock()
+        .map_err(|_| "search process handle is unavailable".to_string())?
+        .to_owned();
+    if let Some(child_pid) = child_pid {
+        kill_search_process(child_pid).map_err(|err| err.to_string())?;
     }
 
     Ok(())
 }
 
-fn is_active_search(app: &tauri::AppHandle, search_id: u64) -> bool {
-    app.state::<SearchRuntime>()
-        .current
+#[tauri::command]
+fn clear_search(sessions: State<'_, SearchSessions>, search_id: u64) -> Result<(), String> {
+    let session = sessions
+        .sessions
         .lock()
-        .is_ok_and(|current| {
-            current
-                .as_ref()
-                .is_some_and(|running| running.id == search_id)
-        })
+        .map_err(|_| "search session store is unavailable".to_string())?
+        .remove(&search_id);
+    if let Some(session) = session {
+        let child_pid = session
+            .child_pid
+            .lock()
+            .map_err(|_| "search process handle is unavailable".to_string())?
+            .to_owned();
+        if let Some(child_pid) = child_pid {
+            let _ = kill_search_process(child_pid);
+        }
+    }
+
+    Ok(())
 }
 
-fn kill_child(mut child: Child) -> Result<(), String> {
-    let pid = child.id();
+fn find_session(
+    sessions: &State<'_, SearchSessions>,
+    search_id: u64,
+) -> Result<Arc<SearchSession>, String> {
+    sessions
+        .sessions
+        .lock()
+        .map_err(|_| "search session store is unavailable".to_string())?
+        .get(&search_id)
+        .cloned()
+        .ok_or_else(|| "search session was not found".to_string())
+}
 
+fn set_search_state(session: &SearchSession, state: SearchState, error_message: Option<String>) {
+    if let Ok(mut status) = session.status.lock() {
+        status.state = state;
+        status.error_message = error_message;
+    }
+}
+
+fn kill_search_process(pid: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        let group = -(pid as libc::pid_t);
-
+        let pid = pid as i32;
         unsafe {
-            libc::kill(group, libc::SIGTERM);
-        }
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        if child.try_wait().map_err(|err| err.to_string())?.is_none() {
-            unsafe {
-                libc::kill(group, libc::SIGKILL);
+            if libc::kill(-pid, libc::SIGTERM) == 0 {
+                return Ok(());
             }
         }
 
-        let _ = child.kill();
-        let _ = child.wait();
-        return Ok(());
+        unsafe {
+            if libc::kill(pid, libc::SIGTERM) == 0 {
+                return Ok(());
+            }
+        }
+
+        return Err(std::io::Error::last_os_error());
     }
 
     #[cfg(not(unix))]
     {
-        let kill_result = child.kill().map_err(|err| err.to_string());
-        let _ = child.wait();
-        kill_result
+        let _ = pid;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "cancel by process id is not supported on this platform",
+        ))
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(SearchRuntime::default())
+        .manage(SearchSessions::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            cancel_search,
+            clear_search,
+            get_results,
+            get_search_status,
             home_dir,
             list_directory,
             read_file_preview,
             search_files,
-            start_search,
-            stop_search
+            start_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
