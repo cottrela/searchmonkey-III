@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { filename } from '$lib/paths';
   import { defaultSearchOptions, type SearchMatch, type SearchOptions } from '$lib/types';
 
   type SampleResult = {
@@ -97,10 +98,6 @@
     onClose();
   }
 
-  function filename(filePath: string) {
-    const parts = filePath.split('/').filter(Boolean);
-    return parts.at(-1) || filePath;
-  }
 </script>
 
 <aside class="regex-panel" aria-label="Regex tester">

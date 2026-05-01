@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { PreviewState } from '$lib/types';
+  import { filename, parentPath } from '$lib/paths';
 
   type Segment = {
     text: string;
@@ -185,17 +186,6 @@
   function copyText(text: string) {
     if (!text) return;
     void navigator.clipboard?.writeText(text);
-  }
-
-  function filename(filePath: string) {
-    const parts = filePath.split('/').filter(Boolean);
-    return parts.at(-1) || filePath;
-  }
-
-  function parentPath(filePath: string) {
-    const slashIndex = filePath.lastIndexOf('/');
-    if (slashIndex <= 0) return filePath;
-    return filePath.slice(0, slashIndex);
   }
 
   $effect(() => {

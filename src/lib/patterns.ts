@@ -1,8 +1,11 @@
+import { normalizeGlobPattern } from './paths';
+
 const GLOB_CHARACTERS = /[*?[\]{}]/;
 const PATH_SEPARATOR = /[/\\]/;
 
 export function normalizeIncludePatterns(input: string): string[] {
-  return splitPatterns(input).map((pattern) => {
+  return splitPatterns(input).map((rawPattern) => {
+    const pattern = normalizeGlobPattern(rawPattern);
     if (hasPathSeparator(pattern)) return normalizePathPattern(pattern);
     if (hasGlobCharacters(pattern)) return pattern;
 
@@ -11,7 +14,8 @@ export function normalizeIncludePatterns(input: string): string[] {
 }
 
 export function normalizeExcludePatterns(input: string): string[] {
-  return splitPatterns(input).map((pattern) => {
+  return splitPatterns(input).map((rawPattern) => {
+    const pattern = normalizeGlobPattern(rawPattern);
     if (hasPathSeparator(pattern)) return normalizePathPattern(pattern);
     if (hasGlobCharacters(pattern) || hasFileExtension(pattern)) return pattern;
 

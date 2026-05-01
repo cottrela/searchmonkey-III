@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { listDirectory } from '$lib/search';
+  import { ensureTrailingPathSeparator, preferredPathSeparator } from '$lib/paths';
 
   let {
     id,
@@ -173,7 +174,7 @@
       !suggestion.endsWith('\\') &&
       !suffix.startsWith('/') &&
       !suffix.startsWith('\\');
-    const nextSuffix = needsSeparator ? `/${suffix}` : suffix;
+    const nextSuffix = needsSeparator ? `${preferredPathSeparator(prefix || value)}${suffix}` : suffix;
 
     return `${prefix}${suggestion}${nextSuffix}`;
   }
@@ -187,8 +188,7 @@
   }
 
   function ensureTrailingSeparator(pathValue: string) {
-    if (!pathValue || /[\\/]$/.test(pathValue)) return pathValue;
-    return `${pathValue}/`;
+    return ensureTrailingPathSeparator(pathValue);
   }
 
   async function browseForDirectory() {
@@ -311,14 +311,17 @@
   }
 
   function buildPathSegments(pathValue: string): PathSegment[] {
-    const normalized = pathValue.replace(/\\/g, '/');
-    const rawSegments = normalized.split('/').filter(Boolean);
-    const isAbsolute = normalized.startsWith('/');
-    let current = isAbsolute ? '/' : '';
-    const segments: PathSegment[] = isAbsolute ? [{ label: '/', path: '/' }] : [];
+    const separator = preferredPathSeparator(pathValue);
+    const rawSegments = pathValue.split(separatorPattern).filter(Boolean);
+    let current = pathValue.startsWith('/') || pathValue.startsWith('\\') ? separator : '';
+    const segments: PathSegment[] =
+      pathValue.startsWith('/') || pathValue.startsWith('\\')
+        ? [{ label: separator, path: separator }]
+        : [];
 
     for (const segment of rawSegments) {
-      current = `${current}${segment}/`;
+      current = current ? ensureTrailingPathSeparator(current) : current;
+      current = `${current}${segment}${separator}`;
       segments.push({
         label: segment,
         path: current.replace(/[\\/]+$/, '')
@@ -329,7 +332,7 @@
   }
 
   function compressPathSegments(segments: PathSegment[]): PathSegment[] {
-    const startsAtRoot = segments[0]?.label === '/';
+    const startsAtRoot = ['/', '\\'].includes(segments[0]?.label);
     const leadingCount = startsAtRoot ? 2 : 1;
     const tailCount = 2;
 
@@ -343,7 +346,7 @@
   }
 
   function showSeparator(segments: PathSegment[], index: number) {
-    return index > 0 && segments[index - 1]?.label !== '/';
+    return index > 0 && !['/', '\\'].includes(segments[index - 1]?.label);
   }
 </script>
 
@@ -352,7 +355,7 @@
     <div class="breadcrumbs" aria-label="Path segments" title={value}>
       {#each visiblePathSegments as segment, index (`${segment.path}-${index}`)}
         {#if showSeparator(visiblePathSegments, index)}
-          <span aria-hidden="true">/</span>
+          <span aria-hidden="true">{preferredPathSeparator(value)}</span>
         {/if}
 
         {#if segment.ellipsis}

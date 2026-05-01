@@ -1,7 +1,7 @@
 pub mod search;
 
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -169,7 +169,7 @@ fn list_directory_entries(path: String, include_hidden: bool) -> Result<Vec<Stri
     Ok(suggestions
         .into_iter()
         .take(DIRECTORY_SUGGESTION_LIMIT)
-        .map(|name| format!("{name}/"))
+        .map(|name| format!("{name}{MAIN_SEPARATOR}"))
         .collect())
 }
 

@@ -66,12 +66,12 @@ impl RipgrepSidecarProvider {
 
         for pattern in include_patterns {
             args.push("--glob".to_string());
-            args.push(pattern);
+            args.push(normalize_glob_pattern(pattern));
         }
 
         for pattern in exclude_patterns {
             args.push("--glob".to_string());
-            args.push(format!("!{pattern}"));
+            args.push(format!("!{}", normalize_glob_pattern(pattern)));
         }
 
         if ignore_node_modules {
@@ -372,4 +372,8 @@ pub fn sidecar_path(program: &str) -> Result<PathBuf> {
     }
 
     Ok(command_path)
+}
+
+fn normalize_glob_pattern(pattern: String) -> String {
+    pattern.replace('\\', "/")
 }

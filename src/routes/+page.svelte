@@ -19,6 +19,7 @@
     startSearch as startSearchCommand
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
+  import { filename, normalizeGlobPattern } from '$lib/paths';
   import { defaultSearchOptions } from '$lib/types';
   import type {
     FileResultGroup,
@@ -284,11 +285,6 @@
     return direction === 'desc' ? nextGroups : nextGroups.reverse();
   }
 
-  function filename(filePath: string) {
-    const parts = filePath.split('/').filter(Boolean);
-    return parts.at(-1) || filePath;
-  }
-
   function formatCount(count: number) {
     return new Intl.NumberFormat().format(count);
   }
@@ -307,7 +303,7 @@
 
   function customFileTypePattern(pattern: string) {
     if (!pattern) return [];
-    if (pattern.includes('*')) return [pattern];
+    if (pattern.includes('*')) return [normalizeGlobPattern(pattern)];
 
     const mimePatterns: Record<string, string[]> = {
       'application/json': ['*.json'],
