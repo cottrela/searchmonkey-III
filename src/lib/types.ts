@@ -108,8 +108,8 @@ export type SearchCriteria = {
   name: string;
   query: string;
   path: string;
-  includePatterns: string;
-  excludePatterns: string;
+  includePatterns: string[];
+  excludePatterns: string[];
   options: SearchOptions;
 };
 

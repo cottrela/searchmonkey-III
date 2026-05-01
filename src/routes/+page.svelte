@@ -35,8 +35,8 @@
 
   let query = $state('');
   let path = $state('');
-  let includePatterns = $state('');
-  let excludePatterns = $state('');
+  let includePatterns = $state<string[]>([]);
+  let excludePatterns = $state<string[]>([]);
   let contextLines = $state(0);
   let options = $state<SearchOptions>(defaultSearchOptions());
   let recentSearches = $state<SearchCriteria[]>([]);
@@ -343,8 +343,8 @@
       name,
       query,
       path: settings.includePath ? path : '',
-      includePatterns: settings.includeFilters ? includePatterns : '',
-      excludePatterns: settings.includeFilters ? excludePatterns : '',
+      includePatterns: settings.includeFilters ? [...includePatterns] : [],
+      excludePatterns: settings.includeFilters ? [...excludePatterns] : [],
       options: settings.includeOptions ? snapshotSearchOptions() : defaultSearchOptions()
     };
   }
@@ -383,8 +383,8 @@
 
     query = criteria.query;
     path = criteria.path;
-    includePatterns = criteria.includePatterns;
-    excludePatterns = criteria.excludePatterns;
+    includePatterns = [...criteria.includePatterns];
+    excludePatterns = [...criteria.excludePatterns];
     options = { ...defaultSearchOptions(), ...criteria.options };
     contextLines = options.context_lines;
   }
@@ -432,8 +432,8 @@
         (search) =>
           search.query !== criteria.query ||
           search.path !== criteria.path ||
-          search.includePatterns !== criteria.includePatterns ||
-          search.excludePatterns !== criteria.excludePatterns
+          !sameStringArray(search.includePatterns, criteria.includePatterns) ||
+          !sameStringArray(search.excludePatterns, criteria.excludePatterns)
       )
     ].slice(0, 12);
     saveCriteria(RECENT_SEARCHES_KEY, recentSearches);
@@ -445,6 +445,8 @@
       if (!Array.isArray(parsed)) return [];
       return parsed.map((criteria) => ({
         ...criteria,
+        includePatterns: Array.isArray(criteria.includePatterns) ? criteria.includePatterns : [],
+        excludePatterns: Array.isArray(criteria.excludePatterns) ? criteria.excludePatterns : [],
         options: { ...defaultSearchOptions(), ...criteria.options }
       }));
     } catch {
@@ -454,6 +456,10 @@
 
   function saveCriteria(key: string, criteria: SearchCriteria[]) {
     localStorage.setItem(key, JSON.stringify(criteria));
+  }
+
+  function sameStringArray(a: string[], b: string[]) {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
   }
 
   function sameMatch(a: SearchMatch, b: SearchMatch) {

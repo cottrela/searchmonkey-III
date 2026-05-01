@@ -1,14 +1,15 @@
 <script lang="ts">
+  import PatternChipsInput from '$lib/components/PatternChipsInput.svelte';
   import { defaultSearchOptions, type SearchOptions } from '$lib/types';
 
   let {
-    includePatterns = $bindable(''),
-    excludePatterns = $bindable(''),
+    includePatterns = $bindable<string[]>([]),
+    excludePatterns = $bindable<string[]>([]),
     contextLines = $bindable(0),
     options = $bindable<SearchOptions>(defaultSearchOptions())
   }: {
-    includePatterns: string;
-    excludePatterns: string;
+    includePatterns: string[];
+    excludePatterns: string[];
     contextLines: number;
     options: SearchOptions;
   } = $props();
@@ -54,25 +55,21 @@
     <h2>Filters</h2>
   </div>
 
-  <div class="field">
-    <label for="include-patterns">Include</label>
-    <input
-      id="include-patterns"
-      bind:value={includePatterns}
-      placeholder="*.txt, *.log, src/**/*.rs"
-      spellcheck="false"
-    />
-  </div>
+  <PatternChipsInput
+    id="include-patterns"
+    label="Include"
+    placeholder="Add pattern..."
+    bind:values={includePatterns}
+    examples={['*.txt', '*.md', 'src/**/*.rs', 'Project Notes/*.txt']}
+  />
 
-  <div class="field">
-    <label for="exclude-patterns">Exclude</label>
-    <input
-      id="exclude-patterns"
-      bind:value={excludePatterns}
-      placeholder="node_modules, target, dist, build"
-      spellcheck="false"
-    />
-  </div>
+  <PatternChipsInput
+    id="exclude-patterns"
+    label="Exclude"
+    placeholder="Add exclusion..."
+    bind:values={excludePatterns}
+    examples={['node_modules', 'target', '*.tmp', 'build output']}
+  />
 
   <button
     class="advanced-toggle"
