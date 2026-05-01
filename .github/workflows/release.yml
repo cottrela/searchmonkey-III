@@ -38,6 +38,15 @@ jobs:
           rustup target add x86_64-apple-darwin
           rustup target add aarch64-apple-darwin
 
+      - name: Build universal rg binary
+        if: matrix.platform == 'macos-latest'
+        run: |
+          lipo -create \
+            src-tauri/binaries/rg-aarch64-apple-darwin \
+            src-tauri/binaries/rg-x86_64-apple-darwin \
+            -output src-tauri/binaries/rg-universal-apple-darwin
+          chmod +x src-tauri/binaries/rg-universal-apple-darwin
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
