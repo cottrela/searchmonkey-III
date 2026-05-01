@@ -1,44 +1,72 @@
 <script lang="ts">
   import { defaultSearchOptions, type SearchCriteria, type SearchOptions } from '$lib/types';
 
+  type LayoutMode = 'focus' | 'split' | 'full';
+
   let {
     query = $bindable(''),
     options = $bindable<SearchOptions>(defaultSearchOptions()),
     searching = false,
-    stopping = false,
     savedSearches = [],
+    layoutMode = 'split',
+    availableLayoutModes = ['focus', 'split', 'full'],
     onFilters,
+    onLayoutMode,
     onRegexTester,
     onApplyCriteria,
     onSaveRequest,
     onRenameCriteria,
     onDeleteCriteria,
     onSearch,
-    onStop
+    onCancel
   }: {
     query: string;
     options: SearchOptions;
     searching?: boolean;
-    stopping?: boolean;
     savedSearches?: SearchCriteria[];
+    layoutMode?: LayoutMode;
+    availableLayoutModes?: LayoutMode[];
     onFilters?: () => void;
+    onLayoutMode?: (mode: LayoutMode) => void;
     onRegexTester?: () => void;
     onApplyCriteria?: (criteria: SearchCriteria) => void;
     onSaveRequest?: () => void;
     onRenameCriteria?: (criteria: SearchCriteria) => void;
     onDeleteCriteria?: (criteria: SearchCriteria) => void;
     onSearch: () => void;
-    onStop: () => void;
+    onCancel?: () => void;
   } = $props();
+
+  let savedMenuElement = $state<HTMLDetailsElement>();
+  let savedPopoverStyle = $state('');
+  const visibleLayoutModes = $derived(availableLayoutModes);
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (searching || stopping) {
-      onStop();
+    if (searching) {
+      onCancel?.();
       return;
     }
 
     onSearch();
+  }
+
+  function applySavedCriteria(criteria: SearchCriteria) {
+    onApplyCriteria?.(criteria);
+    if (savedMenuElement) {
+      savedMenuElement.open = false;
+    }
+  }
+
+  function positionSavedPopover() {
+    if (!savedMenuElement?.open) return;
+
+    const rect = savedMenuElement.getBoundingClientRect();
+    const width = Math.min(320, window.innerWidth - 16);
+    const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+    const top = Math.min(rect.bottom + 4, window.innerHeight - 8);
+
+    savedPopoverStyle = `--saved-popover-left: ${left}px; --saved-popover-top: ${top}px; --saved-popover-width: ${width}px;`;
   }
 </script>
 
@@ -46,7 +74,7 @@
   <div class="query-wrap">
     <div class="query-meta">
       <label for="search-query">Search text</label>
-      <span>Enter Search / Esc Cancel</span>
+      <span>Enter Search</span>
     </div>
     <input
       id="search-query"
@@ -59,47 +87,82 @@
   </div>
 
   <div class="actions">
-    <button class="primary" type="submit" disabled={stopping}>
-      {searching || stopping ? 'Stop' : 'Search'}
-    </button>
-    <details class="saved-menu">
-      <summary>Saved</summary>
-      <div class="saved-popover">
-        <button class="save-current" type="button" onclick={() => onSaveRequest?.()}>Save current search</button>
-        {#if savedSearches.length}
-          <div class="saved-list" aria-label="Saved searches">
-            {#each savedSearches as search (search.id)}
-              <div class="saved-row">
-                <button class="saved-load" type="button" title={search.name} onclick={() => onApplyCriteria?.(search)}>
-                  {search.name}
-                </button>
-                <details class="saved-actions">
-                  <summary aria-label={`Actions for ${search.name}`}>...</summary>
-                  <div class="saved-action-menu">
-                    <button type="button" onclick={() => onRenameCriteria?.(search)}>Rename</button>
-                    <button type="button" onclick={() => onDeleteCriteria?.(search)}>Delete</button>
-                  </div>
-                </details>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="saved-empty">No saved searches</div>
+    <div class="search-actions">
+      <button class="primary" type="submit">
+        {searching ? 'Stop' : 'Search'}
+      </button>
+      <details class="saved-menu" bind:this={savedMenuElement} ontoggle={positionSavedPopover}>
+        <summary>Saved <span aria-hidden="true">▾</span></summary>
+        <div class="saved-popover" style={savedPopoverStyle}>
+          <button class="save-current" type="button" onclick={() => onSaveRequest?.()}>Save current search</button>
+          {#if savedSearches.length}
+            <div class="saved-list" aria-label="Saved searches">
+              {#each savedSearches as search (search.id)}
+                <div class="saved-row">
+                  <button class="saved-load" type="button" title={search.name} onclick={() => applySavedCriteria(search)}>
+                    {search.name}
+                  </button>
+                  <details class="saved-actions">
+                    <summary aria-label={`Actions for ${search.name}`}>...</summary>
+                    <div class="saved-action-menu">
+                      <button type="button" onclick={() => onRenameCriteria?.(search)}>Rename</button>
+                      <button type="button" onclick={() => onDeleteCriteria?.(search)}>Delete</button>
+                    </div>
+                  </details>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <div class="saved-empty">No saved searches</div>
+          {/if}
+        </div>
+      </details>
+      {#if onRegexTester && options.search_mode === 'regex'}
+        <button class="secondary regex-tool" type="button" title="Open regex tester (Ctrl+Shift+R / Cmd+Shift+R)" onclick={onRegexTester}>
+          Regex
+        </button>
+      {/if}
+      {#if onFilters}
+        <button class="secondary filters-action" type="button" onclick={onFilters}>Filters</button>
+      {/if}
+    </div>
+
+    {#if onLayoutMode && visibleLayoutModes.length > 1}
+      <div class="layout-switcher" aria-label="Layout mode">
+        {#if visibleLayoutModes.includes('focus')}
+          <button
+            type="button"
+            class="mode-focus"
+            class:active={layoutMode === 'focus'}
+            title="Focus: results only (Ctrl/Cmd+1)"
+            onclick={() => onLayoutMode?.('focus')}
+          >
+            Results
+          </button>
+        {/if}
+        {#if visibleLayoutModes.includes('split')}
+          <button
+            type="button"
+            class="mode-split"
+            class:active={layoutMode === 'split'}
+            title="Split: results and preview (Ctrl/Cmd+2)"
+            onclick={() => onLayoutMode?.('split')}
+          >
+            Split
+          </button>
+        {/if}
+        {#if visibleLayoutModes.includes('full')}
+          <button
+            type="button"
+            class="mode-full"
+            class:active={layoutMode === 'full'}
+            title="Full: scope, results, and preview (Ctrl/Cmd+3)"
+            onclick={() => onLayoutMode?.('full')}
+          >
+            Full
+          </button>
         {/if}
       </div>
-    </details>
-    {#if onRegexTester && options.search_mode === 'regex'}
-      <button class="secondary regex-tool" type="button" title="Open regex tester (Ctrl+Shift+R / Cmd+Shift+R)" onclick={onRegexTester}>
-        Regex
-      </button>
-    {/if}
-    {#if onFilters}
-      <button class="secondary filters-action" type="button" onclick={onFilters}>Filters &amp; Scope</button>
-    {/if}
-    {#if searching || stopping}
-      <span class="search-status" aria-live="polite">
-        {stopping ? 'Cancelling...' : 'Searching...'}
-      </span>
     {/if}
   </div>
 
@@ -160,6 +223,14 @@
   }
 
   .actions {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 8px 12px;
+    align-items: end;
+    min-width: 0;
+  }
+
+  .search-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
@@ -169,7 +240,7 @@
 
   button {
     height: 38px;
-    border: 1px solid var(--border-strong);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0 12px;
     font: inherit;
@@ -202,14 +273,44 @@
     background: var(--input);
   }
 
+  .layout-switcher {
+    display: inline-flex;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--input);
+  }
+
+  .layout-switcher button {
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    padding: 0 9px;
+    color: var(--muted);
+    background: transparent;
+    font-size: 12px;
+  }
+
+  .layout-switcher button + button {
+    border-left: 1px solid var(--border-subtle);
+  }
+
+  .layout-switcher button.active {
+    color: var(--text);
+    background: var(--selection);
+  }
+
   .saved-menu {
     position: relative;
   }
 
   .saved-menu > summary {
     display: inline-grid;
+    grid-auto-flow: column;
+    gap: 6px;
     height: 38px;
-    border: 1px solid var(--border-strong);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0 12px;
     place-items: center;
@@ -237,9 +338,12 @@
   }
 
   .saved-popover {
-    top: 42px;
-    right: 0;
-    width: 240px;
+    position: fixed;
+    top: var(--saved-popover-top, 42px);
+    right: auto;
+    left: var(--saved-popover-left, 8px);
+    width: var(--saved-popover-width, 240px);
+    max-width: calc(100vw - 16px);
     padding: 5px;
   }
 
@@ -322,23 +426,7 @@
   }
 
   .filters-action {
-    display: none;
-  }
-
-  .search-status {
-    display: inline-flex;
-    align-items: center;
-    height: 38px;
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 700;
-    white-space: nowrap;
-  }
-
-  @media (max-width: 1199px) {
-    .filters-action {
-      display: inline-block;
-    }
+    display: inline-block;
   }
 
   @media (max-width: 760px) {
@@ -347,10 +435,27 @@
     }
 
     .actions {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+    }
+
+    .search-actions {
       justify-content: flex-start;
     }
 
     .query-meta {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1099px) {
+    .layout-switcher .mode-full {
+      display: none;
+    }
+  }
+
+  @media (max-width: 849px) {
+    .layout-switcher .mode-split {
       display: none;
     }
   }
@@ -367,13 +472,16 @@
     }
 
     .actions {
-      display: flex;
+      gap: 6px;
+    }
+
+    .search-actions {
       gap: 6px;
     }
 
     button,
     .saved-menu > summary,
-    .search-status {
+    .layout-switcher {
       height: 32px;
     }
 
@@ -384,6 +492,12 @@
       line-height: 30px;
     }
 
+    .layout-switcher button {
+      padding: 0 8px;
+      font-size: 11px;
+      line-height: normal;
+    }
+
     .saved-popover {
       font-size: 12px;
     }
@@ -391,11 +505,6 @@
     .primary {
       width: 70px;
       flex-basis: 70px;
-    }
-
-    .search-status {
-      height: auto;
-      min-height: 20px;
     }
 
   }

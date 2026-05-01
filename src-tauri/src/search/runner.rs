@@ -12,6 +12,7 @@ pub struct SearchRunOptions {
 pub struct SearchRunSummary {
     pub total_matches: usize,
     pub buffered_matches: usize,
+    pub limit_reached: bool,
     pub skipped_modified: usize,
     pub read_errors: usize,
     pub exit_status: String,
@@ -33,6 +34,7 @@ where
     let search_id = options.search_id;
     let mut total_matches = 0usize;
     let mut buffered_matches = 0usize;
+    let mut limit_reached = false;
     let mut skipped_modified = 0usize;
     let mut read_errors = 0usize;
     let started_at = Instant::now();
@@ -71,6 +73,20 @@ where
             buffered_matches += 1;
             on_match(result, total_matches);
         }
+        if buffered_matches >= options.result_limit {
+            limit_reached = true;
+            eprintln!(
+                "searchmonkey search {search_id}: result limit {} reached; terminating rg pid={}",
+                options.result_limit,
+                child.id()
+            );
+            if let Err(err) = terminate_child(&mut child) {
+                eprintln!(
+                    "searchmonkey search {search_id}: failed to terminate rg at limit: {err}"
+                );
+            }
+            break;
+        }
 
         if total_matches % 10_000 == 0 {
             eprintln!(
@@ -107,12 +123,13 @@ where
     let elapsed_secs = started_at.elapsed().as_secs_f64();
 
     eprintln!(
-        "searchmonkey search {search_id}: rg runner finished total_matches={total_matches} buffered_matches={buffered_matches} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
+        "searchmonkey search {search_id}: rg runner finished total_matches={total_matches} buffered_matches={buffered_matches} limit_reached={limit_reached} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
     );
 
     SearchRunSummary {
         total_matches,
         buffered_matches,
+        limit_reached,
         skipped_modified,
         read_errors,
         exit_status,
@@ -120,4 +137,18 @@ where
         error_message,
         elapsed_secs,
     }
+}
+
+fn terminate_child(child: &mut Child) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        unsafe {
+            if libc::kill(-pid, libc::SIGTERM) == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    child.kill()
 }

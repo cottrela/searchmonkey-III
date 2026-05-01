@@ -17,24 +17,37 @@
 
   const labels: Record<SearchState, string> = {
     idle: 'Idle',
-    searching: 'Searching...',
-    stopping: 'Stopping...',
-    done: 'Done',
-    error: 'Error'
+    starting: 'Starting...',
+    running: 'Searching...',
+    cancelling: 'Cancelling...',
+    completed: 'Done',
+    cancelled: 'Cancelled',
+    failed: 'Error'
   };
 
   const matchLabel = $derived(`${totalMatches} ${totalMatches === 1 ? 'match' : 'matches'}`);
   const elapsedLabel = $derived(`${(elapsedMs / 1000).toFixed(2)}s`);
+  const stateLabel = $derived.by(() => {
+    if (state === 'starting' || state === 'running' || state === 'cancelling') {
+      return `${labels[state]} ${elapsedLabel}`;
+    }
+
+    if ((state === 'completed' || state === 'cancelled') && elapsedMs > 0) {
+      return `${labels[state]} in ${elapsedLabel}`;
+    }
+
+    return labels[state];
+  });
 </script>
 
 <footer
   class="status-bar"
-  class:active={state === 'searching' || state === 'stopping'}
-  class:error={state === 'error'}
+  class:active={state === 'starting' || state === 'running' || state === 'cancelling'}
+  class:error={state === 'failed'}
 >
   <div class="state">
     <span class="dot" aria-hidden="true"></span>
-    <strong>{labels[state]}</strong>
+    <strong>{stateLabel}</strong>
     {#if errorMessage}
       <span class="message">{errorMessage}</span>
     {/if}
@@ -43,13 +56,8 @@
   <div class="metrics">
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
-    {#if elapsedMs > 0 || state === 'searching' || state === 'done'}
-      <span>{elapsedLabel}</span>
-    {/if}
-    {#if state === 'searching'}
+    {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
-    {:else if state === 'stopping'}
-      <span>Cancelling search</span>
     {/if}
     <span>Searches current files directly. No index.</span>
   </div>
@@ -100,6 +108,7 @@
 
   strong {
     color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
 
   .message {

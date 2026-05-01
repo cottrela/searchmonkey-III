@@ -1,5 +1,13 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
-import type { FilePreview, SearchMatch, SearchRequest, SearchStreamEvent } from './types';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type {
+  FilePreview,
+  SearchBufferUpdatedEvent,
+  SearchMatch,
+  SearchRequest,
+  SearchStatus,
+  SearchStatusChangedEvent
+} from './types';
 
 export async function searchFiles(request: SearchRequest): Promise<SearchMatch[]> {
   return invoke<SearchMatch[]>('search_files', { request });
@@ -21,16 +29,30 @@ export async function listDirectory(path: string, includeHidden = false): Promis
   return invoke<string[]>('list_directory', { path, includeHidden });
 }
 
-export async function startSearch(
-  request: SearchRequest,
-  searchId: number,
-  onEvent: (event: SearchStreamEvent) => void
-): Promise<number> {
-  const events = new Channel<SearchStreamEvent>(onEvent);
-
-  return invoke<number>('start_search', { request, searchId, events });
+export async function listenSearchBufferUpdated(onEvent: (event: SearchBufferUpdatedEvent) => void): Promise<() => void> {
+  return listen<SearchBufferUpdatedEvent>('search_buffer_updated', (event) => onEvent(event.payload));
 }
 
-export async function stopSearch(searchId: number): Promise<void> {
-  return invoke<void>('stop_search', { searchId });
+export async function listenSearchStatusChanged(onEvent: (event: SearchStatusChangedEvent) => void): Promise<() => void> {
+  return listen<SearchStatusChangedEvent>('search_status_changed', (event) => onEvent(event.payload));
+}
+
+export async function startSearch(request: SearchRequest): Promise<number> {
+  return invoke<number>('start_search', { request });
+}
+
+export async function getSearchStatus(searchId: number): Promise<SearchStatus> {
+  return invoke<SearchStatus>('get_search_status', { searchId });
+}
+
+export async function getResults(searchId: number, offset: number, limit: number): Promise<SearchMatch[]> {
+  return invoke<SearchMatch[]>('get_results', { searchId, offset, limit });
+}
+
+export async function cancelSearch(searchId: number): Promise<void> {
+  return invoke<void>('cancel_search', { searchId });
+}
+
+export async function clearSearch(searchId: number): Promise<void> {
+  return invoke<void>('clear_search', { searchId });
 }

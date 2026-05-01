@@ -84,7 +84,7 @@
     <input
       id="exclude-patterns"
       bind:value={excludePatterns}
-      placeholder="node_modules, target, *.tmp"
+      placeholder="node_modules, target, dist, build"
       spellcheck="false"
     />
   </div>
@@ -198,11 +198,11 @@
         </label>
         <label class="check-row">
           <input type="checkbox" bind:checked={options.ignore_node_modules} />
-          <span>Ignore node_modules</span>
+          <span>Exclude node_modules</span>
         </label>
         <label class="check-row">
           <input type="checkbox" bind:checked={options.ignore_build_artifacts} />
-          <span>Ignore build artifacts</span>
+          <span>Exclude build artifacts</span>
         </label>
         <div class="field">
           <label for="encoding">Encoding</label>

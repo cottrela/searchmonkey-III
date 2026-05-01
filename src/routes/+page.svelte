@@ -8,10 +8,14 @@
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
   import {
+    cancelSearch as cancelSearchCommand,
+    getResults,
+    getSearchStatus,
     homeDir,
+    listenSearchBufferUpdated,
+    listenSearchStatusChanged,
     readFilePreview,
-    startSearch as startSearchCommand,
-    stopSearch
+    startSearch as startSearchCommand
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import { defaultSearchOptions } from '$lib/types';
@@ -19,11 +23,12 @@
     FileResultGroup,
     FilePreview,
     PreviewState,
+    SearchBufferUpdatedEvent,
     SearchCriteria,
     SearchMatch,
     SearchOptions,
-    SearchState,
-    SearchStreamEvent
+    SearchStatusChangedEvent,
+    SearchState
   } from '$lib/types';
 
   let query = $state('');
@@ -35,13 +40,14 @@
   let recentSearches = $state<SearchCriteria[]>([]);
   let savedSearches = $state<SearchCriteria[]>([]);
 
-  let matches = $state<SearchMatch[]>([]);
+  let matches: SearchMatch[] = [];
+  let matchesVersion = $state(0);
   let selected = $state<SearchMatch | null>(null);
   let searchState = $state<SearchState>('idle');
   let errorMessage = $state('');
   let hasSearched = $state(false);
   let activeSearchId = $state<number | null>(null);
-  let nextSearchId = 1;
+  let searchUnlisteners: Array<() => void> = [];
   let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
   let loadedPreviewKey = '';
@@ -59,11 +65,20 @@
   let saveIncludePath = $state(true);
   let saveIncludeOptions = $state(true);
   let compactView = $state<'results' | 'preview'>('results');
+  let layoutMode = $state<'focus' | 'split' | 'full'>('split');
+  let oneUpConstrained = $state(false);
+  let fullModeAvailable = $state(false);
   let elapsedMs = $state(0);
-  let queuedMatches: SearchMatch[] = [];
   let resultFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+  let pendingMatchesRender = false;
   let searchStartedAt = 0;
   let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  let backendMatchCount = $state(0);
+  let resultPullPromise: Promise<void> | null = null;
+  let pendingResultPull = false;
+  let statusPollInFlight = false;
+  let finishingSearchId: number | null = null;
   let resizeFrame = 0;
   let pendingPreviewWidth = 0;
   let scopePanelVisible = true;
@@ -71,9 +86,10 @@
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
   const PREVIEW_LOAD_TIMEOUT_MS = 4000;
-  const SEARCH_RESULT_FLUSH_MS = 120;
-  const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 300;
-  const MAX_DISPLAYED_MATCHES = 10000;
+  const SEARCH_RESULT_FLUSH_MS = 500;
+  const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 750;
+  const SEARCH_STATUS_POLL_MS = 150;
+  const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
   const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
   const FILE_TYPE_PATTERNS: Record<string, string[]> = {
@@ -102,8 +118,16 @@
     logs: ['*.log', '*.out', '*.err', '*.trace']
   };
 
-  const groups = $derived.by(() => sortGroups(groupMatches(matches), options.sort_by, options.sort_direction));
+  const displayedMatchCount = $derived.by(() => {
+    matchesVersion;
+    return matches.length;
+  });
+  const groups = $derived.by(() => {
+    matchesVersion;
+    return sortGroups(groupMatches(matches), options.sort_by, options.sort_direction);
+  });
   const selectedIndex = $derived.by(() => {
+    matchesVersion;
     if (!selected) return -1;
     const current = selected;
     return matches.findIndex((match) => sameMatch(match, current));
@@ -126,9 +150,74 @@
     include: includePatterns.trim() || 'all files',
     exclude: excludePatterns.trim()
   }));
-  const regexSamples = $derived(matches.slice(0, 300));
+  const regexSamples = $derived.by(() => {
+    matchesVersion;
+    return matches.slice(0, 300);
+  });
+  const activeLayoutMode = $derived(oneUpConstrained ? 'focus' : layoutMode === 'full' && !fullModeAvailable ? 'split' : layoutMode);
+  const availableLayoutModes = $derived.by(() => {
+    if (oneUpConstrained) return ['focus'] as const;
+    if (fullModeAvailable) return ['focus', 'split', 'full'] as const;
+    return ['focus', 'split'] as const;
+  });
+  const scopePanelVisibleInLayout = $derived(activeLayoutMode === 'full');
+  const workspaceGridTemplate = $derived.by(() => {
+    if (activeLayoutMode === 'full') {
+      return `280px minmax(360px, 3fr) 8px minmax(300px, var(--preview-width))`;
+    }
+
+    if (activeLayoutMode === 'split') {
+      return `minmax(360px, 3fr) 8px minmax(300px, var(--preview-width))`;
+    }
+
+    return 'minmax(0, 1fr)';
+  });
+
+  function resetMatches() {
+    matches = [];
+    pendingMatchesRender = false;
+    clearResultFlushTimer();
+    matchesVersion += 1;
+  }
+
+  function appendMatches(nextMatches: SearchMatch[], immediateRender = false) {
+    if (!nextMatches.length || matches.length >= MAX_DISPLAYED_MATCHES) return;
+
+    const remainingCapacity = MAX_DISPLAYED_MATCHES - matches.length;
+    const keptMatches = nextMatches.length > remainingCapacity ? nextMatches.slice(0, remainingCapacity) : nextMatches;
+
+    for (let index = 0; index < keptMatches.length; index += 1000) {
+      matches.push(...keptMatches.slice(index, index + 1000));
+    }
+
+    pendingMatchesRender = true;
+    if (!immediateRender) {
+      scheduleResultFlush();
+      return;
+    }
+
+    flushQueuedMatches();
+  }
+
+  function renderPendingMatches() {
+    if (!pendingMatchesRender) return;
+
+    pendingMatchesRender = false;
+    matchesVersion += 1;
+  }
 
   onMount(() => {
+    const oneUpMedia = window.matchMedia('(max-width: 849px)');
+    const fullMedia = window.matchMedia('(min-width: 1100px)');
+    const syncConstraint = () => {
+      oneUpConstrained = oneUpMedia.matches;
+      fullModeAvailable = fullMedia.matches;
+    };
+
+    syncConstraint();
+    oneUpMedia.addEventListener('change', syncConstraint);
+    fullMedia.addEventListener('change', syncConstraint);
+
     recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
     savedSearches = loadCriteria(SAVED_SEARCHES_KEY);
 
@@ -139,6 +228,15 @@
       .catch(() => {
         if (!path) path = '/';
       });
+
+    return () => {
+      oneUpMedia.removeEventListener('change', syncConstraint);
+      fullMedia.removeEventListener('change', syncConstraint);
+      clearStatusPollTimer();
+      clearElapsedTimer();
+      clearResultFlushTimer();
+      void cleanupSearchListeners();
+    };
   });
 
   function groupMatches(searchMatches: SearchMatch[]): FileResultGroup[] {
@@ -172,6 +270,10 @@
     }
 
     if (sortBy === 'modified_date') {
+      if (!options.modified_after) {
+        return direction === 'desc' ? nextGroups : nextGroups.reverse();
+      }
+
       return nextGroups.sort(
         (a, b) => multiplier * ((a.matches[0]?.modified_secs ?? 0) - (b.matches[0]?.modified_secs ?? 0))
       );
@@ -189,6 +291,10 @@
   function filename(filePath: string) {
     const parts = filePath.split('/').filter(Boolean);
     return parts.at(-1) || filePath;
+  }
+
+  function formatCount(count: number) {
+    return new Intl.NumberFormat().format(count);
   }
 
   function includePatternsForType() {
@@ -391,78 +497,193 @@
     return 'Search failed. Check the folder path and search options.';
   }
 
-  function handleSearchEvent(event: SearchStreamEvent) {
-    if (event.search_id !== activeSearchId) return;
+  function backendStateToUiState(state: SearchStatusChangedEvent['state']): SearchState {
+    if (state === 'Starting') return 'starting';
+    if (state === 'Running') return 'running';
+    if (state === 'Cancelling') return 'cancelling';
+    if (state === 'Completed') return 'completed';
+    if (state === 'Cancelled') return 'cancelled';
+    return 'failed';
+  }
 
-    switch (event.type) {
-      case 'started':
-        searchState = 'searching';
-        errorMessage = '';
-        startElapsedTimer();
-        break;
-      case 'batch':
-        if (searchState === 'stopping') return;
-        queueMatches(event.results);
-        break;
-      case 'error':
-        errorMessage = event.message;
-        break;
-      case 'finished':
-        flushQueuedMatches();
-        if (searchState === 'stopping') {
-          errorMessage = `Search stopped after ${matches.length} matches.`;
-          searchState = 'done';
-        } else {
-          searchState = errorMessage && matches.length === 0 ? 'error' : 'done';
-        }
-        activeSearchId = null;
-        stopElapsedTimer();
-        break;
-      case 'cancelled':
-        flushQueuedMatches();
-        searchState = 'done';
-        errorMessage = `Search stopped after ${matches.length} matches.`;
-        activeSearchId = null;
-        stopElapsedTimer();
-        break;
+  function isSearchActive(state: SearchState) {
+    return state === 'starting' || state === 'running' || state === 'cancelling';
+  }
+
+  function isTerminalBackendState(state: SearchStatusChangedEvent['state']) {
+    return state === 'Completed' || state === 'Cancelled' || state === 'Failed';
+  }
+
+  function startStatusPolling(searchId: number) {
+    clearStatusPollTimer();
+    void refreshSearchStatus(searchId);
+    searchStatusPollTimer = setInterval(() => {
+      void refreshSearchStatus(searchId);
+    }, SEARCH_STATUS_POLL_MS);
+  }
+
+  async function refreshSearchStatus(searchId: number) {
+    if (searchId !== activeSearchId || statusPollInFlight) return;
+
+    statusPollInFlight = true;
+    try {
+      const status = await getSearchStatus(searchId);
+      if (searchId !== activeSearchId) return;
+
+      backendMatchCount = status.total_matches;
+      searchState = backendStateToUiState(status.state);
+      if (status.error_message) errorMessage = status.error_message;
+      await pullResults(searchId, isTerminalBackendState(status.state));
+
+      if (isTerminalBackendState(status.state)) {
+        await finishSearch(searchId, status.state, status.total_matches, status.error_message);
+      }
+    } catch (error) {
+      if (searchId !== activeSearchId) return;
+      errorMessage = normalizeError(error);
+      searchState = 'failed';
+      clearStatusPollTimer();
+      stopElapsedTimer();
+    } finally {
+      statusPollInFlight = false;
+    }
+  }
+
+  async function finishSearch(
+    searchId: number,
+    state: SearchStatusChangedEvent['state'],
+    totalMatches: number,
+    statusError: string | null = null
+  ) {
+    if (searchId !== activeSearchId || finishingSearchId === searchId) return;
+
+    finishingSearchId = searchId;
+    clearStatusPollTimer();
+    searchState = backendStateToUiState(state);
+    backendMatchCount = totalMatches;
+    if (statusError) errorMessage = statusError;
+    await pullResults(searchId, true);
+    flushQueuedMatches();
+    console.info(
+      `[searchmonkey] search ${searchId} ${state}: backend_total=${backendMatchCount}, displayed=${matches.length}`
+    );
+    activeSearchId = null;
+    finishingSearchId = null;
+    void cleanupSearchListeners();
+    stopElapsedTimer();
+  }
+
+  async function pullResults(searchId: number, immediateRender = false) {
+    if (searchId !== activeSearchId) return;
+    if (resultPullPromise) {
+      pendingResultPull = true;
+      await resultPullPromise;
+      if (searchId === activeSearchId && pendingResultPull) {
+        await pullResults(searchId, immediateRender);
+      }
+      return;
+    }
+
+    resultPullPromise = drainResults(searchId, immediateRender);
+    try {
+      await resultPullPromise;
+    } catch (error) {
+      if (searchId !== activeSearchId) return;
+      errorMessage = normalizeError(error);
+      searchState = 'failed';
+      stopElapsedTimer();
+    } finally {
+      resultPullPromise = null;
+    }
+  }
+
+  async function drainResults(searchId: number, immediateRender: boolean): Promise<void> {
+    do {
+      pendingResultPull = false;
+      const nextMatches = await getResults(searchId, matches.length, 1000);
+      if (searchId !== activeSearchId) return;
+      appendMatches(nextMatches, immediateRender);
+      if (nextMatches.length < 1000 || matches.length >= MAX_DISPLAYED_MATCHES) break;
+    } while (true);
+
+    if (pendingResultPull && searchId === activeSearchId && matches.length < MAX_DISPLAYED_MATCHES) {
+      await drainResults(searchId, immediateRender);
+    }
+  }
+
+  function handleSearchBufferUpdated(event: SearchBufferUpdatedEvent) {
+    if (event.search_id !== activeSearchId) {
+      console.warn(`[searchmonkey] ignored buffer update for search ${event.search_id}; active=${activeSearchId}`);
+      return;
+    }
+
+    backendMatchCount = event.total_matches;
+    void pullResults(event.search_id);
+  }
+
+  async function handleSearchStatusChanged(event: SearchStatusChangedEvent) {
+    if (event.search_id !== activeSearchId) {
+      console.warn(`[searchmonkey] ignored status for search ${event.search_id}; active=${activeSearchId}`);
+      return;
+    }
+
+    searchState = backendStateToUiState(event.state);
+
+    if (isTerminalBackendState(event.state)) {
+      try {
+        const status = await getSearchStatus(event.search_id);
+        if (event.search_id !== activeSearchId) return;
+        await finishSearch(event.search_id, status.state, status.total_matches, status.error_message);
+      } catch (error) {
+        if (event.search_id !== activeSearchId) return;
+        errorMessage = normalizeError(error);
+        await finishSearch(event.search_id, event.state, backendMatchCount);
+      }
     }
   }
 
   async function startSearch() {
-    if (searchState === 'searching' || searchState === 'stopping') return;
+    if (isSearchActive(searchState)) return;
+    await cleanupSearchListeners();
 
     const cleanQuery = query.trim();
     const cleanPath = path.trim();
 
     if (!cleanQuery) {
-      searchState = 'error';
+      searchState = 'failed';
       errorMessage = 'Enter search text before starting.';
       return;
     }
 
     if (!cleanPath) {
-      searchState = 'error';
+      searchState = 'failed';
       errorMessage = 'Choose a folder or file path before starting.';
       return;
     }
 
-    searchState = 'searching';
+    searchState = 'starting';
     errorMessage = '';
     elapsedMs = 0;
+    backendMatchCount = 0;
+    resultPullPromise = null;
+    pendingResultPull = false;
+    statusPollInFlight = false;
+    finishingSearchId = null;
+    clearStatusPollTimer();
     startElapsedTimer();
     hasSearched = true;
     selected = null;
-    matches = [];
-    queuedMatches = [];
+    resetMatches();
     clearResultFlushTimer();
-    const searchId = nextSearchId;
-    nextSearchId += 1;
-    activeSearchId = searchId;
     rememberRecentSearch();
 
     try {
+      searchUnlisteners = [
+        await listenSearchBufferUpdated(handleSearchBufferUpdated),
+        await listenSearchStatusChanged(handleSearchStatusChanged)
+      ];
       const includeFromType = includePatternsForType();
-      await startSearchCommand(
+      const searchId = await startSearchCommand(
         {
           query: cleanQuery,
           path: cleanPath,
@@ -483,44 +704,58 @@
           respect_gitignore: options.respect_gitignore,
           ignore_node_modules: options.ignore_node_modules,
           ignore_build_artifacts: options.ignore_build_artifacts
-        },
-        searchId,
-        handleSearchEvent
+        }
       );
+      activeSearchId = searchId;
+      const status = await getSearchStatus(searchId);
+      backendMatchCount = status.total_matches;
+      searchState = backendStateToUiState(status.state);
+      await pullResults(searchId, isTerminalBackendState(status.state));
+      if (isTerminalBackendState(status.state)) {
+        await finishSearch(searchId, status.state, status.total_matches, status.error_message);
+      } else {
+        startStatusPolling(searchId);
+      }
     } catch (error) {
-      matches = [];
-      queuedMatches = [];
+      resetMatches();
       clearResultFlushTimer();
+      clearStatusPollTimer();
       selected = null;
       activeSearchId = null;
-      searchState = 'error';
+      await cleanupSearchListeners();
+      searchState = 'failed';
       stopElapsedTimer();
       errorMessage = normalizeError(error);
     }
   }
 
-  async function stopCurrentSearch() {
-    if (searchState !== 'searching' || activeSearchId === null) return;
+  async function cancelSearch() {
+    if (activeSearchId === null || !isSearchActive(searchState)) return;
 
-    const searchId = activeSearchId;
-
+    searchState = 'cancelling';
     try {
-      searchState = 'stopping';
-      errorMessage = '';
-      await stopSearch(searchId);
-
-      if (activeSearchId === searchId) {
-        searchState = 'done';
-        errorMessage = `Search stopped after ${matches.length} matches.`;
-        activeSearchId = null;
-      }
+      await cancelSearchCommand(activeSearchId);
     } catch (error) {
-      searchState = 'error';
       errorMessage = normalizeError(error);
+      searchState = 'failed';
+      stopElapsedTimer();
     }
   }
 
+  async function cleanupSearchListeners() {
+    for (const unlisten of searchUnlisteners) {
+      unlisten();
+    }
+    searchUnlisteners = [];
+  }
+
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && ['1', '2', '3'].includes(event.key)) {
+      event.preventDefault();
+      setLayoutMode(event.key === '1' ? 'focus' : event.key === '2' ? 'split' : 'full');
+      return;
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'r' && searchModeRegex()) {
       event.preventDefault();
       if (regexTesterOpen) {
@@ -531,13 +766,19 @@
       return;
     }
 
-    if (event.key === 'Escape' && searchState === 'searching') {
+    if (event.key === 'Escape' && compactView === 'preview') {
       event.preventDefault();
-      void stopCurrentSearch();
+      closePreview();
       return;
     }
 
     if (isEditableTarget(event.target)) return;
+
+    if (event.key === 'Enter' && selected && compactView === 'results') {
+      event.preventDefault();
+      compactView = 'preview';
+      return;
+    }
 
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -608,21 +849,8 @@
     selected = nextMatch;
   }
 
-  function queueMatches(nextMatches: SearchMatch[]) {
-    if (!nextMatches.length) return;
-
-    const remainingCapacity = MAX_DISPLAYED_MATCHES - matches.length - queuedMatches.length;
-
-    if (remainingCapacity <= 0) {
-      return;
-    }
-
-    queuedMatches.push(...nextMatches.slice(0, remainingCapacity));
-    scheduleResultFlush();
-  }
-
   function scheduleResultFlush(delay = previewIsLoading ? SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS : SEARCH_RESULT_FLUSH_MS) {
-    if (!queuedMatches.length) return;
+    if (!pendingMatchesRender) return;
 
     if (resultFlushTimer) {
       if (delay === 0) {
@@ -644,11 +872,8 @@
   }
 
   function flushQueuedMatches() {
-    if (!queuedMatches.length) return;
-
-    const nextMatches = queuedMatches;
-    queuedMatches = [];
-    matches = [...matches, ...nextMatches].slice(0, MAX_DISPLAYED_MATCHES);
+    clearResultFlushTimer();
+    renderPendingMatches();
   }
 
   function clearResultFlushTimer() {
@@ -656,6 +881,13 @@
 
     clearTimeout(resultFlushTimer);
     resultFlushTimer = null;
+  }
+
+  function clearStatusPollTimer() {
+    if (!searchStatusPollTimer) return;
+
+    clearInterval(searchStatusPollTimer);
+    searchStatusPollTimer = null;
   }
 
   function startElapsedTimer() {
@@ -699,7 +931,7 @@
 
   function clampPreviewWidth(width: number) {
     const workspaceWidth = workspaceElement?.getBoundingClientRect().width ?? 0;
-    const scopeWidth = scopePanelVisible ? 280 : 0;
+    const scopeWidth = layoutMode === 'full' && scopePanelVisible ? 280 : 0;
     const splitterWidth = 8;
     const availableWidth = Math.max(0, workspaceWidth - scopeWidth - splitterWidth);
     const maxPreviewWidth = Math.max(260, availableWidth - 260);
@@ -746,6 +978,9 @@
   }
 
   function openRegexTester() {
+    if (activeLayoutMode === 'focus') {
+      layoutMode = 'split';
+    }
     regexTesterOpen = true;
     compactView = 'preview';
   }
@@ -753,6 +988,30 @@
   function closeRegexTester() {
     regexTesterOpen = false;
     compactView = 'results';
+  }
+
+  function toggleRegexTester() {
+    if (regexTesterOpen) {
+      closeRegexTester();
+    } else {
+      openRegexTester();
+    }
+  }
+
+  function setLayoutMode(mode: 'focus' | 'split' | 'full') {
+    if (oneUpConstrained && mode !== 'focus') {
+      return;
+    }
+
+    if (mode === 'full' && !fullModeAvailable) {
+      return;
+    }
+
+    layoutMode = mode;
+    if (mode === 'focus') {
+      compactView = 'results';
+      regexTesterOpen = false;
+    }
   }
 
   $effect(() => {
@@ -824,57 +1083,55 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<main class="app-shell">
+<main class="app-shell" class:full-layout={activeLayoutMode === 'full'}>
   <SearchBar
     bind:query
     bind:options
-    searching={searchState === 'searching' || searchState === 'stopping'}
-    stopping={searchState === 'stopping'}
+    searching={isSearchActive(searchState)}
     {savedSearches}
-    onFilters={() => (filtersOpen = true)}
-    onRegexTester={openRegexTester}
+    layoutMode={activeLayoutMode}
+    availableLayoutModes={[...availableLayoutModes]}
+    onFilters={scopePanelVisibleInLayout ? undefined : () => (filtersOpen = true)}
+    onLayoutMode={setLayoutMode}
+    onRegexTester={toggleRegexTester}
     onApplyCriteria={applyCriteria}
     onSaveRequest={openSaveDialog}
     onRenameCriteria={renameSavedSearch}
     onDeleteCriteria={deleteSavedSearch}
     onSearch={startSearch}
-    onStop={stopCurrentSearch}
+    onCancel={cancelSearch}
   />
 
-  <div class="scope-summary" aria-label="Search scope summary">
-    <span class="summary-item folder" title={scopeSummary.folder}>
-      <strong>Folder:</strong> {scopeSummary.folder}
-    </span>
-    <span class="summary-separator" aria-hidden="true">·</span>
-    <span class="summary-item include"><strong>Include:</strong> {scopeSummary.include}</span>
-    {#if scopeSummary.exclude}
-      <span class="summary-separator exclude-separator" aria-hidden="true">·</span>
-      <span class="summary-item exclude"><strong>Exclude:</strong> {scopeSummary.exclude}</span>
-    {/if}
-    <div class="mode-pills" aria-label="Search modes">
-      <button
-        type="button"
-        class:active={options.search_mode === 'regex'}
-        onclick={() => setSearchMode(options.search_mode === 'regex' ? 'literal' : 'regex')}
-      >
-        Regex
-      </button>
-      <button
-        type="button"
-        class:active={options.case_sensitive}
-        onclick={() => (options.case_sensitive = !options.case_sensitive)}
-      >
-        Case
-      </button>
-      <button type="button" class:active={options.hidden} onclick={() => (options.hidden = !options.hidden)}>
-        Hidden
-      </button>
+  {#if activeLayoutMode !== 'full'}
+    <div class="scope-summary" aria-label="Search scope summary">
+      <span class="summary-item folder" title={scopeSummary.folder}>
+        {scopeSummary.folder}
+      </span>
+      <div class="mode-pills" aria-label="Search modes">
+        <button
+          type="button"
+          class:active={options.search_mode === 'regex'}
+          onclick={() => setSearchMode(options.search_mode === 'regex' ? 'literal' : 'regex')}
+        >
+          Regex
+        </button>
+        <button
+          type="button"
+          class:active={options.case_sensitive}
+          onclick={() => (options.case_sensitive = !options.case_sensitive)}
+        >
+          Case
+        </button>
+        <button type="button" class:active={options.hidden} onclick={() => (options.hidden = !options.hidden)}>
+          Hidden
+        </button>
+      </div>
     </div>
-  </div>
+  {/if}
 
   <div class="results-toolbar" aria-label="Results actions">
     <span>{groups.length} files</span>
-    <span>{matches.length} matches</span>
+    <span>{displayedMatchCount} matches</span>
     <button type="button" onclick={() => (filtersOpen = true)}>Filters</button>
     <button type="button" disabled={!selected} onclick={() => (compactView = 'preview')}>Preview</button>
   </div>
@@ -884,9 +1141,12 @@
     class:resizing={isResizingPreview}
     class:has-preview={Boolean(selected) || regexTesterOpen}
     class:show-preview={compactView === 'preview' || regexTesterOpen}
+    class:layout-focus={activeLayoutMode === 'focus'}
+    class:layout-split={activeLayoutMode === 'split'}
+    class:layout-full={activeLayoutMode === 'full'}
     class="workspace"
     style:--preview-width={`${previewWidth}px`}
-    style:grid-template-columns={`280px minmax(260px, 1fr) 8px minmax(260px, var(--preview-width))`}
+    style:grid-template-columns={workspaceGridTemplate}
   >
     <ScopePanel
       bind:path
@@ -925,7 +1185,8 @@
       <PreviewPanel
         {preview}
         errorMessage={previewError}
-        total={matches.length}
+        total={displayedMatchCount}
+        drilldown={activeLayoutMode === 'focus'}
         onPrevious={() => selectOffset(-1)}
         onNext={() => selectOffset(1)}
         onSelect={selectMatch}
@@ -1009,7 +1270,7 @@
 
   <StatusBar
     state={searchState}
-    totalMatches={matches.length}
+    totalMatches={Math.max(displayedMatchCount, backendMatchCount)}
     filesWithMatches={groups.length}
     {elapsedMs}
     {errorMessage}
@@ -1061,20 +1322,83 @@
 
   .app-shell {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     width: 100vw;
     height: 100vh;
     background: var(--surface);
   }
 
-  .scope-summary,
+  .app-shell.full-layout {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
   .results-toolbar {
     display: none;
+  }
+
+  .scope-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    min-height: 30px;
+    border-bottom: 1px solid var(--border);
+    padding: 4px 12px;
+    color: var(--muted);
+    background: var(--panel);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .scope-summary .folder {
+    color: var(--text);
+  }
+
+  .summary-item {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .workspace {
     display: grid;
     min-height: 0;
+  }
+
+  .workspace.layout-split > :global(.scope-panel),
+  .workspace.layout-focus > :global(.scope-panel),
+  .workspace.layout-focus > .panel-resizer {
+    display: none;
+  }
+
+  .workspace.layout-focus {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .workspace.layout-focus > :global(.results-panel),
+  .workspace.layout-focus > :global(.preview-panel),
+  .workspace.layout-focus > :global(.regex-panel) {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 0;
+  }
+
+  .workspace.layout-focus > :global(.preview-panel),
+  .workspace.layout-focus > :global(.regex-panel),
+  .workspace.layout-focus.show-preview > :global(.results-panel) {
+    display: none;
+  }
+
+  .workspace.layout-focus.show-preview > :global(.preview-panel),
+  .workspace.layout-focus.show-preview > :global(.regex-panel) {
+    display: grid;
+  }
+
+  .workspace.layout-focus :global(.results-panel .panel-title),
+  .workspace.layout-focus :global(.results-panel .current-file-header) {
+    position: static;
   }
 
   .workspace.resizing {
@@ -1114,10 +1438,14 @@
   .modal-layer {
     position: fixed;
     inset: 0;
+    width: 100vw;
+    max-width: 100vw;
     z-index: 35;
     display: grid;
-    place-items: center;
+    align-items: center;
+    justify-items: center;
     padding: 18px;
+    overflow: auto;
   }
 
   .drawer-backdrop,
@@ -1134,7 +1462,9 @@
   .save-dialog {
     position: relative;
     z-index: 1;
-    width: min(360px, calc(100vw - 36px));
+    width: min(360px, 100%);
+    max-width: calc(100vw - 24px);
+    margin-inline: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
@@ -1282,40 +1612,8 @@
   }
 
   @media (max-width: 1199px) {
-    .app-shell {
-      grid-template-rows: auto auto minmax(0, 1fr) auto;
-    }
-
     .scope-summary {
-      display: grid;
-      grid-template-columns:
-        minmax(160px, 1.4fr) auto minmax(120px, 0.8fr) auto minmax(120px, 0.8fr)
-        auto;
-      gap: 8px;
-      align-items: center;
-      min-height: 36px;
-      border-bottom: 1px solid var(--border);
-      padding: 5px 12px;
-      color: var(--muted);
-      background: var(--panel);
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    .summary-item {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .summary-item strong {
-      color: var(--text);
-    }
-
-    .summary-separator {
-      color: var(--muted);
-      font-weight: 800;
+      min-height: 30px;
     }
 
     .mode-pills {
@@ -1342,19 +1640,16 @@
       background: var(--selection);
     }
 
-    .workspace {
-      grid-template-columns: minmax(260px, 1fr) 8px minmax(260px, var(--preview-width)) !important;
-    }
-
-    .workspace > :global(.scope-panel) {
-      display: none;
-    }
   }
 
   @media (max-width: 849px) {
     .workspace {
       grid-template-columns: minmax(0, 1fr) !important;
       grid-template-rows: minmax(0, 1fr);
+    }
+
+    .workspace > :global(.scope-panel) {
+      display: none;
     }
 
     .workspace > :global(.results-panel),
@@ -1380,12 +1675,7 @@
 
   @media (max-width: 640px) {
     .scope-summary {
-      grid-template-columns: minmax(0, 1fr) auto minmax(90px, 0.7fr) auto;
-    }
-
-    .exclude,
-    .exclude-separator {
-      display: none;
+      grid-template-columns: minmax(0, 1fr) auto;
     }
   }
 
@@ -1394,15 +1684,16 @@
       grid-template-rows: auto auto minmax(0, 1fr) auto;
     }
 
+    .app-shell.full-layout {
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
     .scope-summary {
       grid-template-columns: minmax(0, 1fr);
       min-height: 28px;
       padding: 3px 8px;
     }
 
-    .summary-separator,
-    .include,
-    .exclude,
     .mode-pills {
       display: none;
     }

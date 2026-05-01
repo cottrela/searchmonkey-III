@@ -29,6 +29,25 @@ export type SearchMatch = {
   modified_secs: number | null;
 };
 
+export type SearchBufferUpdatedEvent = {
+  search_id: number;
+  total_matches: number;
+};
+
+export type BackendSearchState = 'Starting' | 'Running' | 'Cancelling' | 'Completed' | 'Cancelled' | 'Failed';
+
+export type SearchStatusChangedEvent = {
+  search_id: number;
+  state: BackendSearchState;
+};
+
+export type SearchStatus = {
+  search_id: number;
+  state: BackendSearchState;
+  total_matches: number;
+  error_message: string | null;
+};
+
 export type SearchSubmatch = {
   start: number;
   end: number;
@@ -107,10 +126,10 @@ export function defaultSearchOptions(): SearchOptions {
     modified_after: null,
     skip_binary: true,
     encoding: 'auto',
-    max_matches: 10000,
+    max_matches: 100000,
     respect_gitignore: true,
-    ignore_node_modules: true,
-    ignore_build_artifacts: true,
+    ignore_node_modules: false,
+    ignore_build_artifacts: false,
     search_mode: 'literal',
     modified_preset: 'any',
     modified_custom_days: 14,
@@ -123,7 +142,7 @@ export function defaultSearchOptions(): SearchOptions {
   };
 }
 
-export type SearchState = 'idle' | 'searching' | 'stopping' | 'done' | 'error';
+export type SearchState = 'idle' | 'starting' | 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
 
 export type FileResultGroup = {
   path: string;
@@ -136,38 +155,4 @@ export type PreviewState = {
   matches: SearchMatch[];
   activeMatchIndex: number;
   activeMatch: SearchMatch | null;
-};
-
-export type SearchStreamEvent =
-  | SearchStartedEvent
-  | SearchBatchEvent
-  | SearchErrorEvent
-  | SearchCompleteEvent
-  | {
-      type: 'cancelled';
-      search_id: number;
-      total_matches: number;
-    };
-
-export type SearchStartedEvent = {
-  type: 'started';
-  search_id: number;
-};
-
-export type SearchBatchEvent = {
-  type: 'batch';
-  search_id: number;
-  results: SearchMatch[];
-};
-
-export type SearchErrorEvent = {
-  type: 'error';
-  search_id: number;
-  message: string;
-};
-
-export type SearchCompleteEvent = {
-  type: 'finished';
-  search_id: number;
-  total_matches: number;
 };
