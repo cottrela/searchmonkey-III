@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
+  import PathInput from '$lib/components/PathInput.svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
   import RegexTester from '$lib/components/RegexTester.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -145,11 +146,6 @@
 
     return previewFor(selected.path, previewData);
   });
-  const scopeSummary = $derived.by(() => ({
-    folder: path.trim() || 'No folder selected',
-    include: includePatterns.trim() || 'all files',
-    exclude: excludePatterns.trim()
-  }));
   const regexSamples = $derived.by(() => {
     matchesVersion;
     return matches.slice(0, 300);
@@ -1102,32 +1098,35 @@
     onCancel={cancelSearch}
   />
 
-  {#if activeLayoutMode !== 'full'}
-    <div class="scope-summary" aria-label="Search scope summary">
-      <span class="summary-item folder" title={scopeSummary.folder}>
-        {scopeSummary.folder}
-      </span>
-      <div class="mode-pills" aria-label="Search modes">
-        <button
-          type="button"
-          class:active={options.search_mode === 'regex'}
-          onclick={() => setSearchMode(options.search_mode === 'regex' ? 'literal' : 'regex')}
-        >
-          Regex
-        </button>
-        <button
-          type="button"
-          class:active={options.case_sensitive}
-          onclick={() => (options.case_sensitive = !options.case_sensitive)}
-        >
-          Case
-        </button>
-        <button type="button" class:active={options.hidden} onclick={() => (options.hidden = !options.hidden)}>
-          Hidden
-        </button>
-      </div>
+  <div class="scope-summary" aria-label="Search scope">
+    <div class="scope-path">
+      <PathInput
+        id="search-path-inline"
+        bind:value={path}
+        placeholder="/Users/name/project"
+        includeHidden={options.hidden}
+      />
     </div>
-  {/if}
+    <div class="mode-pills" aria-label="Search modes">
+      <button
+        type="button"
+        class:active={options.search_mode === 'regex'}
+        onclick={() => setSearchMode(options.search_mode === 'regex' ? 'literal' : 'regex')}
+      >
+        Regex
+      </button>
+      <button
+        type="button"
+        class:active={options.case_sensitive}
+        onclick={() => (options.case_sensitive = !options.case_sensitive)}
+      >
+        Case
+      </button>
+      <button type="button" class:active={options.hidden} onclick={() => (options.hidden = !options.hidden)}>
+        Hidden
+      </button>
+    </div>
+  </div>
 
   <div class="results-toolbar" aria-label="Results actions">
     <span>{groups.length} files</span>
@@ -1149,12 +1148,10 @@
     style:grid-template-columns={workspaceGridTemplate}
   >
     <ScopePanel
-      bind:path
       bind:includePatterns
       bind:excludePatterns
       bind:contextLines
       bind:options
-      includeHidden={options.hidden}
     />
     <ResultsPanel
       {groups}
@@ -1217,12 +1214,10 @@
           <button type="button" onclick={() => (filtersOpen = false)}>Close</button>
         </div>
         <ScopePanel
-          bind:path
           bind:includePatterns
           bind:excludePatterns
           bind:contextLines
           bind:options
-          includeHidden={options.hidden}
         />
       </div>
     </div>
@@ -1329,7 +1324,7 @@
   }
 
   .app-shell.full-layout {
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .results-toolbar {
@@ -1340,25 +1335,51 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
-    align-items: center;
+    align-items: end;
     min-height: 30px;
     border-bottom: 1px solid var(--border);
-    padding: 4px 12px;
+    padding: 6px 12px;
     color: var(--muted);
     background: var(--panel);
     font-size: 12px;
     font-weight: 650;
   }
 
-  .scope-summary .folder {
-    color: var(--text);
+  .scope-path {
+    min-width: 0;
   }
 
-  .summary-item {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .scope-summary :global(.path-control) {
+    gap: 3px;
+  }
+
+  .scope-summary :global(.breadcrumbs) {
+    display: none;
+  }
+
+  .mode-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    justify-content: flex-end;
+  }
+
+  .mode-pills button {
+    height: 32px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 0 10px;
+    color: var(--muted);
+    background: var(--surface);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .mode-pills button.active {
+    border-color: var(--accent-soft);
+    color: var(--text);
+    background: var(--selection);
   }
 
   .workspace {
@@ -1615,31 +1636,6 @@
     .scope-summary {
       min-height: 30px;
     }
-
-    .mode-pills {
-      display: flex;
-      gap: 5px;
-      justify-content: flex-end;
-    }
-
-    .mode-pills button {
-      height: 24px;
-      border: 1px solid var(--border-subtle);
-      border-radius: 999px;
-      padding: 0 9px;
-      color: var(--muted);
-      background: var(--surface);
-      font: inherit;
-      font-size: 11px;
-      font-weight: 800;
-    }
-
-    .mode-pills button.active {
-      border-color: var(--accent-soft);
-      color: var(--text);
-      background: var(--selection);
-    }
-
   }
 
   @media (max-width: 849px) {
@@ -1691,11 +1687,11 @@
     .scope-summary {
       grid-template-columns: minmax(0, 1fr);
       min-height: 28px;
-      padding: 3px 8px;
+      padding: 6px 8px;
     }
 
     .mode-pills {
-      display: none;
+      justify-content: flex-start;
     }
 
     .results-toolbar {

@@ -1,21 +1,16 @@
 <script lang="ts">
-  import PathInput from './PathInput.svelte';
   import { defaultSearchOptions, type SearchOptions } from '$lib/types';
 
   let {
-    path = $bindable(''),
     includePatterns = $bindable(''),
     excludePatterns = $bindable(''),
     contextLines = $bindable(0),
-    options = $bindable<SearchOptions>(defaultSearchOptions()),
-    includeHidden = false
+    options = $bindable<SearchOptions>(defaultSearchOptions())
   }: {
-    path: string;
     includePatterns: string;
     excludePatterns: string;
     contextLines: number;
     options: SearchOptions;
-    includeHidden?: boolean;
   } = $props();
 
   let advancedOpen = $state(false);
@@ -56,17 +51,7 @@
 
 <aside class="scope-panel" aria-label="Search scope">
   <div class="panel-header">
-    <h2>Scope</h2>
-  </div>
-
-  <div class="field">
-    <label for="search-path">Folder or path</label>
-    <PathInput
-      id="search-path"
-      bind:value={path}
-      placeholder="/Users/name/project"
-      {includeHidden}
-    />
+    <h2>Filters</h2>
   </div>
 
   <div class="field">
@@ -87,25 +72,6 @@
       placeholder="node_modules, target, dist, build"
       spellcheck="false"
     />
-  </div>
-
-  <div class="search-options" aria-label="Search options">
-    <label class="option-row">
-      <input
-        type="checkbox"
-        checked={options.search_mode === 'regex'}
-        onchange={(event) => setSearchMode(event.currentTarget.checked ? 'regex' : 'literal')}
-      />
-      <span>Regex</span>
-    </label>
-    <label class="option-row">
-      <input type="checkbox" bind:checked={options.case_sensitive} />
-      <span>Case sensitive</span>
-    </label>
-    <label class="option-row">
-      <input type="checkbox" bind:checked={options.hidden} />
-      <span>Include hidden</span>
-    </label>
   </div>
 
   <button
@@ -251,8 +217,7 @@
   }
 
   label,
-  .check-row span,
-  .option-row span {
+  .check-row span {
     color: var(--muted);
     font-size: 11px;
     font-weight: 650;
@@ -283,27 +248,6 @@
   input:disabled {
     color: var(--muted);
     background: var(--disabled);
-  }
-
-  .search-options {
-    display: grid;
-    gap: 6px;
-    margin: 2px 0 10px;
-    border-top: 1px solid var(--border-subtle);
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 9px 0;
-  }
-
-  .option-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .option-row input {
-    width: auto;
-    height: auto;
   }
 
   .advanced-toggle {
