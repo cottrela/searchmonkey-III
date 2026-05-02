@@ -6,6 +6,8 @@ No index. No daemon. No stale results.
 Searchmonkey III is a modern desktop search tool that searches what is actually on disk — right now.
 It does not maintain a background index, and it does not return outdated results.
 
+The Searchmonkey III project is available at https://searchmonkey.dev.
+
 ---
 
 ## Why
