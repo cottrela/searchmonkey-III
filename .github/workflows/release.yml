@@ -133,21 +133,39 @@ jobs:
           install -Dm755 "$rg_binary" "$bundle_dir/rg"
           cp -R src-tauri/icons/. "$bundle_dir/icons/"
 
-          desktop_file="$(find src-tauri/target/release/bundle -type f -name '*.desktop' -print -quit)"
-          metainfo_file="$(find src-tauri/target/release/bundle -type f \( -name '*.metainfo.xml' -o -name '*.appdata.xml' \) -print -quit)"
+          desktop_file="$(find src-tauri/target/release/bundle -path '*/deb/*' -type f -name '*.desktop' -print -quit)"
+          if [ -z "$desktop_file" ]; then
+            desktop_file="$(find src-tauri/target/release/bundle -type f -name '*.desktop' ! -path '*/appimage/*' -print -quit)"
+          fi
+          if [ -z "$desktop_file" ]; then
+            desktop_file="$(find src-tauri/target/release/bundle -type f -name '*.desktop' -print -quit)"
+          fi
 
           if [ -z "$desktop_file" ]; then
             echo "No desktop file found in src-tauri/target/release/bundle" >&2
             exit 1
           fi
 
-          if [ -z "$metainfo_file" ]; then
-            echo "No metainfo/appdata file found in src-tauri/target/release/bundle" >&2
-            exit 1
-          fi
-
           cp "$desktop_file" "$bundle_dir/uk.co.axanara.searchmonkey.desktop"
-          cp "$metainfo_file" "$bundle_dir/uk.co.axanara.searchmonkey.metainfo.xml"
+
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cat > "$bundle_dir/uk.co.axanara.searchmonkey.metainfo.xml" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <component type="desktop-application">
+            <id>uk.co.axanara.searchmonkey</id>
+            <metadata_license>MIT</metadata_license>
+            <project_license>MIT</project_license>
+            <name>Searchmonkey</name>
+            <summary>Search files and folders</summary>
+            <description>
+              <p>Searchmonkey is a desktop search tool for finding text in files and folders.</p>
+            </description>
+            <launchable type="desktop-id">uk.co.axanara.searchmonkey.desktop</launchable>
+            <releases>
+              <release version="$version" date="$(date -u +%F)" />
+            </releases>
+          </component>
+          EOF
 
           tar -C dist -czf Searchmonkey_linux_x86_64.tar.gz searchmonkey
 
