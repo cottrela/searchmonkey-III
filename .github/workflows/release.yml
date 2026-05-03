@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  RG_VERSION: "15.1.0"
+
 jobs:
   release:
     strategy:
@@ -47,8 +50,6 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           set -euo pipefail
-
-          RG_VERSION="14.1.1"
 
           mkdir -p src-tauri/binaries /tmp/rg-x64 /tmp/rg-arm64
 
@@ -106,7 +107,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          RG_VERSION="14.1.1"
           RG_TARGET="x86_64-pc-windows-msvc"
           RG_ARCHIVE="ripgrep-${RG_VERSION}-${RG_TARGET}.zip"
 
@@ -128,9 +128,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          RG_VERSION="14.1.1"
-          RG_TARGET="x86_64-unknown-linux-gnu"
-          RG_ARCHIVE="ripgrep-${RG_VERSION}-${RG_TARGET}.tar.gz"
+          RG_DOWNLOAD_TARGET="x86_64-unknown-linux-musl"
+          RG_TAURI_TARGET="x86_64-unknown-linux-gnu"
+          RG_ARCHIVE="ripgrep-${RG_VERSION}-${RG_DOWNLOAD_TARGET}.tar.gz"
 
           mkdir -p src-tauri/binaries
 
@@ -141,11 +141,11 @@ jobs:
           mkdir -p /tmp/rg
           tar -xzf "/tmp/${RG_ARCHIVE}" -C /tmp/rg --strip-components=1
 
-          install -Dm755 /tmp/rg/rg "src-tauri/binaries/rg-${RG_TARGET}"
+          install -Dm755 /tmp/rg/rg "src-tauri/binaries/rg-${RG_TAURI_TARGET}"
 
-          file "src-tauri/binaries/rg-${RG_TARGET}"
-          ldd "src-tauri/binaries/rg-${RG_TARGET}" || true
-          "src-tauri/binaries/rg-${RG_TARGET}" --version
+          file "src-tauri/binaries/rg-${RG_TAURI_TARGET}"
+          ldd "src-tauri/binaries/rg-${RG_TAURI_TARGET}" || true
+          "src-tauri/binaries/rg-${RG_TAURI_TARGET}" --version
 
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -178,26 +178,21 @@ jobs:
             fi
           done
 
-          rg_binary=""
-          for candidate in \
-            src-tauri/target/release/rg \
-            src-tauri/binaries/rg-x86_64-unknown-linux-gnu
-          do
-            if [ -f "$candidate" ]; then
-              rg_binary="$candidate"
-              break
-            fi
-          done
+          rg_binary="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
 
           if [ -z "$app_binary" ]; then
             echo "No app binary found in src-tauri/target/release" >&2
             exit 1
           fi
 
-          if [ -z "$rg_binary" ]; then
-            echo "No rg sidecar found in src-tauri/target/release or src-tauri/binaries" >&2
+          rg_binary="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
+          
+          if [ ! -x "$rg_binary" ]; then
+            echo "No executable Linux rg sidecar found: $rg_binary" >&2
             exit 1
           fi
+          
+          "$rg_binary" --version
 
           install -Dm755 "$app_binary" "$bundle_dir/searchmonkey"
           install -Dm755 "$rg_binary" "$bundle_dir/rg"
