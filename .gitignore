@@ -13,5 +13,5 @@ vite.config.ts.timestamp-*
 # Extras
 .idea/
 .vscode/
-/src-tauri/binaries/rg-universal-apple-darwin
+/src-tauri/binaries/rg-*
 dist/
