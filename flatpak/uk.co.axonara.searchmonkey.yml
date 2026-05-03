@@ -1,4 +1,4 @@
-app-id: uk.co.axanara.searchmonkey
+app-id: uk.co.axonara.searchmonkey
 runtime: org.gnome.Platform
 runtime-version: '50'
 sdk: org.gnome.Sdk
@@ -19,9 +19,9 @@ modules:
     build-commands:
       - install -Dm755 searchmonkey /app/bin/searchmonkey
       - install -Dm755 rg /app/bin/rg
-      - install -Dm644 uk.co.axanara.searchmonkey.desktop /app/share/applications/ur.co.axanara.searchmonkey.Searchmonkey.desktop
-      - install -Dm644 uk.co.axanara.searchmonkey.metainfo.xml /app/share/metainfo/uk.co.axanara.searchmonkey.Searchmonkey.metainfo.xml
-      - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/uk.co.axanara.searchmonkey.Searchmonkey.png
+      - install -Dm644 uk.co.axonara.searchmonkey.desktop /app/share/applications/ur.co.axonara.searchmonkey.Searchmonkey.desktop
+      - install -Dm644 uk.co.axonara.searchmonkey.metainfo.xml /app/share/metainfo/uk.co.axonara.searchmonkey.Searchmonkey.metainfo.xml
+      - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/uk.co.axonara.searchmonkey.Searchmonkey.png
 
     sources:
       - type: archive
