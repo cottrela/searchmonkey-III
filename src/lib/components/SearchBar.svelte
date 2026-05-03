@@ -71,6 +71,11 @@
 </script>
 
 <form class="search-bar" onsubmit={submit}>
+  <div class="brand-anchor" aria-label="Searchmonkey III">
+    <span class="brand-mark" aria-hidden="true">SM</span>
+    <span class="brand-name">Searchmonkey III</span>
+  </div>
+
   <div class="query-wrap">
     <div class="query-meta">
       <label for="search-query">Search text</label>
@@ -171,12 +176,55 @@
 <style>
   .search-bar {
     display: grid;
-    grid-template-columns: minmax(320px, 1fr) auto;
-    gap: 8px 12px;
+    grid-template-columns: auto minmax(320px, 1fr) auto;
+    gap: 6px 16px;
     align-items: end;
-    padding: 10px 12px;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
+  }
+
+  .brand-anchor {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding-bottom: 1px;
+    white-space: nowrap;
+  }
+
+  .brand-mark {
+    position: relative;
+    display: inline-grid;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    place-items: center;
+    color: var(--accent);
+    background: var(--accent-wash);
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 0;
+  }
+
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    right: -4px;
+    bottom: 1px;
+    width: 8px;
+    height: 2px;
+    border-radius: 99px;
+    background: var(--accent);
+    transform: rotate(42deg);
+    transform-origin: left center;
+  }
+
+  .brand-name {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 750;
   }
 
   .query-wrap {
@@ -195,13 +243,13 @@
   label {
     color: var(--muted);
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .query-meta span {
     color: var(--muted);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .query-input {
@@ -225,7 +273,7 @@
   .actions {
     display: grid;
     grid-template-columns: auto auto;
-    gap: 8px 12px;
+    gap: 6px 12px;
     align-items: end;
     min-width: 0;
   }
@@ -260,6 +308,13 @@
     border-color: var(--accent);
     color: #ffffff;
     background: var(--accent);
+    box-shadow: 0 1px 0 rgba(11, 95, 50, 0.24);
+  }
+
+  .primary:hover,
+  .primary:focus-visible {
+    background: var(--accent-strong);
+    outline: none;
   }
 
   .primary:disabled {
@@ -269,8 +324,20 @@
   }
 
   .secondary {
+    border-color: transparent;
+    color: #828c96;
+    background: transparent;
+    font-weight: 600;
+  }
+
+  .secondary:hover,
+  .secondary:focus-visible,
+  .saved-menu > summary:hover,
+  .saved-menu > summary:focus-visible {
+    border-color: var(--border-subtle);
     color: var(--text);
     background: var(--input);
+    outline: none;
   }
 
   .layout-switcher {
@@ -279,7 +346,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
-    background: var(--input);
+    background: var(--surface);
   }
 
   .layout-switcher button {
@@ -297,8 +364,9 @@
   }
 
   .layout-switcher button.active {
-    color: var(--text);
-    background: var(--selection);
+    color: var(--accent-strong);
+    background: var(--accent-wash);
+    box-shadow: inset 0 -2px 0 var(--accent);
   }
 
   .saved-menu {
@@ -310,13 +378,13 @@
     grid-auto-flow: column;
     gap: 6px;
     height: 38px;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: 6px;
     padding: 0 12px;
     place-items: center;
-    color: var(--text);
-    background: var(--input);
-    font-weight: 700;
+    color: rgba(102, 113, 125, 0.78);
+    background: transparent;
+    font-weight: 550;
     cursor: pointer;
     list-style: none;
   }
@@ -432,6 +500,11 @@
   @media (max-width: 760px) {
     .search-bar {
       grid-template-columns: minmax(0, 1fr);
+      gap: 8px 12px;
+    }
+
+    .brand-anchor {
+      grid-row: 1;
     }
 
     .actions {
@@ -468,6 +541,20 @@
 
     .query-input {
       height: 32px;
+      font-size: 13px;
+    }
+
+    .brand-anchor {
+      min-height: 30px;
+    }
+
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      font-size: 8px;
+    }
+
+    .brand-name {
       font-size: 13px;
     }
 

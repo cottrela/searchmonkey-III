@@ -16,10 +16,10 @@
   } = $props();
 
   const labels: Record<SearchState, string> = {
-    idle: 'Idle',
-    starting: 'Starting...',
-    running: 'Searching...',
-    cancelling: 'Cancelling...',
+    idle: 'Ready',
+    starting: 'Starting',
+    running: 'Searching',
+    cancelling: 'Cancelling',
     completed: 'Done',
     cancelled: 'Cancelled',
     failed: 'Error'
@@ -29,11 +29,11 @@
   const elapsedLabel = $derived(`${(elapsedMs / 1000).toFixed(2)}s`);
   const stateLabel = $derived.by(() => {
     if (state === 'starting' || state === 'running' || state === 'cancelling') {
-      return `${labels[state]} ${elapsedLabel}`;
+      return elapsedLabel;
     }
 
     if ((state === 'completed' || state === 'cancelled') && elapsedMs > 0) {
-      return `${labels[state]} in ${elapsedLabel}`;
+      return elapsedLabel;
     }
 
     return labels[state];
@@ -47,6 +47,7 @@
 >
   <div class="state">
     <span class="dot" aria-hidden="true"></span>
+    <span class="live-label">Live</span>
     <strong>{stateLabel}</strong>
     {#if errorMessage}
       <span class="message">{errorMessage}</span>
@@ -59,7 +60,7 @@
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
     {/if}
-    <span>Searches current files directly. No index.</span>
+    <span class="tagline">No index. No daemon. No stale results.</span>
   </div>
 </footer>
 
@@ -82,7 +83,7 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
   }
 
   .metrics {
@@ -90,11 +91,33 @@
     justify-content: flex-end;
   }
 
+  .metrics span + span {
+    border-left: 1px solid var(--border);
+    padding-left: 8px;
+  }
+
+  .metrics span {
+    color: #7d8790;
+    font-weight: 550;
+  }
+
+  .tagline {
+    color: #8b949d;
+    font-weight: 500;
+  }
+
   .dot {
     width: 8px;
     height: 8px;
     border-radius: 999px;
     background: var(--ok);
+  }
+
+  .live-label {
+    color: var(--accent-strong);
+    font-size: 11px;
+    font-weight: 850;
+    text-transform: uppercase;
   }
 
   .status-bar.active:not(.error) .dot {

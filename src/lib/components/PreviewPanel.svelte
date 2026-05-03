@@ -362,7 +362,8 @@
     grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
-    background: var(--panel);
+    background: var(--preview-bg);
+    box-shadow: inset 1px 0 0 var(--border);
     overflow: hidden;
   }
 
@@ -374,7 +375,7 @@
     min-height: 56px;
     border-bottom: 1px solid var(--border);
     padding: 7px 10px 7px 14px;
-    background: var(--panel);
+    background: var(--preview-bg);
   }
 
   .desktop-preview-file {
@@ -482,7 +483,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 4px;
-    background: var(--panel);
+    background: var(--preview-bg);
     box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
   }
 
@@ -592,18 +593,19 @@
     border-radius: 6px;
     overflow: auto;
     color: var(--text);
-    background: #fbfcfd;
+    background: var(--code-bg);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 13px;
-    line-height: 18px;
+    line-height: 17px;
     contain: content;
   }
 
   .line {
+    position: relative;
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
     min-width: max-content;
-    min-height: 18px;
+    min-height: 17px;
   }
 
   .line[data-match='true'] {
@@ -614,7 +616,7 @@
     border-right: 1px solid var(--border-subtle);
     padding: 0 6px 0 4px;
     color: var(--muted);
-    background: #f1f4f6;
+    background: #edf2f0;
     text-align: right;
     font-variant-numeric: tabular-nums;
     pointer-events: none;
@@ -622,13 +624,25 @@
   }
 
   .line[data-active-match='true'] {
-    background: #fff4cf;
-    outline: 1px solid #c88f16;
+    background: var(--highlight-row);
+    outline: 1px solid #c78413;
     outline-offset: -1px;
   }
 
+  .line[data-active-match='true']::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 0;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent-strong);
+    z-index: 1;
+  }
+
   .line[data-match='true']:not([data-active-match='true']) {
-    background: #fff9e8;
+    background: var(--highlight-row-soft);
   }
 
   .source {
@@ -649,15 +663,15 @@
   }
 
   .match {
-    border-radius: 3px;
-    padding: 0 1px;
+    border-radius: 4px;
+    padding: 0 2px;
     color: #241800;
-    background: #ffc94d;
+    background: var(--highlight);
   }
 
   .match.active {
     outline: 1px solid #b06b00;
-    background: #ffad1f;
+    background: var(--highlight-strong);
   }
 
   button {

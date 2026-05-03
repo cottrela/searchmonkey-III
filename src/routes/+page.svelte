@@ -1289,18 +1289,27 @@
     -webkit-font-smoothing: antialiased;
     --text: #1e252d;
     --muted: #66717d;
-    --surface: #f8f9fb;
+    --surface: #f7f9fa;
     --panel: #ffffff;
     --input: #ffffff;
     --disabled: #edf0f3;
     --border: #d9dee5;
     --border-subtle: #e7ebef;
     --border-strong: #c5ccd5;
-    --accent: #256d8f;
-    --accent-soft: #93bfce;
-    --focus: rgba(37, 109, 143, 0.18);
-    --selection: #e8f3f7;
-    --ok: #2f855a;
+    --accent: #16834a;
+    --accent-strong: #0b5f32;
+    --accent-soft: #79bf94;
+    --accent-wash: #e7f5ec;
+    --focus: rgba(22, 131, 74, 0.18);
+    --selection: #f1f6f3;
+    --selection-strong: #e2eee7;
+    --preview-bg: #eaf0ee;
+    --code-bg: #fbfcfb;
+    --highlight: rgba(229, 174, 56, 0.36);
+    --highlight-strong: rgba(220, 143, 26, 0.54);
+    --highlight-row: rgba(229, 174, 56, 0.18);
+    --highlight-row-soft: rgba(229, 174, 56, 0.08);
+    --ok: var(--accent);
     --danger: #ba3c32;
   }
 
@@ -1380,8 +1389,8 @@
 
   .mode-pills button.active {
     border-color: var(--accent-soft);
-    color: var(--text);
-    background: var(--selection);
+    color: var(--accent-strong);
+    background: var(--accent-wash);
   }
 
   .workspace {
@@ -1442,13 +1451,13 @@
     border-right: 1px solid var(--border);
     border-radius: 0;
     padding: 0;
-    background: var(--surface);
+    background: var(--preview-bg);
     cursor: col-resize;
   }
 
   .panel-resizer:hover,
   .panel-resizer:focus-visible {
-    background: var(--selection);
+    background: var(--accent-wash);
     outline: none;
   }
 
