@@ -1,0 +1,30 @@
+app-id: uk.co.axanara.searchmonkey
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+
+command: searchmonkey
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=x11
+  - --device=dri
+  - --filesystem=home
+
+modules:
+  - name: searchmonkey
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 searchmonkey /app/bin/searchmonkey
+      - install -Dm755 rg /app/bin/rg
+      - install -Dm644 uk.co.axanara.searchmonkey.desktop /app/share/applications/ur.co.axanara.searchmonkey.Searchmonkey.desktop
+      - install -Dm644 uk.co.axanara.searchmonkey.metainfo.xml /app/share/metainfo/uk.co.axanara.searchmonkey.Searchmonkey.metainfo.xml
+      - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/uk.co.axanara.searchmonkey.Searchmonkey.png
+
+    sources:
+      - type: archive
+        url: https://github.com/cottrela/searchmonkey-III/releases/download/v0.1.4/Searchmonkey_linux_x86_64.tar.gz
+        sha256: bce2d3278893fafaee8e5dac9dd202237d058254bd03cf3f9d81662211fe8d71 
+
