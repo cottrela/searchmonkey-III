@@ -88,3 +88,71 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Package Linux tarball
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+
+          bundle_dir="dist/searchmonkey"
+          mkdir -p "$bundle_dir/icons"
+
+          app_binary=""
+          for candidate in \
+            src-tauri/target/release/searchmonkey \
+            src-tauri/target/release/tauri-app
+          do
+            if [ -f "$candidate" ]; then
+              app_binary="$candidate"
+              break
+            fi
+          done
+
+          rg_binary=""
+          for candidate in \
+            src-tauri/target/release/rg \
+            src-tauri/binaries/rg-x86_64-unknown-linux-gnu
+          do
+            if [ -f "$candidate" ]; then
+              rg_binary="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$app_binary" ]; then
+            echo "No app binary found in src-tauri/target/release" >&2
+            exit 1
+          fi
+
+          if [ -z "$rg_binary" ]; then
+            echo "No rg sidecar found in src-tauri/target/release or src-tauri/binaries" >&2
+            exit 1
+          fi
+
+          install -Dm755 "$app_binary" "$bundle_dir/searchmonkey"
+          install -Dm755 "$rg_binary" "$bundle_dir/rg"
+          cp -R src-tauri/icons/. "$bundle_dir/icons/"
+
+          desktop_file="$(find src-tauri/target/release/bundle -type f -name '*.desktop' -print -quit)"
+          metainfo_file="$(find src-tauri/target/release/bundle -type f \( -name '*.metainfo.xml' -o -name '*.appdata.xml' \) -print -quit)"
+
+          if [ -z "$desktop_file" ]; then
+            echo "No desktop file found in src-tauri/target/release/bundle" >&2
+            exit 1
+          fi
+
+          if [ -z "$metainfo_file" ]; then
+            echo "No metainfo/appdata file found in src-tauri/target/release/bundle" >&2
+            exit 1
+          fi
+
+          cp "$desktop_file" "$bundle_dir/uk.co.axanara.searchmonkey.desktop"
+          cp "$metainfo_file" "$bundle_dir/uk.co.axanara.searchmonkey.metainfo.xml"
+
+          tar -C dist -czf Searchmonkey_linux_x86_64.tar.gz searchmonkey
+
+      - name: Upload Linux tarball
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" Searchmonkey_linux_x86_64.tar.gz --clobber

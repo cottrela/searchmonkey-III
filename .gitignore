@@ -14,3 +14,4 @@ vite.config.ts.timestamp-*
 .idea/
 .vscode/
 /src-tauri/binaries/rg-universal-apple-darwin
+dist/
