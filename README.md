@@ -119,5 +119,5 @@ Licensed under the MIT License — see [LICENSE](./LICENSE)
 
 ## 👤 Author
 
-Searchmonkey is developed by Axanara Ltd
-https://axanara.co.uk
+Searchmonkey is developed by Axonara Ltd
+https://axonara.co.uk

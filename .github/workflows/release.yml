@@ -146,13 +146,13 @@ jobs:
             exit 1
           fi
 
-          cp "$desktop_file" "$bundle_dir/uk.co.axanara.searchmonkey.desktop"
+          cp "$desktop_file" "$bundle_dir/uk.co.axonara.searchmonkey.desktop"
 
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          cat > "$bundle_dir/uk.co.axanara.searchmonkey.metainfo.xml" <<EOF
+          cat > "$bundle_dir/uk.co.axonara.searchmonkey.metainfo.xml" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <component type="desktop-application">
-            <id>uk.co.axanara.searchmonkey</id>
+            <id>uk.co.axonara.searchmonkey</id>
             <metadata_license>MIT</metadata_license>
             <project_license>MIT</project_license>
             <name>Searchmonkey</name>
@@ -160,7 +160,7 @@ jobs:
             <description>
               <p>Searchmonkey is a desktop search tool for finding text in files and folders.</p>
             </description>
-            <launchable type="desktop-id">uk.co.axanara.searchmonkey.desktop</launchable>
+            <launchable type="desktop-id">uk.co.axonara.searchmonkey.desktop</launchable>
             <releases>
               <release version="$version" date="$(date -u +%F)" />
             </releases>
