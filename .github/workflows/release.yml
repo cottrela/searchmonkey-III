@@ -207,6 +207,14 @@ jobs:
       
           appdir="src-tauri/target/release/bundle/appimage/Searchmonkey.AppDir"
           appimage="src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage"
+          good_rg="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
+
+          install -Dm755 "$good_rg" "$appdir/usr/bin/rg"
+
+          echo "Patched AppDir rg:"
+          sha256sum "$good_rg"
+          sha256sum "$appdir/usr/bin/rg"
+          "$appdir/usr/bin/rg" --version
       
           curl -fL \
             "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
