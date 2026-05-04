@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://searchmonkey.dev/schemas/sm-plugin-manifest.v1.schema.json",
+  "title": "Searchmonkey Plugin Manifest v1",
+  "type": "object",
+  "required": ["schema", "id", "name", "version", "entry", "handles"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "sm.plugin.v1"
+    },
+
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9.-]+$"
+    },
+
+    "name": {
+      "type": "string"
+    },
+
+    "version": {
+      "type": "string"
+    },
+
+    "description": {
+      "type": "string"
+    },
+
+    "developer": {
+      "type": "string"
+    },
+
+    "homepage": {
+      "type": "string",
+      "format": "uri"
+    },
+
+    "handles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^\\.[a-z0-9]+$"
+      },
+      "minItems": 1
+    },
+
+    "entry": {
+      "type": "object",
+      "required": ["kind", "command"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["process"]
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "boolean" },
+        "layout": { "type": "boolean" },
+        "ocr": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "read_source_file",
+          "write_sm_outputs"
+        ]
+      }
+    },
+
+    "requires_entitlement": {
+      "type": "boolean",
+      "default": false
+    },
+
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    },
+
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "linux-x64",
+          "linux-arm64",
+          "windows-x64",
+          "macos-x64",
+          "macos-arm64"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

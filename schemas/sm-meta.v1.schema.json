@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://searchmonkey.dev/schemas/sm-meta.v1.schema.json",
+  "title": "Searchmonkey Metadata v1",
+  "type": "object",
+  "required": ["schema", "source", "generator", "text", "ranges"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "sm.meta.v1"
+    },
+
+    "source": {
+      "type": "object",
+      "required": ["path", "size", "mtime"],
+      "properties": {
+        "path": { "type": "string" },
+        "size": { "type": "integer", "minimum": 0 },
+        "mtime": { "type": "string", "format": "date-time" },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-fA-F0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "generator": {
+      "type": "object",
+      "required": ["plugin_id", "plugin_version"],
+      "properties": {
+        "plugin_id": { "type": "string" },
+        "plugin_version": { "type": "string" },
+        "settings_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-fA-F0-9]{64}$"
+        },
+        "engine": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "text": {
+      "type": "object",
+      "required": ["path", "encoding"],
+      "properties": {
+        "path": { "type": "string" },
+        "encoding": {
+          "type": "string",
+          "enum": ["utf-8"]
+        },
+        "length_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-fA-F0-9]{64}$"
+        },
+        "offsets": {
+          "type": "string",
+          "const": "utf8-bytes"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "ranges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "start", "end"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "document",
+              "page",
+              "section",
+              "heading",
+              "paragraph",
+              "block",
+              "list_item",
+              "table",
+              "row",
+              "cell",
+              "footnote",
+              "annotation",
+              "image_alt"
+            ]
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "label": {
+            "type": "string"
+          },
+          "hints": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

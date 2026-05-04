@@ -141,11 +141,11 @@ jobs:
           mkdir -p /tmp/rg
           tar -xzf "/tmp/${RG_ARCHIVE}" -C /tmp/rg --strip-components=1
 
-          install -Dm755 /tmp/rg/rg "src-tauri/binaries/rg-${RG_TAURI_TARGET}"
+          install -Dm755 /tmp/rg/rg "src-tauri/binaries/rg"
 
-          file "src-tauri/binaries/rg-${RG_TAURI_TARGET}"
-          ldd "src-tauri/binaries/rg-${RG_TAURI_TARGET}" || true
-          "src-tauri/binaries/rg-${RG_TAURI_TARGET}" --version
+          file "src-tauri/binaries/rg"
+          ldd "src-tauri/binaries/rg" || true
+          "src-tauri/binaries/rg" --version
 
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -178,14 +178,7 @@ jobs:
             fi
           done
 
-          rg_binary="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
-
-          if [ -z "$app_binary" ]; then
-            echo "No app binary found in src-tauri/target/release" >&2
-            exit 1
-          fi
-
-          rg_binary="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
+          rg_binary="src-tauri/binaries/rg"
           
           if [ ! -x "$rg_binary" ]; then
             echo "No executable Linux rg sidecar found: $rg_binary" >&2
