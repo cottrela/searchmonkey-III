@@ -210,12 +210,16 @@ jobs:
       
           curl -fL \
             "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
-            -o /tmp/appimagetool
+            -o /tmp/appimagetool.AppImage
       
-          chmod +x /tmp/appimagetool
+          chmod +x /tmp/appimagetool.AppImage
+      
+          cd /tmp
+          /tmp/appimagetool.AppImage --appimage-extract >/dev/null
+          cd -
       
           rm -f "$appimage"
-          ARCH=x86_64 /tmp/appimagetool "$appdir" "$appimage"
+          ARCH=x86_64 /tmp/squashfs-root/AppRun "$appdir" "$appimage"
       
           chmod +x "$appimage"
           rm -rf squashfs-root
