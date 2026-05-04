@@ -200,6 +200,22 @@ jobs:
           find squashfs-root -type f -name 'rg*' \
             -exec sh -c 'echo "---- $1"; file "$1"; sha256sum "$1"; "$1" --version 2>/dev/null || true' sh {} \;
 
+      - name: Patch AppImage rg and repack
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+
+          good_rg="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
+          appdir="src-tauri/target/release/bundle/appimage/Searchmonkey.AppDir"
+          appimage="src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage"
+
+          install -Dm755 "$good_rg" "$appdir/usr/bin/rg"
+
+          sha256sum "$good_rg"
+          sha256sum "$appdir/usr/bin/rg"
+
+          appimagetool="$(find src-tauri/target/release/bundle/appimage -type f -name 'appimagetool*' -print -quit)"
+
       - name: Package Linux tarball
         if: matrix.platform == 'ubuntu-22.04'
         run: |
