@@ -147,6 +147,28 @@ jobs:
           ldd "src-tauri/binaries/rg-${RG_TAURI_TARGET}" || true
           "src-tauri/binaries/rg-${RG_TAURI_TARGET}" --version
 
+      - name: Find all rg binaries before build
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+      
+          echo "Repo sidecar:"
+          sha256sum src-tauri/binaries/rg-x86_64-unknown-linux-gnu
+          file src-tauri/binaries/rg-x86_64-unknown-linux-gnu
+      
+          echo "PATH rg:"
+          command -v rg || true
+          if command -v rg >/dev/null 2>&1; then
+            file "$(command -v rg)"
+            sha256sum "$(command -v rg)"
+            rg --version
+          fi
+      
+          echo "All likely rg files:"
+          find /home/runner/work /usr/bin /usr/local/bin /opt -type f -name 'rg*' \
+            -exec sh -c 'echo "---- $1"; file "$1"; sha256sum "$1"; "$1" --version 2>/dev/null || true' sh {} \; \
+            2>/dev/null || true
+
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
