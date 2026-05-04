@@ -181,6 +181,25 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Find b292 rg after AppImage build
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+      
+          echo "All rg-like files after build:"
+          find src-tauri/target /tmp /home/runner/work -type f -name 'rg*' \
+            -exec sh -c 'echo "---- $1"; file "$1"; sha256sum "$1"; "$1" --version 2>/dev/null || true' sh {} \; \
+            2>/dev/null || true
+      
+          appimage="$(find src-tauri/target/release/bundle/appimage -type f -name '*.AppImage' -print -quit)"
+          rm -rf squashfs-root
+          chmod +x "$appimage"
+          "$appimage" --appimage-extract >/dev/null
+      
+          echo "AppImage rg:"
+          find squashfs-root -type f -name 'rg*' \
+            -exec sh -c 'echo "---- $1"; file "$1"; sha256sum "$1"; "$1" --version 2>/dev/null || true' sh {} \;
+
       - name: Package Linux tarball
         if: matrix.platform == 'ubuntu-22.04'
         run: |
