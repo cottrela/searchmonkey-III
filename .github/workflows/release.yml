@@ -200,21 +200,38 @@ jobs:
           find squashfs-root -type f -name 'rg*' \
             -exec sh -c 'echo "---- $1"; file "$1"; sha256sum "$1"; "$1" --version 2>/dev/null || true' sh {} \;
 
-      - name: Patch AppImage rg and repack
+      - name: Repack patched AppImage
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-
-          good_rg="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
+      
           appdir="src-tauri/target/release/bundle/appimage/Searchmonkey.AppDir"
           appimage="src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage"
+      
+          curl -fL \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -o /tmp/appimagetool
+      
+          chmod +x /tmp/appimagetool
+      
+          rm -f "$appimage"
+          ARCH=x86_64 /tmp/appimagetool "$appdir" "$appimage"
+      
+          chmod +x "$appimage"
+          rm -rf squashfs-root
+          "$appimage" --appimage-extract >/dev/null
+      
+          sha256sum squashfs-root/usr/bin/rg
+          squashfs-root/usr/bin/rg --version
 
-          install -Dm755 "$good_rg" "$appdir/usr/bin/rg"
-
-          sha256sum "$good_rg"
-          sha256sum "$appdir/usr/bin/rg"
-
-          appimagetool="$(find src-tauri/target/release/bundle/appimage -type f -name 'appimagetool*' -print -quit)"
+      - name: Upload patched AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage \
+            --clobber
 
       - name: Package Linux tarball
         if: matrix.platform == 'ubuntu-22.04'
