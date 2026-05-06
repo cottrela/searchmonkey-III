@@ -1285,6 +1285,7 @@
     <ResultsPanel
       {groups}
       {query}
+      searchPath={path}
       regex={searchModeRegex()}
       bind:options
       {selected}

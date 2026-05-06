@@ -34,6 +34,12 @@
     | 'match_count_desc'
     | 'match_count_asc';
 
+  type ScrollLandmark = {
+    cue: string;
+    primary: string;
+    secondary: string;
+  };
+
   const FULL_LINE_LIMIT = 200;
   const SNIPPET_CONTEXT = 64;
   const FILE_ROW_HEIGHT = 44;
@@ -54,6 +60,7 @@
   let {
     groups,
     query,
+    searchPath,
     regex,
     options = $bindable<SearchOptions>(defaultSearchOptions()),
     selected,
@@ -65,6 +72,7 @@
   }: {
     groups: FileResultGroup[];
     query: string;
+    searchPath: string;
     regex: boolean;
     options: SearchOptions;
     selected: SearchMatch | null;
@@ -79,6 +87,9 @@
   let lastScrolledMatch = '';
   let scrollTop = $state(0);
   let viewportHeight = $state(0);
+  let scrollScrubbing = $state(false);
+  let scrubPreviewTop = $state(0);
+  let scrubPreviewLeft = $state(0);
   let expandedFiles = $state<Set<string>>(new Set());
 
   const rows = $derived.by(() => buildRows(groups));
@@ -107,6 +118,7 @@
 
     return current;
   });
+  const currentLandmark = $derived.by(() => landmarkForScrollPosition(scrollTop + Math.max(0, viewportHeight * 0.32)));
 
   onMount(() => {
     if (!resultsElement) return;
@@ -289,6 +301,157 @@
 
     scrollTop = resultsElement.scrollTop;
     viewportHeight = resultsElement.clientHeight;
+    if (scrollScrubbing) updateScrubPreviewPosition();
+  }
+
+  function rowAtPosition(position: number) {
+    let low = 0;
+    let high = rows.length - 1;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const row = rows[middle];
+
+      if (position < row.top) {
+        high = middle - 1;
+      } else if (position > row.top + row.height) {
+        low = middle + 1;
+      } else {
+        return row;
+      }
+    }
+
+    return rows[Math.max(0, Math.min(rows.length - 1, low))];
+  }
+
+  function groupForPath(filePath: string) {
+    return groups.find((group) => group.path === filePath);
+  }
+
+  function firstCue(value: string) {
+    return value.trim().match(/[A-Za-z0-9]/)?.[0]?.toUpperCase() ?? '#';
+  }
+
+  function normalizePathForCompare(filePath: string) {
+    return filePath.replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function relativePathFromSearchRoot(filePath: string) {
+    const normalizedFile = normalizePathForCompare(filePath);
+    const normalizedBase = normalizePathForCompare(searchPath);
+
+    if (!normalizedBase || normalizedFile === normalizedBase) return filename(filePath);
+    if (!normalizedFile.startsWith(`${normalizedBase}/`)) return filePath.replace(/\\/g, '/');
+
+    return normalizedFile.slice(normalizedBase.length + 1);
+  }
+
+  function pathLandmark(filePath: string) {
+    const relativePath = relativePathFromSearchRoot(filePath);
+    const parts = relativePath.split('/').filter(Boolean);
+    const folders = parts.slice(0, -1);
+    const fileCue = firstCue(filename(filePath));
+    const folderCue = folders[0] ? firstCue(folders[0]) : '';
+
+    return {
+      cue: `${folderCue}/${fileCue}`,
+      primary: folders.length ? folders.join('/') : '/',
+      secondary: filename(filePath)
+    };
+  }
+
+  function landmarkForScrollPosition(position: number): ScrollLandmark | null {
+    const row = rowAtPosition(position);
+    if (!row) return null;
+
+    const filePath = row.type === 'file' ? row.path : row.match.path;
+    const group = groupForPath(filePath);
+    const fileName = filename(filePath);
+    const parent = parentPath(filePath);
+    const matches = group?.matches.length ?? (row.type === 'file' ? row.count : 1);
+    const matchText = `${formatCount(matches)} ${matches === 1 ? 'match' : 'matches'}`;
+
+    if (options.sort_by === 'path') {
+      return pathLandmark(filePath);
+    }
+
+    if (options.sort_by === 'match_count') {
+      return {
+        cue: formatCount(matches),
+        primary: matchText,
+        secondary: fileName
+      };
+    }
+
+    return {
+      cue: firstCue(fileName),
+      primary: fileName,
+      secondary: matchText
+    };
+  }
+
+  function updateScrubPreviewPosition() {
+    if (!resultsElement) return;
+
+    const rect = resultsElement.getBoundingClientRect();
+    const scrollable = Math.max(1, resultsElement.scrollHeight - resultsElement.clientHeight);
+    const ratio = resultsElement.scrollTop / scrollable;
+    const thumbHeight = Math.max(36, (resultsElement.clientHeight / Math.max(1, resultsElement.scrollHeight)) * resultsElement.clientHeight);
+    const thumbRange = Math.max(0, resultsElement.clientHeight - thumbHeight);
+    const thumbCenter = rect.top + ratio * thumbRange + thumbHeight / 2;
+
+    scrubPreviewTop = Math.round(Math.min(rect.bottom - 74, Math.max(rect.top + 74, thumbCenter)));
+    scrubPreviewLeft = Math.round(Math.max(rect.left + 12, rect.right - 252));
+  }
+
+  function stopScrollScrub() {
+    scrollScrubbing = false;
+    window.removeEventListener('pointerup', stopScrollScrub, true);
+    window.removeEventListener('pointercancel', stopScrollScrub, true);
+    window.removeEventListener('pointermove', handleScrubPointerMove, true);
+    window.removeEventListener('mouseup', stopScrollScrub, true);
+    document.removeEventListener('mouseup', stopScrollScrub, true);
+    window.removeEventListener('blur', stopScrollScrub, true);
+    document.removeEventListener('visibilitychange', handleScrubVisibilityChange, true);
+  }
+
+  function handleScrubVisibilityChange() {
+    if (document.visibilityState !== 'visible') stopScrollScrub();
+  }
+
+  function handleScrubPointerMove(event: PointerEvent) {
+    if (!resultsElement) return;
+
+    const rect = resultsElement.getBoundingClientRect();
+    const horizontalTolerance = 80;
+    const verticalTolerance = 24;
+    const outsideBounds =
+      event.clientX < rect.right - horizontalTolerance ||
+      event.clientX > rect.right + horizontalTolerance ||
+      event.clientY < rect.top - verticalTolerance ||
+      event.clientY > rect.bottom + verticalTolerance;
+
+    if (outsideBounds) stopScrollScrub();
+  }
+
+  function startScrollScrub(event: PointerEvent) {
+    if (!resultsElement) return;
+    if (window.innerWidth < 600) return;
+
+    const rect = resultsElement.getBoundingClientRect();
+    const scrollbarGutter = 22;
+    if (event.clientX < rect.right - scrollbarGutter) return;
+
+    scrollScrubbing = true;
+    updateScrubPreviewPosition();
+
+    window.addEventListener('pointerup', stopScrollScrub, true);
+    window.addEventListener('pointercancel', stopScrollScrub, true);
+    window.addEventListener('pointermove', handleScrubPointerMove, true);
+    window.addEventListener('mouseup', stopScrollScrub, true);
+    document.addEventListener('mouseup', stopScrollScrub, true);
+    window.addEventListener('blur', stopScrollScrub, true);
+    document.addEventListener('visibilitychange', handleScrubVisibilityChange, true);
   }
 
   function closeMoreActionMenus(except?: HTMLDetailsElement) {
@@ -361,7 +524,7 @@
   });
 </script>
 
-<section bind:this={resultsElement} class="results-panel" aria-label="Search results" onscroll={updateScrollMetrics}>
+<section bind:this={resultsElement} class="results-panel" aria-label="Search results" onscroll={updateScrollMetrics} onpointerdown={startScrollScrub}>
   <div class="panel-title">
     <div class="title-block">
       <h2>Results</h2>
@@ -529,6 +692,14 @@
         {/if}
       {/each}
     </div>
+
+    {#if scrollScrubbing && currentLandmark}
+      <div class="scroll-landmark" style={`top: ${scrubPreviewTop}px; left: ${scrubPreviewLeft}px;`} aria-hidden="true">
+        <strong>{currentLandmark.cue}</strong>
+        <span>{currentLandmark.primary}</span>
+        <small>{currentLandmark.secondary}</small>
+      </div>
+    {/if}
   {/if}
 </section>
 
@@ -660,6 +831,51 @@
     position: relative;
     margin: 0 10px 10px;
     min-height: 0;
+  }
+
+  .scroll-landmark {
+    position: fixed;
+    z-index: 80;
+    display: grid;
+    width: min(228px, calc(100vw - 24px));
+    min-height: 112px;
+    transform: translateY(-50%);
+    gap: 4px;
+    border: 1px solid rgba(197, 204, 213, 0.86);
+    border-radius: 8px;
+    padding: 12px 14px;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 18px 42px rgba(30, 37, 45, 0.22);
+    pointer-events: none;
+    backdrop-filter: blur(10px);
+  }
+
+  .scroll-landmark strong,
+  .scroll-landmark span,
+  .scroll-landmark small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scroll-landmark strong {
+    font-size: 38px;
+    line-height: 0.96;
+    font-weight: 900;
+    letter-spacing: 0;
+  }
+
+  .scroll-landmark span {
+    font-size: 13px;
+    font-weight: 850;
+  }
+
+  .scroll-landmark small {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
   }
 
   .mobile-groups {
