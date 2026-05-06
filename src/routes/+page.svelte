@@ -145,11 +145,28 @@
     matchesVersion;
     return sortGroups(groupMatches(matches), options.sort_by, options.sort_direction);
   });
+  const displayedMatches = $derived.by(() => {
+    matchesVersion;
+    return groups.flatMap((group) => group.matches);
+  });
   const selectedIndex = $derived.by(() => {
     matchesVersion;
     if (!selected) return -1;
     const current = selected;
-    return matches.findIndex((match) => sameMatch(match, current));
+    return displayedMatches.findIndex((match) => sameMatch(match, current));
+  });
+  const selectedFileMatchIndex = $derived.by(() => {
+    matchesVersion;
+    if (!selected) return -1;
+    const current = selected;
+    const group = groups.find((resultGroup) => resultGroup.path === current.path);
+    return group?.matches.findIndex((match) => sameMatch(match, current)) ?? -1;
+  });
+  const selectedFileMatchCount = $derived.by(() => {
+    matchesVersion;
+    if (!selected) return 0;
+    const current = selected;
+    return groups.find((resultGroup) => resultGroup.path === current.path)?.matches.length ?? 0;
   });
   const preview = $derived.by(() => {
     if (!selected) {
@@ -226,6 +243,9 @@
     const syncConstraint = () => {
       oneUpConstrained = oneUpMedia.matches;
       fullModeAvailable = fullMedia.matches;
+      if (oneUpMedia.matches && compactView === 'preview' && !selected && !regexTesterOpen) {
+        compactView = 'results';
+      }
     };
 
     syncConstraint();
@@ -899,6 +919,12 @@
 
     if (isEditableTarget(event.target)) return;
 
+    if ((event.key === 'Enter' || event.key === 'F4') && selected && (compactView === 'preview' || activeLayoutMode !== 'focus')) {
+      event.preventDefault();
+      selectFileMatchOffset(event.shiftKey ? -1 : 1);
+      return;
+    }
+
     if (event.key === 'Enter' && selected && compactView === 'results') {
       event.preventDefault();
       compactView = 'preview';
@@ -964,11 +990,53 @@
   }
 
   function selectOffset(offset: number) {
-    if (!matches.length) return;
+    if (!displayedMatches.length) return;
 
     const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
-    const nextIndex = (currentIndex + offset + matches.length) % matches.length;
-    const nextMatch = matches[nextIndex];
+    const nextIndex = (currentIndex + offset + displayedMatches.length) % displayedMatches.length;
+    const nextMatch = displayedMatches[nextIndex];
+    scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
+    previewViewport = updateViewportForMatch(nextMatch);
+    selected = nextMatch;
+  }
+
+  function selectFileOffset(offset: number, targetMatch: 'first' | 'last' = 'first') {
+    if (!groups.length) return;
+
+    const currentPath = selected?.path;
+    const currentGroupIndex = currentPath ? groups.findIndex((group) => group.path === currentPath) : -1;
+    const startIndex = currentGroupIndex >= 0 ? currentGroupIndex : 0;
+    const nextGroupIndex = (startIndex + offset + groups.length) % groups.length;
+    const nextGroup = groups[nextGroupIndex];
+    const nextMatch = targetMatch === 'last' ? nextGroup?.matches.at(-1) : nextGroup?.matches[0];
+    if (!nextMatch) return;
+
+    scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
+    previewViewport = updateViewportForMatch(nextMatch);
+    selected = nextMatch;
+  }
+
+  function selectFileMatchOffset(offset: number) {
+    if (!selected) return;
+
+    const current = selected;
+    const group = groups.find((resultGroup) => resultGroup.path === current.path);
+    if (!group?.matches.length) return;
+
+    const currentIndex = selectedFileMatchIndex >= 0 ? selectedFileMatchIndex : 0;
+    if (offset > 0 && currentIndex === group.matches.length - 1) {
+      selectFileOffset(1);
+      return;
+    }
+
+    if (offset < 0 && currentIndex === 0) {
+      selectFileOffset(-1, 'last');
+      return;
+    }
+
+    const nextIndex = currentIndex + offset;
+    const nextMatch = group.matches[nextIndex];
+
     scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
     previewViewport = updateViewportForMatch(nextMatch);
     selected = nextMatch;
@@ -1138,6 +1206,12 @@
       regexTesterOpen = false;
     }
   }
+
+  $effect(() => {
+    if (oneUpConstrained && compactView === 'preview' && !selected && !regexTesterOpen) {
+      compactView = 'results';
+    }
+  });
 
   $effect(() => {
     if (!searchModeRegex()) {
@@ -1312,10 +1386,14 @@
       <PreviewPanel
         {preview}
         errorMessage={previewError}
-        total={displayedMatchCount}
+        activeFileMatchNumber={selectedFileMatchIndex + 1}
+        activeFileMatchTotal={selectedFileMatchCount}
+        canNavigateFiles={groups.length > 1}
         drilldown={activeLayoutMode === 'focus'}
-        onPrevious={() => selectOffset(-1)}
-        onNext={() => selectOffset(1)}
+        onPrevious={() => selectFileMatchOffset(-1)}
+        onNext={() => selectFileMatchOffset(1)}
+        onPreviousFile={() => selectFileOffset(-1)}
+        onNextFile={() => selectFileOffset(1)}
         onSelect={selectMatch}
         onOpen={openFile}
         onReveal={revealFile}

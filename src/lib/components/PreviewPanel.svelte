@@ -26,10 +26,14 @@
   let {
     preview,
     errorMessage,
-    total,
+    activeFileMatchNumber,
+    activeFileMatchTotal,
+    canNavigateFiles,
     drilldown = false,
     onPrevious,
     onNext,
+    onPreviousFile,
+    onNextFile,
     onSelect,
     onOpen,
     onReveal,
@@ -37,10 +41,14 @@
   }: {
     preview: PreviewState;
     errorMessage: string;
-    total: number;
+    activeFileMatchNumber: number;
+    activeFileMatchTotal: number;
+    canNavigateFiles: boolean;
     drilldown?: boolean;
     onPrevious: () => void;
     onNext: () => void;
+    onPreviousFile: () => void;
+    onNextFile: () => void;
     onSelect: (match: PreviewState['matches'][number]) => void;
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
@@ -52,10 +60,7 @@
   let lastScrolledTarget = '';
   let wrapLines = $state(false);
 
-  const activeResultNumber = $derived.by(() => {
-    if (preview.activeMatchIndex < 0) return 0;
-    return preview.activeMatchIndex + 1;
-  });
+  const canNavigateMatches = $derived(activeFileMatchTotal > 1);
 
   const sourceLines = $derived.by(() =>
     buildSourceLines(preview.filePreview, preview.matches, preview.activeMatch)
@@ -271,6 +276,8 @@
         <div class="menu">
           <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
           <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
+          <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
           <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
             Copy match
           </button>
@@ -288,6 +295,8 @@
         <div class="menu">
           <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
           <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
+          <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
           <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
             Copy match
           </button>
@@ -319,9 +328,11 @@
       </div>
       <div class="desktop-header-nav">
         <div class="match-nav" aria-label="Match navigation">
-          <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">←</button>
-          <span>{activeResultNumber} / {total}</span>
-          <button type="button" onclick={onNext} disabled={total < 2} title="Next match">→</button>
+          <button class="file-nav-button" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles} title="Previous file"><span class="nav-label-full">‹ File</span><span class="nav-label-short">‹</span></button>
+          <button class="match-nav-button" type="button" onclick={onPrevious} disabled={!canNavigateMatches} title="Previous match (Shift+Enter / Shift+F4)"><span class="nav-label-full">‹ Match</span><span class="nav-label-short">‹</span></button>
+          <span>{activeFileMatchNumber} / {activeFileMatchTotal}</span>
+          <button class="match-nav-button" type="button" onclick={onNext} disabled={!canNavigateMatches} title="Next match (Enter / F4)"><span class="nav-label-full">Match ›</span><span class="nav-label-short">›</span></button>
+          <button class="file-nav-button" type="button" onclick={onNextFile} disabled={!canNavigateFiles} title="Next file"><span class="nav-label-full">File ›</span><span class="nav-label-short">›</span></button>
         </div>
       </div>
       <div class="desktop-preview-actions">
@@ -331,6 +342,8 @@
           <summary title="More actions" aria-label="More actions">...</summary>
           <div class="menu">
             <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+            <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
+            <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
             <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
               Copy match
             </button>
@@ -386,9 +399,11 @@
       {/if}
 
       <div class="mobile-match-nav">
-        <button type="button" onclick={onPrevious} disabled={total < 2} title="Previous match">←</button>
-        <span>{activeResultNumber} / {total}</span>
-        <button type="button" onclick={onNext} disabled={total < 2} title="Next match">→</button>
+        <button class="file-nav-button" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles} title="Previous file"><span class="nav-label-full">‹ File</span><span class="nav-label-short">‹</span></button>
+        <button class="match-nav-button" type="button" onclick={onPrevious} disabled={!canNavigateMatches} title="Previous match (Shift+Enter / Shift+F4)"><span class="nav-label-full">‹ Match</span><span class="nav-label-short">‹</span></button>
+        <span>{activeFileMatchNumber} / {activeFileMatchTotal}</span>
+        <button class="match-nav-button" type="button" onclick={onNext} disabled={!canNavigateMatches} title="Next match (Enter / F4)"><span class="nav-label-full">Match ›</span><span class="nav-label-short">›</span></button>
+        <button class="file-nav-button" type="button" onclick={onNextFile} disabled={!canNavigateFiles} title="Next file"><span class="nav-label-full">File ›</span><span class="nav-label-short">›</span></button>
       </div>
 
     </div>
@@ -411,8 +426,8 @@
 
   .panel-title {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: 12px;
+    grid-template-columns: minmax(120px, 1fr) auto auto;
+    gap: 8px;
     align-items: center;
     min-height: 56px;
     border-bottom: 1px solid var(--border);
@@ -424,6 +439,7 @@
     display: grid;
     gap: 2px;
     min-width: 0;
+    max-width: 100%;
   }
 
   .desktop-preview-title {
@@ -456,32 +472,65 @@
     display: flex;
     flex-wrap: nowrap;
     justify-content: flex-end;
-    gap: 6px;
+    gap: 4px;
+    min-width: max-content;
     white-space: nowrap;
   }
 
   .desktop-header-nav {
     display: flex;
     justify-content: center;
+    min-width: max-content;
     white-space: nowrap;
   }
 
   .match-nav {
     display: grid;
-    grid-template-columns: 24px minmax(112px, max-content) 24px;
+    grid-template-columns: auto auto minmax(76px, max-content) auto auto;
     align-items: center;
-    overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--input);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+    overflow: hidden;
   }
 
   .match-nav button {
-    height: 24px;
+    height: 26px;
     border: 0;
     border-radius: 0;
-    padding: 0;
+    padding: 0 9px;
+    color: var(--text);
     background: transparent;
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .match-nav > * + * {
+    border-left: 1px solid rgba(217, 222, 229, 0.72);
+  }
+
+  .nav-label-short {
+    display: none;
+  }
+
+  .match-nav .file-nav-button {
+    color: #78838e;
+    font-weight: 650;
+  }
+
+  .match-nav button:disabled {
+    color: #a4adb6;
+  }
+
+  .match-nav button:not(:disabled):hover,
+  .match-nav button:not(:disabled):focus-visible {
+    background: var(--selection);
+    outline: none;
+  }
+
+  .match-nav button:not(:disabled):active {
+    background: var(--selection-strong);
   }
 
   .match-nav span {
@@ -489,8 +538,13 @@
     font-variant-numeric: tabular-nums;
     font-size: 11px;
     font-weight: 800;
+    padding: 0 8px;
     text-align: center;
     white-space: nowrap;
+  }
+
+  .file-menu-action {
+    display: none;
   }
 
   .desktop-preview-actions details {
@@ -753,11 +807,11 @@
 
   @media (max-width: 849px) {
     .panel-title {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(120px, 1fr) auto auto;
     }
 
     .desktop-preview-actions {
-      justify-content: flex-start;
+      justify-content: flex-end;
     }
 
   }
@@ -858,15 +912,24 @@
 
     .mobile-match-nav {
       display: grid;
-      grid-template-columns: 42px minmax(112px, 1fr) 42px;
-      gap: 8px;
+      grid-template-columns: auto auto minmax(72px, 1fr) auto auto;
+      gap: 0;
       align-items: center;
       margin-top: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--input);
     }
 
     .mobile-match-nav button {
-      height: 34px;
-      font-size: 16px;
+      height: 32px;
+      border: 0;
+      border-radius: 0;
+      padding: 0 7px;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 800;
     }
 
     .mobile-match-nav span {
@@ -874,7 +937,27 @@
       font-variant-numeric: tabular-nums;
       font-size: 12px;
       font-weight: 800;
+      padding: 0 5px;
       text-align: center;
+    }
+
+    .mobile-match-nav > * + * {
+      border-left: 1px solid rgba(217, 222, 229, 0.72);
+    }
+
+    .mobile-match-nav .file-nav-button {
+      color: #78838e;
+      font-weight: 650;
+    }
+
+    .mobile-match-nav button:not(:disabled):hover,
+    .mobile-match-nav button:not(:disabled):focus-visible {
+      background: var(--selection);
+      outline: none;
+    }
+
+    .mobile-match-nav button:not(:disabled):active {
+      background: var(--selection-strong);
     }
 
     details {
@@ -931,25 +1014,79 @@
     }
   }
 
-  @container (max-width: 430px) {
-    .panel-title {
-      grid-template-columns: minmax(0, 1fr) auto;
-      min-height: 76px;
+  @container (max-width: 620px) {
+    .match-nav > .file-nav-button,
+    .mobile-match-nav > .file-nav-button {
+      display: none;
     }
 
-    .desktop-preview-path,
+    .file-menu-action {
+      display: block;
+    }
+  }
+
+  @container (max-width: 560px) {
+    .panel-title {
+      grid-template-columns: minmax(110px, 1fr) auto auto;
+    }
+
     .reveal-action {
       display: none;
     }
 
-    .desktop-header-nav {
-      grid-column: 1 / -1;
-      grid-row: 2;
-      justify-content: center;
-    }
-
     .desktop-preview-actions {
       flex-wrap: nowrap;
+    }
+  }
+
+  @container (max-width: 460px) {
+    .panel-title {
+      grid-template-columns: minmax(96px, 1fr) auto auto;
+      gap: 6px;
+    }
+
+    .match-nav .match-nav-button {
+      padding-inline: 7px;
+    }
+
+    .match-nav span {
+      min-width: 58px;
+      padding-inline: 6px;
+    }
+  }
+
+  @container (max-width: 360px) {
+    .panel-title {
+      grid-template-columns: auto auto;
+      justify-content: end;
+    }
+
+    .desktop-preview-file {
+      display: none;
+    }
+  }
+
+  @container (max-width: 340px) {
+    .match-nav,
+    .mobile-match-nav {
+      grid-template-columns: auto minmax(62px, max-content) auto;
+    }
+
+    .match-nav .match-nav-button {
+      padding-inline: 10px;
+      font-size: 13px;
+    }
+
+    .match-nav span {
+      padding-inline: 7px;
+    }
+
+    .nav-label-full {
+      display: none;
+    }
+
+    .nav-label-short {
+      display: inline;
     }
   }
 </style>
