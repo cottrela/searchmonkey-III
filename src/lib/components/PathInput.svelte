@@ -219,9 +219,7 @@
   }
 
   function handleBlur() {
-    setTimeout(() => {
-      openSuggestions = false;
-    }, 120);
+    openSuggestions = false;
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -246,9 +244,7 @@
     }
 
     if (event.key === 'Tab') {
-      if (!openSuggestions || !visibleSuggestions.length) return;
-      event.preventDefault();
-      acceptSuggestion();
+      openSuggestions = false;
       return;
     }
 

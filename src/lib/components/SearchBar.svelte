@@ -58,6 +58,50 @@
     }
   }
 
+  function closeSavedMenu() {
+    if (savedMenuElement) {
+      savedMenuElement.open = false;
+    }
+  }
+
+  function closeSavedActionMenus(except?: HTMLDetailsElement) {
+    savedMenuElement?.querySelectorAll<HTMLDetailsElement>('.saved-actions[open]').forEach((menu) => {
+      if (menu !== except) {
+        menu.open = false;
+      }
+    });
+  }
+
+  function requestSaveCurrentSearch(event: PointerEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    onSaveRequest?.();
+    closeSavedMenu();
+  }
+
+  function handleSavedMenuFocusOut() {
+    setTimeout(() => {
+      if (savedMenuElement?.contains(document.activeElement)) return;
+      closeSavedMenu();
+    }, 0);
+  }
+
+  function handleSavedActionToggle(event: Event) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+    closeSavedActionMenus(menu);
+  }
+
+  function handleSavedActionFocusOut(event: FocusEvent) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement)) return;
+
+    setTimeout(() => {
+      if (menu.contains(document.activeElement)) return;
+      menu.open = false;
+    }, 0);
+  }
+
   function positionSavedPopover() {
     if (!savedMenuElement?.open) return;
 
@@ -68,6 +112,27 @@
 
     savedPopoverStyle = `--saved-popover-left: ${left}px; --saved-popover-top: ${top}px; --saved-popover-width: ${width}px;`;
   }
+
+  $effect(() => {
+    if (!savedMenuElement?.open) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const menu = savedMenuElement;
+      if (!menu) return;
+      if (!(event.target instanceof Node)) return;
+      if (menu.contains(event.target)) {
+        const actionMenu = (event.target instanceof Element ? event.target : event.target.parentElement)?.closest('.saved-actions');
+        if (!actionMenu) closeSavedActionMenus();
+        return;
+      }
+      closeSavedMenu();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  });
 </script>
 
 <form class="search-bar" onsubmit={submit}>
@@ -96,29 +161,29 @@
       <button class="primary" type="submit">
         {searching ? 'Stop' : 'Search'}
       </button>
-      <details class="saved-menu" bind:this={savedMenuElement} ontoggle={positionSavedPopover}>
-        <summary>Saved <span aria-hidden="true">▾</span></summary>
+      <details class="saved-menu" bind:this={savedMenuElement} ontoggle={positionSavedPopover} onfocusout={handleSavedMenuFocusOut}>
+        <summary>Presets <span aria-hidden="true">▾</span></summary>
         <div class="saved-popover" style={savedPopoverStyle}>
-          <button class="save-current" type="button" onclick={() => onSaveRequest?.()}>Save current search</button>
+          <button class="save-current" type="button" onpointerdown={requestSaveCurrentSearch}>Save Preset</button>
           {#if savedSearches.length}
-            <div class="saved-list" aria-label="Saved searches">
+            <div class="saved-list" aria-label="Search presets">
               {#each savedSearches as search (search.id)}
                 <div class="saved-row">
                   <button class="saved-load" type="button" title={search.name} onclick={() => applySavedCriteria(search)}>
                     {search.name}
                   </button>
-                  <details class="saved-actions">
+                  <details class="saved-actions" ontoggle={handleSavedActionToggle} onfocusout={handleSavedActionFocusOut}>
                     <summary aria-label={`Actions for ${search.name}`}>...</summary>
                     <div class="saved-action-menu">
-                      <button type="button" onclick={() => onRenameCriteria?.(search)}>Rename</button>
-                      <button type="button" onclick={() => onDeleteCriteria?.(search)}>Delete</button>
+                      <button type="button" onclick={() => { onRenameCriteria?.(search); closeSavedMenu(); }}>Rename</button>
+                      <button type="button" onclick={() => { onDeleteCriteria?.(search); closeSavedMenu(); }}>Delete</button>
                     </div>
                   </details>
                 </div>
               {/each}
             </div>
           {:else}
-            <div class="saved-empty">No saved searches</div>
+            <div class="saved-empty">No presets</div>
           {/if}
         </div>
       </details>

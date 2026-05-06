@@ -75,6 +75,7 @@
   let saveIncludeFilters = $state(true);
   let saveIncludePath = $state(true);
   let saveIncludeOptions = $state(true);
+  let defaultHomePath = '';
   let aboutDialogOpen = $state(false);
   let telemetryState = $state<TelemetryState | null>(null);
   let telemetryDialogOpen = $state(false);
@@ -274,6 +275,7 @@
 
     homeDir()
       .then((home) => {
+        defaultHomePath = home;
         if (!path) path = home;
       })
       .catch(() => {
@@ -453,8 +455,33 @@
     contextLines = options.context_lines;
   }
 
+  function normalizedPathForCompare(filePath: string) {
+    return filePath.trim().replace(/[/\\]+$/, '');
+  }
+
+  function truncatePresetName(name: string) {
+    if (name.length <= 48) return name;
+    return `${name.slice(0, 45).trim()}...`;
+  }
+
+  function suggestedPresetName() {
+    const cleanQuery = query.trim().replace(/\s+/g, ' ');
+    if (cleanQuery) {
+      const queryName = options.search_mode === 'regex' ? `${cleanQuery} regex` : cleanQuery;
+      return truncatePresetName(queryName);
+    }
+
+    const cleanPath = path.trim();
+    const cleanHome = normalizedPathForCompare(defaultHomePath);
+    if (cleanPath && normalizedPathForCompare(cleanPath) !== cleanHome) {
+      return `${filename(cleanPath)} search`;
+    }
+
+    return 'My Search';
+  }
+
   function openSaveDialog() {
-    saveSearchName = query.trim() || filename(path.trim()) || 'Untitled search';
+    saveSearchName = suggestedPresetName();
     saveIncludeFilters = true;
     saveIncludePath = true;
     saveIncludeOptions = true;
@@ -462,7 +489,7 @@
   }
 
   function saveCurrentCriteria() {
-    const cleanName = saveSearchName.trim() || query.trim() || filename(path.trim()) || 'Untitled search';
+    const cleanName = saveSearchName.trim() || suggestedPresetName();
     const criteria = currentCriteria(cleanName, {
       includeFilters: saveIncludeFilters,
       includePath: saveIncludePath,
@@ -474,7 +501,7 @@
   }
 
   function renameSavedSearch(criteria: SearchCriteria) {
-    const nextName = window.prompt('Rename saved search', criteria.name)?.trim();
+    const nextName = window.prompt('Rename preset', criteria.name)?.trim();
     if (!nextName) return;
 
     savedSearches = savedSearches.map((search) => (search.id === criteria.id ? { ...search, name: nextName } : search));
@@ -1318,34 +1345,37 @@
       <button
         class="modal-backdrop"
         type="button"
-        aria-label="Close save search"
+        aria-label="Close save preset"
         onclick={() => (saveDialogOpen = false)}
       ></button>
-      <div class="save-dialog" role="dialog" aria-modal="true" aria-label="Save search">
+      <div class="save-dialog" role="dialog" aria-modal="true" aria-label="Save preset">
         <form onsubmit={(event) => { event.preventDefault(); saveCurrentCriteria(); }}>
           <header>
-            <h2>Save Search</h2>
-            <button type="button" onclick={() => (saveDialogOpen = false)}>Close</button>
+            <h2>Save Preset</h2>
           </header>
           <div class="save-body">
             <div class="field">
-              <label for="saved-search-name">Save search as</label>
+              <label for="saved-search-name">Name</label>
               <input id="saved-search-name" type="text" bind:value={saveSearchName} placeholder="Name" autocomplete="off" />
             </div>
-            <label class="check-row">
-              <input type="checkbox" bind:checked={saveIncludeFilters} />
-              <span>Include filters</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" bind:checked={saveIncludePath} />
-              <span>Include path</span>
-            </label>
-            <label class="check-row">
-              <input type="checkbox" bind:checked={saveIncludeOptions} />
-              <span>Include options</span>
-            </label>
+            <div class="remember-group" aria-labelledby="save-preset-remember">
+              <p id="save-preset-remember">This preset will remember:</p>
+              <label class="check-row">
+                <input type="checkbox" bind:checked={saveIncludePath} />
+                <span>Search location</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" bind:checked={saveIncludeFilters} />
+                <span>Filters and regex</span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" bind:checked={saveIncludeOptions} />
+                <span>Layout and sorting</span>
+              </label>
+            </div>
           </div>
           <footer>
+            <button type="button" onclick={() => (saveDialogOpen = false)}>Cancel</button>
             <button class="primary-save" type="submit">Save</button>
           </footer>
         </form>
@@ -1595,7 +1625,7 @@
   .save-dialog {
     position: relative;
     z-index: 1;
-    width: min(360px, 100%);
+    width: min(340px, 100%);
     max-width: calc(100vw - 24px);
     margin-inline: auto;
     border: 1px solid var(--border);
@@ -1607,35 +1637,35 @@
 
   .save-dialog form {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto;
   }
 
   .save-dialog header,
   .save-dialog footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 10px;
-    border-bottom: 1px solid var(--border);
-    padding: 10px 12px;
-    background: var(--surface);
+    padding: 12px 14px 8px;
+    background: var(--panel);
   }
 
   .save-dialog footer {
     justify-content: flex-end;
-    border-top: 1px solid var(--border);
-    border-bottom: 0;
+    gap: 8px;
+    padding: 4px 14px 14px;
   }
 
   .save-dialog h2 {
     margin: 0;
-    font-size: 14px;
+    font-size: 15px;
+    line-height: 1.3;
   }
 
   .save-body {
     display: grid;
-    gap: 10px;
-    padding: 12px;
+    gap: 14px;
+    padding: 8px 14px 12px;
   }
 
   .save-body .field {
@@ -1648,6 +1678,10 @@
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
+  }
+
+  .save-body .field > label {
+    color: var(--text);
   }
 
   .save-body input[type='text'],
@@ -1672,8 +1706,24 @@
   .save-body .check-row {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 8px;
+    gap: 9px;
     align-items: center;
+  }
+
+  .save-body .remember-group {
+    display: grid;
+    gap: 10px;
+  }
+
+  .save-body .remember-group p {
+    margin: 0 0 2px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .save-body .remember-group input[type='checkbox'] {
+    margin: 0;
   }
 
   .save-dialog button {
