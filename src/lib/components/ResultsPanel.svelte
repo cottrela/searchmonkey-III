@@ -25,12 +25,31 @@
         height: number;
       };
 
+  type SortMode =
+    | 'relevance_desc'
+    | 'file_name_asc'
+    | 'file_name_desc'
+    | 'path_asc'
+    | 'path_desc'
+    | 'match_count_desc'
+    | 'match_count_asc';
+
   const FULL_LINE_LIMIT = 200;
   const SNIPPET_CONTEXT = 64;
   const FILE_ROW_HEIGHT = 44;
   const MATCH_ROW_HEIGHT = 28;
   const OVERSCAN = 12;
   const MOBILE_MATCH_LIMIT = 10;
+  const SORT_MODE_OPTIONS: Array<{ value: SortMode; label: string }> = [
+    { value: 'relevance_desc', label: 'Default' },
+    { value: 'file_name_asc', label: 'File name A-Z' },
+    { value: 'file_name_desc', label: 'File name Z-A' },
+    { value: 'path_asc', label: 'Path A-Z' },
+    { value: 'path_desc', label: 'Path Z-A' },
+    { value: 'match_count_desc', label: 'Most matches' },
+    { value: 'match_count_asc', label: 'Fewest matches' }
+  ];
+  const SUPPORTED_SORT_MODES = new Set(SORT_MODE_OPTIONS.map((option) => option.value));
 
   let {
     groups,
@@ -64,6 +83,10 @@
 
   const rows = $derived.by(() => buildRows(groups));
   const matchTotal = $derived.by(() => groups.reduce((total, group) => total + group.matches.length, 0));
+  const currentSortMode = $derived.by(() => {
+    const mode = `${options.sort_by}_${options.sort_direction}` as SortMode;
+    return SUPPORTED_SORT_MODES.has(mode) ? mode : 'relevance_desc';
+  });
   const totalHeight = $derived.by(() => {
     const last = rows.at(-1);
     return last ? last.top + last.height : 0;
@@ -232,6 +255,15 @@
     return group.matches.slice(0, MOBILE_MATCH_LIMIT);
   }
 
+  function setSortMode(event: Event) {
+    const select = event.currentTarget;
+    if (!(select instanceof HTMLSelectElement)) return;
+
+    const [sortBy, direction] = select.value.replace(/_(asc|desc)$/, '|$1').split('|');
+    options.sort_by = sortBy as SearchOptions['sort_by'];
+    options.sort_direction = direction as SearchOptions['sort_direction'];
+  }
+
   function toggleExpandedFile(filePath: string) {
     const next = new Set(expandedFiles);
 
@@ -258,6 +290,54 @@
     scrollTop = resultsElement.scrollTop;
     viewportHeight = resultsElement.clientHeight;
   }
+
+  function closeMoreActionMenus(except?: HTMLDetailsElement) {
+    resultsElement?.querySelectorAll<HTMLDetailsElement>('.more-actions[open]').forEach((menu) => {
+      if (menu !== except) {
+        menu.open = false;
+      }
+    });
+  }
+
+  function handleMoreActionsToggle(event: Event) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+    closeMoreActionMenus(menu);
+  }
+
+  function handleMoreActionsFocusOut(event: FocusEvent) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement)) return;
+
+    setTimeout(() => {
+      if (menu.contains(document.activeElement)) return;
+      menu.open = false;
+    }, 0);
+  }
+
+  $effect(() => {
+    if (SUPPORTED_SORT_MODES.has(`${options.sort_by}_${options.sort_direction}` as SortMode)) return;
+
+    options.sort_by = 'relevance';
+    options.sort_direction = 'desc';
+  });
+
+  $effect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!resultsElement) return;
+      if (!(event.target instanceof Node)) return;
+
+      const actionMenu = (event.target instanceof Element ? event.target : event.target.parentElement)?.closest('.more-actions');
+      if (actionMenu && resultsElement.contains(actionMenu)) return;
+
+      closeMoreActionMenus();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  });
 
   $effect(() => {
     if (!selected || !resultsElement) return;
@@ -290,27 +370,19 @@
     <div class="result-controls" aria-label="Result display settings">
       <label>
         <span>Sort</span>
-        <select bind:value={options.sort_by}>
-          <option value="relevance">Relevance</option>
-          <option value="file_name">File name</option>
-          <option value="modified_date">Modified</option>
-          <option value="match_count">Matches</option>
-        </select>
-      </label>
-      <label>
-        <span>Order</span>
-        <select bind:value={options.sort_direction}>
-          <option value="desc">High to low</option>
-          <option value="asc">Low to high</option>
+        <select value={currentSortMode} onchange={setSortMode}>
+          {#each SORT_MODE_OPTIONS as sortOption}
+            <option value={sortOption.value}>{sortOption.label}</option>
+          {/each}
         </select>
       </label>
       <label class="toggle-control">
         <input type="checkbox" bind:checked={options.group_by_file} />
-        <span>Group</span>
+        <span>Group by file</span>
       </label>
       <label class="toggle-control">
         <input type="checkbox" bind:checked={options.show_line_numbers} />
-        <span>Lines</span>
+        <span>Show line numbers</span>
       </label>
     </div>
   </div>
@@ -336,7 +408,7 @@
             </div>
             <div class="mobile-file-actions">
               <button type="button" onclick={() => onOpen(group.path)}>Open</button>
-              <details>
+              <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
                 <summary title="More actions" aria-label="More actions">...</summary>
                 <div class="menu">
                   <div class="menu-title">{matchLabel(group.matches.length)}</div>
@@ -397,7 +469,7 @@
         <span class="file-actions">
           <span class="count">{matchLabel(currentFileRow.count)}</span>
           <button type="button" title="Open file" onclick={() => onOpen(currentFileRow.path)}>Open</button>
-          <details>
+          <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
             <summary title="More actions" aria-label="More actions">...</summary>
             <div class="menu">
               <button type="button" onclick={() => onReveal(currentFileRow.path)}>Reveal</button>
@@ -420,7 +492,7 @@
             <span class="file-actions">
               <span class="count">{matchLabel(row.count)}</span>
               <button type="button" title="Open file" onclick={() => onOpen(row.path)}>Open</button>
-              <details>
+              <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
                 <summary title="More actions" aria-label="More actions">...</summary>
                 <div class="menu">
                   <button type="button" onclick={() => onReveal(row.path)}>Reveal</button>

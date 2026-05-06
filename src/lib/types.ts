@@ -71,7 +71,7 @@ export type FilePreviewLine = {
 export type SearchMode = 'literal' | 'regex';
 export type ModifiedPreset = 'any' | '24h' | '7d' | '30d' | 'custom';
 export type FileTypeFilter = 'all' | 'text' | 'code' | 'logs' | 'custom';
-export type ResultSort = 'relevance' | 'file_name' | 'modified_date' | 'match_count';
+export type ResultSort = 'relevance' | 'file_name' | 'path' | 'modified_date' | 'match_count' | 'file_size';
 export type ResultSortDirection = 'desc' | 'asc';
 
 export type SearchOptions = Pick<

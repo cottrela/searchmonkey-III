@@ -48,6 +48,7 @@
   } = $props();
 
   let previewElement = $state<HTMLDivElement>();
+  let previewPanelElement = $state<HTMLElement>();
   let lastScrolledTarget = '';
   let wrapLines = $state(false);
 
@@ -188,6 +189,47 @@
     void navigator.clipboard?.writeText(text);
   }
 
+  function closeMoreActionMenus(except?: HTMLDetailsElement) {
+    previewPanelElement?.querySelectorAll<HTMLDetailsElement>('.more-actions[open]').forEach((menu) => {
+      if (menu !== except) {
+        menu.open = false;
+      }
+    });
+  }
+
+  function handleMoreActionsToggle(event: Event) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+    closeMoreActionMenus(menu);
+  }
+
+  function handleMoreActionsFocusOut(event: FocusEvent) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement)) return;
+
+    setTimeout(() => {
+      if (menu.contains(document.activeElement)) return;
+      menu.open = false;
+    }, 0);
+  }
+
+  $effect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!previewPanelElement) return;
+      if (!(event.target instanceof Node)) return;
+
+      const actionMenu = (event.target instanceof Element ? event.target : event.target.parentElement)?.closest('.more-actions');
+      if (actionMenu && previewPanelElement.contains(actionMenu)) return;
+
+      closeMoreActionMenus();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  });
+
   $effect(() => {
     const target = preview.filePreview
       ? `${preview.filePath}:${preview.filePreview.start_line}:${preview.filePreview.end_line}:${preview.activeMatch?.line_number ?? 0}:${previewTextLength}`
@@ -205,7 +247,7 @@
   });
 </script>
 
-<aside class="preview-panel" class:drilldown aria-label="Match preview">
+<aside bind:this={previewPanelElement} class="preview-panel" class:drilldown aria-label="Match preview">
   {#if preview.filePath}
     <div class="mobile-preview-toolbar">
       <button type="button" onclick={onClose} title="Back to results">← Results</button>
@@ -224,7 +266,7 @@
           {effectiveWrap ? 'Disable wrap' : 'Wrap'}
         </button>
       </div>
-      <details class="compact-actions">
+      <details class="compact-actions more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
         <summary title="More actions" aria-label="More actions">...</summary>
         <div class="menu">
           <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
@@ -241,7 +283,7 @@
           </button>
         </div>
       </details>
-      <details class="mobile-actions">
+      <details class="mobile-actions more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
         <summary title="More actions" aria-label="More actions">...</summary>
         <div class="menu">
           <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
@@ -285,7 +327,7 @@
       <div class="desktop-preview-actions">
         <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
         <button class="reveal-action" type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
-        <details>
+        <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
           <summary title="More actions" aria-label="More actions">...</summary>
           <div class="menu">
             <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
@@ -426,7 +468,7 @@
 
   .match-nav {
     display: grid;
-    grid-template-columns: 24px 64px 24px;
+    grid-template-columns: 24px minmax(112px, max-content) 24px;
     align-items: center;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -444,6 +486,7 @@
 
   .match-nav span {
     color: var(--muted);
+    font-variant-numeric: tabular-nums;
     font-size: 11px;
     font-weight: 800;
     text-align: center;
@@ -815,7 +858,7 @@
 
     .mobile-match-nav {
       display: grid;
-      grid-template-columns: 42px minmax(0, 1fr) 42px;
+      grid-template-columns: 42px minmax(112px, 1fr) 42px;
       gap: 8px;
       align-items: center;
       margin-top: 8px;
@@ -828,6 +871,7 @@
 
     .mobile-match-nav span {
       color: var(--muted);
+      font-variant-numeric: tabular-nums;
       font-size: 12px;
       font-weight: 800;
       text-align: center;

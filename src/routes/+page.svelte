@@ -22,7 +22,7 @@
     startSearch as startSearchCommand
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
-  import { filename, normalizeGlobPattern } from '$lib/paths';
+  import { filename, normalizeGlobPattern, parentPath } from '$lib/paths';
   import { loadTelemetryState, syncTelemetryConsent, type TelemetryState } from '$lib/telemetry';
   import { defaultSearchOptions } from '$lib/types';
   import type {
@@ -327,16 +327,22 @@
   ) {
     const nextGroups = resultGroups.map((group) => ({ ...group, matches: [...group.matches] }));
     const multiplier = direction === 'desc' ? -1 : 1;
+    const compareText = (left: string, right: string) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
 
     if (sortBy === 'file_name') {
-      return nextGroups.sort((a, b) => multiplier * filename(a.path).localeCompare(filename(b.path)));
+      return nextGroups.sort((a, b) => multiplier * compareText(filename(a.path), filename(b.path)));
+    }
+
+    if (sortBy === 'path') {
+      return nextGroups.sort(
+        (a, b) =>
+          multiplier * compareText(parentPath(a.path), parentPath(b.path)) ||
+          multiplier * compareText(filename(a.path), filename(b.path))
+      );
     }
 
     if (sortBy === 'modified_date') {
-      if (!options.modified_after) {
-        return direction === 'desc' ? nextGroups : nextGroups.reverse();
-      }
-
       return nextGroups.sort(
         (a, b) => multiplier * ((a.matches[0]?.modified_secs ?? 0) - (b.matches[0]?.modified_secs ?? 0))
       );
@@ -344,11 +350,17 @@
 
     if (sortBy === 'match_count') {
       return nextGroups.sort(
-        (a, b) => multiplier * (a.matches.length - b.matches.length) || a.path.localeCompare(b.path)
+        (a, b) => multiplier * (a.matches.length - b.matches.length) || compareText(a.path, b.path)
       );
     }
 
-    return direction === 'desc' ? nextGroups : nextGroups.reverse();
+    if (sortBy === 'file_size') {
+      return nextGroups.sort(
+        (a, b) => multiplier * ((a.matches[0]?.file_size ?? 0) - (b.matches[0]?.file_size ?? 0)) || a.path.localeCompare(b.path)
+      );
+    }
+
+    return nextGroups;
   }
 
   function formatCount(count: number) {
