@@ -12,11 +12,19 @@ use search::{
     FilePreview, FilePreviewLine, SearchMatch, SearchProvider, SearchRequest, SearchState,
     SearchStatus,
 };
-use tauri::State;
+use tauri::{
+    menu::{MenuBuilder, SubmenuBuilder},
+    Emitter, State,
+};
 
 const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
+const IMPROVE_MENU_ID: &str = "improve-searchmonkey";
+const ABOUT_SEARCHMONKEY_MENU_ID: &str = "about-searchmonkey-iii";
+const RELEASE_NOTES_MENU_ID: &str = "release-notes";
+const WEBSITE_MENU_ID: &str = "searchmonkey-website";
+const REPORT_ISSUE_MENU_ID: &str = "report-issue";
 
 #[derive(Default)]
 struct SearchSessions {
@@ -379,6 +387,53 @@ fn kill_search_process(pid: u32) -> std::io::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .menu(|app| {
+            let app_menu = SubmenuBuilder::new(app, "Searchmonkey III")
+                .text(ABOUT_SEARCHMONKEY_MENU_ID, "About Searchmonkey III")
+                .separator()
+                .quit()
+                .build()?;
+            let help_menu = SubmenuBuilder::new(app, "Help")
+                .text(RELEASE_NOTES_MENU_ID, "Release Notes")
+                .text(WEBSITE_MENU_ID, "Searchmonkey Website")
+                .text(REPORT_ISSUE_MENU_ID, "Report an Issue")
+                .separator()
+                .text(IMPROVE_MENU_ID, "Improve Searchmonkey")
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+
+            MenuBuilder::new(app)
+                .item(&app_menu)
+                .item(&edit_menu)
+                .item(&help_menu)
+                .build()
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == IMPROVE_MENU_ID {
+                let _ = app.emit("open-improve-searchmonkey", ());
+            }
+
+            if event.id() == ABOUT_SEARCHMONKEY_MENU_ID {
+                let _ = app.emit("open-about-searchmonkey", ());
+            }
+
+            if event.id() == RELEASE_NOTES_MENU_ID {
+                let _ = app.emit("open-release-notes", ());
+            }
+
+            if event.id() == WEBSITE_MENU_ID {
+                let _ = app.emit("open-searchmonkey-website", ());
+            }
+
+            if event.id() == REPORT_ISSUE_MENU_ID {
+                let _ = app.emit("open-report-issue", ());
+            }
+        })
         .manage(SearchSessions::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

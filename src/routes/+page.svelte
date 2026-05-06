@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
+  import { listen } from '@tauri-apps/api/event';
+  import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
   import PathInput from '$lib/components/PathInput.svelte';
+  import AboutDialog from '$lib/components/AboutDialog.svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
   import RegexTester from '$lib/components/RegexTester.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
   import ScopePanel from '$lib/components/ScopePanel.svelte';
   import SearchBar from '$lib/components/SearchBar.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
+  import TelemetryConsentDialog from '$lib/components/TelemetryConsentDialog.svelte';
   import {
     cancelSearch as cancelSearchCommand,
     getResults,
@@ -20,6 +23,7 @@
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import { filename, normalizeGlobPattern } from '$lib/paths';
+  import { loadTelemetryState, syncTelemetryConsent, type TelemetryState } from '$lib/telemetry';
   import { defaultSearchOptions } from '$lib/types';
   import type {
     FileResultGroup,
@@ -50,6 +54,11 @@
   let hasSearched = $state(false);
   let activeSearchId = $state<number | null>(null);
   let searchUnlisteners: Array<() => void> = [];
+  let improveMenuEventUnlisten: (() => void) | null = null;
+  let aboutMenuEventUnlisten: (() => void) | null = null;
+  let releaseNotesMenuEventUnlisten: (() => void) | null = null;
+  let websiteMenuEventUnlisten: (() => void) | null = null;
+  let reportIssueMenuEventUnlisten: (() => void) | null = null;
   let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
   let loadedPreviewKey = '';
@@ -66,6 +75,10 @@
   let saveIncludeFilters = $state(true);
   let saveIncludePath = $state(true);
   let saveIncludeOptions = $state(true);
+  let aboutDialogOpen = $state(false);
+  let telemetryState = $state<TelemetryState | null>(null);
+  let telemetryDialogOpen = $state(false);
+  let telemetryFirstRun = $state(false);
   let compactView = $state<'results' | 'preview'>('results');
   let layoutMode = $state<'focus' | 'split' | 'full'>('split');
   let oneUpConstrained = $state(false);
@@ -94,6 +107,9 @@
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
   const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
+  const RELEASE_NOTES_URL = 'https://github.com/cottrela/searchmonkey-v3/releases';
+  const WEBSITE_URL = 'https://searchmonkey.dev';
+  const REPORT_ISSUE_URL = 'https://github.com/cottrela/searchmonkey-v3/issues';
   const FILE_TYPE_PATTERNS: Record<string, string[]> = {
     text: ['*.txt', '*.md', '*.markdown', '*.rst', '*.csv', '*.tsv', '*.json', '*.yaml', '*.yml', '*.toml', '*.xml'],
     code: [
@@ -217,6 +233,44 @@
 
     recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
     savedSearches = loadCriteria(SAVED_SEARCHES_KEY);
+    void listen('open-improve-searchmonkey', () => {
+      openTelemetryPreferences();
+    }).then((unlisten) => {
+      improveMenuEventUnlisten = unlisten;
+    });
+    void listen('open-about-searchmonkey', () => {
+      aboutDialogOpen = true;
+    }).then((unlisten) => {
+      aboutMenuEventUnlisten = unlisten;
+    });
+    void listen('open-release-notes', () => {
+      void openUrl(RELEASE_NOTES_URL).catch(() => {});
+    }).then((unlisten) => {
+      releaseNotesMenuEventUnlisten = unlisten;
+    });
+    void listen('open-searchmonkey-website', () => {
+      void openUrl(WEBSITE_URL).catch(() => {});
+    }).then((unlisten) => {
+      websiteMenuEventUnlisten = unlisten;
+    });
+    void listen('open-report-issue', () => {
+      void openUrl(REPORT_ISSUE_URL).catch(() => {});
+    }).then((unlisten) => {
+      reportIssueMenuEventUnlisten = unlisten;
+    });
+    telemetryState = loadTelemetryState();
+    if (!telemetryState.prompted || !telemetryState.consent) {
+      telemetryFirstRun = true;
+      telemetryDialogOpen = true;
+    } else {
+      void syncTelemetryConsent(telemetryState).then((nextState) => {
+        telemetryState = nextState;
+        if (hasPendingTelemetrySync(nextState)) {
+          telemetryFirstRun = false;
+          telemetryDialogOpen = true;
+        }
+      });
+    }
 
     homeDir()
       .then((home) => {
@@ -232,6 +286,16 @@
       clearStatusPollTimer();
       clearElapsedTimer();
       clearResultFlushTimer();
+      improveMenuEventUnlisten?.();
+      improveMenuEventUnlisten = null;
+      aboutMenuEventUnlisten?.();
+      aboutMenuEventUnlisten = null;
+      releaseNotesMenuEventUnlisten?.();
+      releaseNotesMenuEventUnlisten = null;
+      websiteMenuEventUnlisten?.();
+      websiteMenuEventUnlisten = null;
+      reportIssueMenuEventUnlisten?.();
+      reportIssueMenuEventUnlisten = null;
       void cleanupSearchListeners();
     };
   });
@@ -456,6 +520,30 @@
 
   function saveCriteria(key: string, criteria: SearchCriteria[]) {
     localStorage.setItem(key, JSON.stringify(criteria));
+  }
+
+  function openTelemetryPreferences() {
+    telemetryFirstRun = false;
+    telemetryDialogOpen = true;
+  }
+
+  function closeTelemetryPreferences() {
+    if (telemetryFirstRun) return;
+    telemetryDialogOpen = false;
+  }
+
+  function closeAboutDialog() {
+    aboutDialogOpen = false;
+  }
+
+  function handleTelemetrySaved(nextState: TelemetryState) {
+    telemetryState = nextState;
+    telemetryFirstRun = false;
+    telemetryDialogOpen = false;
+  }
+
+  function hasPendingTelemetrySync(state: TelemetryState) {
+    return Boolean(state.consent && state.lastSubmittedConsent !== state.consent);
   }
 
   function sameStringArray(a: string[], b: string[]) {
@@ -1263,6 +1351,19 @@
         </form>
       </div>
     </div>
+  {/if}
+
+  {#if telemetryDialogOpen && telemetryState}
+    <TelemetryConsentDialog
+      firstRun={telemetryFirstRun}
+      telemetry={telemetryState}
+      onClose={closeTelemetryPreferences}
+      onSaved={handleTelemetrySaved}
+    />
+  {/if}
+
+  {#if aboutDialogOpen}
+    <AboutDialog onClose={closeAboutDialog} />
   {/if}
 
   <StatusBar

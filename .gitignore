@@ -15,3 +15,4 @@ vite.config.ts.timestamp-*
 .vscode/
 /src-tauri/binaries/rg-*
 dist/
+searchmonkey-demo-data/
