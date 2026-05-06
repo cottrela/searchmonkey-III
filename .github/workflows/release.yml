@@ -206,7 +206,7 @@ jobs:
           set -euo pipefail
       
           appdir="src-tauri/target/release/bundle/appimage/Searchmonkey.AppDir"
-          appimage="src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage"
+          appimage="src-tauri/target/release/bundle/appimage/Searchmonkey_${GITHUB_REF_NAME#v}_amd64.AppImage"
           good_rg="src-tauri/binaries/rg-x86_64-unknown-linux-gnu"
 
           install -Dm755 "$good_rg" "$appdir/usr/bin/rg"
@@ -242,7 +242,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.ref_name }}" \
-            src-tauri/target/release/bundle/appimage/Searchmonkey_0.2.2_amd64.AppImage \
+            src-tauri/target/release/bundle/appimage/Searchmonkey_${GITHUB_REF_NAME#v}_amd64.AppImage \
             --clobber
 
       - name: Package Linux tarball
