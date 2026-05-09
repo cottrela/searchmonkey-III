@@ -23,6 +23,7 @@ const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
 const IMPROVE_MENU_ID: &str = "improve-searchmonkey";
 const ABOUT_SEARCHMONKEY_MENU_ID: &str = "about-searchmonkey-iii";
+const REGEX_CHEAT_SHEET_MENU_ID: &str = "regex-cheat-sheet";
 const RELEASE_NOTES_MENU_ID: &str = "release-notes";
 const WEBSITE_MENU_ID: &str = "searchmonkey-website";
 const REPORT_ISSUE_MENU_ID: &str = "report-issue";
@@ -524,6 +525,8 @@ pub fn run() {
                 .quit()
                 .build()?;
             let help_menu = SubmenuBuilder::new(app, "Help")
+                .text(REGEX_CHEAT_SHEET_MENU_ID, "Regex Cheat Sheet")
+                .separator()
                 .text(CHECK_FOR_UPDATES_MENU_ID, "Check for Updates...")
                 .separator()
                 .text(RELEASE_NOTES_MENU_ID, "Release Notes")
@@ -555,6 +558,10 @@ pub fn run() {
 
             if event.id() == ABOUT_SEARCHMONKEY_MENU_ID {
                 let _ = app.emit("open-about-searchmonkey", ());
+            }
+
+            if event.id() == REGEX_CHEAT_SHEET_MENU_ID {
+                let _ = app.emit("open-regex-cheat-sheet", ());
             }
 
             if event.id() == RELEASE_NOTES_MENU_ID {

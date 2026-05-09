@@ -6,6 +6,7 @@
   import PathInput from '$lib/components/PathInput.svelte';
   import AboutDialog from '$lib/components/AboutDialog.svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
+  import RegexCheatSheetDialog from '$lib/components/RegexCheatSheetDialog.svelte';
   import RegexTester from '$lib/components/RegexTester.svelte';
   import ResultsPanel from '$lib/components/ResultsPanel.svelte';
   import ScopePanel from '$lib/components/ScopePanel.svelte';
@@ -60,6 +61,7 @@
   let searchUnlisteners: Array<() => void> = [];
   let improveMenuEventUnlisten: (() => void) | null = null;
   let aboutMenuEventUnlisten: (() => void) | null = null;
+  let regexCheatSheetMenuEventUnlisten: (() => void) | null = null;
   let releaseNotesMenuEventUnlisten: (() => void) | null = null;
   let websiteMenuEventUnlisten: (() => void) | null = null;
   let reportIssueMenuEventUnlisten: (() => void) | null = null;
@@ -82,6 +84,7 @@
   let saveIncludeOptions = $state(true);
   let defaultHomePath = '';
   let aboutDialogOpen = $state(false);
+  let regexCheatSheetOpen = $state(false);
   let telemetryState = $state<TelemetryState | null>(null);
   let telemetryDialogOpen = $state(false);
   let telemetryFirstRun = $state(false);
@@ -364,6 +367,11 @@
     }).then((unlisten) => {
       aboutMenuEventUnlisten = unlisten;
     });
+    void listen('open-regex-cheat-sheet', () => {
+      regexCheatSheetOpen = true;
+    }).then((unlisten) => {
+      regexCheatSheetMenuEventUnlisten = unlisten;
+    });
     void listen('open-release-notes', () => {
       void openUrl(RELEASE_NOTES_URL).catch(() => {});
     }).then((unlisten) => {
@@ -417,6 +425,8 @@
       improveMenuEventUnlisten = null;
       aboutMenuEventUnlisten?.();
       aboutMenuEventUnlisten = null;
+      regexCheatSheetMenuEventUnlisten?.();
+      regexCheatSheetMenuEventUnlisten = null;
       releaseNotesMenuEventUnlisten?.();
       releaseNotesMenuEventUnlisten = null;
       websiteMenuEventUnlisten?.();
@@ -700,6 +710,10 @@
 
   function closeAboutDialog() {
     aboutDialogOpen = false;
+  }
+
+  function closeRegexCheatSheet() {
+    regexCheatSheetOpen = false;
   }
 
   function handleTelemetrySaved(nextState: TelemetryState) {
@@ -1622,6 +1636,10 @@
 
   {#if aboutDialogOpen}
     <AboutDialog onClose={closeAboutDialog} />
+  {/if}
+
+  {#if regexCheatSheetOpen}
+    <RegexCheatSheetDialog onClose={closeRegexCheatSheet} />
   {/if}
 
   <StatusBar

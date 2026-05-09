@@ -444,6 +444,19 @@
     };
   }
 
+  function resultOrderLandmark(filePath: string, matchText: string) {
+    const fileIndex = groups.findIndex((group) => group.path === filePath);
+    const fileNumber = fileIndex >= 0 ? fileIndex + 1 : 1;
+    const fileTotal = Math.max(1, groups.length);
+    const percent = Math.max(1, Math.min(100, Math.round((fileNumber / fileTotal) * 100)));
+
+    return {
+      cue: `${percent}%`,
+      primary: `File ${formatCount(fileNumber)} of ${formatCount(fileTotal)}`,
+      secondary: `${filename(filePath)} - ${matchText}`
+    };
+  }
+
   function landmarkForScrollPosition(position: number): ScrollLandmark | null {
     const row = rowAtPosition(position);
     if (!row) return null;
@@ -451,7 +464,6 @@
     const filePath = row.type === 'file' ? row.path : row.match.path;
     const group = groupForPath(filePath);
     const fileName = filename(filePath);
-    const parent = parentPath(filePath);
     const matches = group?.matches.length ?? (row.type === 'file' ? row.count : 1);
     const matchText = `${formatCount(matches)} ${matches === 1 ? 'match' : 'matches'}`;
 
@@ -465,6 +477,10 @@
         primary: matchText,
         secondary: fileName
       };
+    }
+
+    if (options.sort_by !== 'file_name') {
+      return resultOrderLandmark(filePath, matchText);
     }
 
     return {
