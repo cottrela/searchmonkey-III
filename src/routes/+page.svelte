@@ -203,6 +203,7 @@
     return ['focus', 'split'] as const;
   });
   const scopePanelVisibleInLayout = $derived(activeLayoutMode === 'full');
+  const sidePanelVisibleInLayout = $derived(activeLayoutMode !== 'focus' || compactView === 'preview' || regexTesterOpen);
   const workspaceGridTemplate = $derived.by(() => {
     if (activeLayoutMode === 'full') {
       return `280px minmax(360px, 3fr) 8px minmax(300px, var(--preview-width))`;
@@ -1501,12 +1502,14 @@
     style:--preview-width={`${previewWidth}px`}
     style:grid-template-columns={workspaceGridTemplate}
   >
-    <ScopePanel
-      bind:includePatterns
-      bind:excludePatterns
-      bind:contextLines
-      bind:options
-    />
+    {#if scopePanelVisibleInLayout}
+      <ScopePanel
+        bind:includePatterns
+        bind:excludePatterns
+        bind:contextLines
+        bind:options
+      />
+    {/if}
     <ResultsPanel
       {groups}
       {query}
@@ -1520,36 +1523,38 @@
       onOpen={openFile}
       onReveal={revealFile}
     />
-    <button
-      type="button"
-      aria-label="Resize results and preview panels"
-      class="panel-resizer"
-      onpointerdown={startPreviewResize}
-    ></button>
-    {#if regexTesterOpen && searchModeRegex()}
-      <RegexTester
-        bind:query
-        bind:options
-        samples={regexSamples}
-        onClose={closeRegexTester}
-      />
-    {:else}
-      <PreviewPanel
-        {preview}
-        errorMessage={previewError}
-        activeFileMatchNumber={selectedFileMatchIndex + 1}
-        activeFileMatchTotal={selectedFileMatchCount}
-        canNavigateFiles={groups.length > 1}
-        drilldown={activeLayoutMode === 'focus'}
-        onPrevious={() => selectFileMatchOffset(-1)}
-        onNext={() => selectFileMatchOffset(1)}
-        onPreviousFile={() => selectFileOffset(-1)}
-        onNextFile={() => selectFileOffset(1)}
-        onSelect={selectMatch}
-        onOpen={openFile}
-        onReveal={revealFile}
-        onClose={closePreview}
-      />
+    {#if sidePanelVisibleInLayout}
+      <button
+        type="button"
+        aria-label="Resize results and preview panels"
+        class="panel-resizer"
+        onpointerdown={startPreviewResize}
+      ></button>
+      {#if regexTesterOpen && searchModeRegex()}
+        <RegexTester
+          bind:query
+          bind:options
+          samples={regexSamples}
+          onClose={closeRegexTester}
+        />
+      {:else}
+        <PreviewPanel
+          {preview}
+          errorMessage={previewError}
+          activeFileMatchNumber={selectedFileMatchIndex + 1}
+          activeFileMatchTotal={selectedFileMatchCount}
+          canNavigateFiles={groups.length > 1}
+          drilldown={activeLayoutMode === 'focus'}
+          onPrevious={() => selectFileMatchOffset(-1)}
+          onNext={() => selectFileMatchOffset(1)}
+          onPreviousFile={() => selectFileOffset(-1)}
+          onNextFile={() => selectFileOffset(1)}
+          onSelect={selectMatch}
+          onOpen={openFile}
+          onReveal={revealFile}
+          onClose={closePreview}
+        />
+      {/if}
     {/if}
   </div>
 
