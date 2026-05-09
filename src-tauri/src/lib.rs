@@ -1,7 +1,8 @@
 pub mod search;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -25,6 +26,7 @@ const ABOUT_SEARCHMONKEY_MENU_ID: &str = "about-searchmonkey-iii";
 const RELEASE_NOTES_MENU_ID: &str = "release-notes";
 const WEBSITE_MENU_ID: &str = "searchmonkey-website";
 const REPORT_ISSUE_MENU_ID: &str = "report-issue";
+const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
 
 #[derive(Default)]
 struct SearchSessions {
@@ -191,6 +193,134 @@ fn expand_home_path(path: &str) -> Result<PathBuf, String> {
     }
 
     Ok(PathBuf::from(path))
+}
+
+#[tauri::command]
+async fn open_file_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_path_native(path))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn reveal_file_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || reveal_path_native(path))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn copy_text(text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || copy_text_native(&text))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn existing_path(path: String) -> Result<PathBuf, String> {
+    let path = expand_home_path(path.trim())?;
+
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!("Path does not exist: {}", path.display()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_native(path: String) -> Result<(), String> {
+    run_native_command(Command::new("open").arg(existing_path(path)?))
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_path_native(path: String) -> Result<(), String> {
+    run_native_command(Command::new("open").arg("-R").arg(existing_path(path)?))
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_native(path: String) -> Result<(), String> {
+    let path = existing_path(path)?.to_string_lossy().to_string();
+    run_native_command(Command::new("cmd").args(["/C", "start", "", &path]))
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_path_native(path: String) -> Result<(), String> {
+    let path = existing_path(path)?.to_string_lossy().to_string();
+    run_native_command(Command::new("explorer").arg(format!("/select,{path}")))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_path_native(path: String) -> Result<(), String> {
+    run_native_command(Command::new("xdg-open").arg(existing_path(path)?))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_path_native(path: String) -> Result<(), String> {
+    let path = existing_path(path)?;
+    let directory = if path.is_dir() {
+        path
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "Could not resolve containing directory.".to_string())?
+    };
+
+    run_native_command(Command::new("xdg-open").arg(directory))
+}
+
+fn run_native_command(command: &mut Command) -> Result<(), String> {
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| err.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Command failed with status {status}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_text_native(text: &str) -> Result<(), String> {
+    write_to_clipboard_command("pbcopy", &[], text)
+}
+
+#[cfg(target_os = "windows")]
+fn copy_text_native(text: &str) -> Result<(), String> {
+    write_to_clipboard_command("clip", &[], text)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn copy_text_native(text: &str) -> Result<(), String> {
+    write_to_clipboard_command("wl-copy", &[], text)
+        .or_else(|_| write_to_clipboard_command("xclip", &["-selection", "clipboard"], text))
+        .or_else(|_| write_to_clipboard_command("xsel", &["--clipboard", "--input"], text))
+}
+
+fn write_to_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<(), String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Clipboard command stdin was unavailable.".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|err| err.to_string())?;
+
+    let status = child.wait().map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Clipboard command failed with status {status}"))
+    }
 }
 
 #[tauri::command]
@@ -394,6 +524,8 @@ pub fn run() {
                 .quit()
                 .build()?;
             let help_menu = SubmenuBuilder::new(app, "Help")
+                .text(CHECK_FOR_UPDATES_MENU_ID, "Check for Updates...")
+                .separator()
                 .text(RELEASE_NOTES_MENU_ID, "Release Notes")
                 .text(WEBSITE_MENU_ID, "Searchmonkey Website")
                 .text(REPORT_ISSUE_MENU_ID, "Report an Issue")
@@ -433,6 +565,10 @@ pub fn run() {
             if event.id() == REPORT_ISSUE_MENU_ID {
                 let _ = app.emit("open-report-issue", ());
             }
+
+            if event.id() == CHECK_FOR_UPDATES_MENU_ID {
+                let _ = app.emit("check-for-updates", ());
+            }
         })
         .manage(SearchSessions::default())
         .plugin(tauri_plugin_dialog::init())
@@ -441,11 +577,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cancel_search,
             clear_search,
+            copy_text,
             get_results,
             get_search_status,
             home_dir,
             list_directory,
+            open_file_path,
             read_file_preview,
+            reveal_file_path,
             search_files,
             start_search
         ])

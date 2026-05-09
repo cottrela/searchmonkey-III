@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getVersion } from '@tauri-apps/api/app';
   import { listen } from '@tauri-apps/api/event';
-  import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import PathInput from '$lib/components/PathInput.svelte';
   import AboutDialog from '$lib/components/AboutDialog.svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
@@ -18,12 +19,15 @@
     homeDir,
     listenSearchBufferUpdated,
     listenSearchStatusChanged,
+    openFilePath,
     readFilePreview,
+    revealFilePath,
     startSearch as startSearchCommand
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import { filename, normalizeGlobPattern, parentPath } from '$lib/paths';
   import { loadTelemetryState, syncTelemetryConsent, type TelemetryState } from '$lib/telemetry';
+  import { getAvailableUpdate, type AvailableUpdate } from '$lib/update-check';
   import { defaultSearchOptions } from '$lib/types';
   import type {
     FileResultGroup,
@@ -59,6 +63,7 @@
   let releaseNotesMenuEventUnlisten: (() => void) | null = null;
   let websiteMenuEventUnlisten: (() => void) | null = null;
   let reportIssueMenuEventUnlisten: (() => void) | null = null;
+  let checkForUpdatesMenuEventUnlisten: (() => void) | null = null;
   let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
   let loadedPreviewKey = '';
@@ -80,6 +85,7 @@
   let telemetryState = $state<TelemetryState | null>(null);
   let telemetryDialogOpen = $state(false);
   let telemetryFirstRun = $state(false);
+  let availableUpdate = $state<AvailableUpdate | null>(null);
   let compactView = $state<'results' | 'preview'>('results');
   let layoutMode = $state<'focus' | 'split' | 'full'>('split');
   let oneUpConstrained = $state(false);
@@ -108,6 +114,8 @@
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
   const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
+  const DISMISSED_UPDATE_KEY = 'searchmonkey:dismissed-update';
+  const UPDATE_DISMISS_MS = 3 * 24 * 60 * 60 * 1000;
   const RELEASE_NOTES_URL = 'https://github.com/cottrela/searchmonkey-v3/releases';
   const WEBSITE_URL = 'https://searchmonkey.dev';
   const REPORT_ISSUE_URL = 'https://github.com/cottrela/searchmonkey-v3/issues';
@@ -237,6 +245,97 @@
     matchesVersion += 1;
   }
 
+  type DismissedUpdate = {
+    tagName: string;
+    dismissedUntil: number;
+  };
+
+  function dismissedUpdate(): DismissedUpdate | null {
+    const storedDismissal = localStorage.getItem(DISMISSED_UPDATE_KEY);
+    if (!storedDismissal) return null;
+
+    try {
+      const dismissal = JSON.parse(storedDismissal) as Partial<DismissedUpdate>;
+      if (typeof dismissal.tagName !== 'string' || typeof dismissal.dismissedUntil !== 'number') {
+        localStorage.removeItem(DISMISSED_UPDATE_KEY);
+        return null;
+      }
+
+      return {
+        tagName: dismissal.tagName,
+        dismissedUntil: dismissal.dismissedUntil
+      };
+    } catch {
+      localStorage.removeItem(DISMISSED_UPDATE_KEY);
+      return null;
+    }
+  }
+
+  function updateIsDismissed(tagName: string) {
+    const dismissal = dismissedUpdate();
+    if (!dismissal || dismissal.tagName !== tagName) return false;
+    if (dismissal.dismissedUntil > Date.now()) return true;
+
+    localStorage.removeItem(DISMISSED_UPDATE_KEY);
+    return false;
+  }
+
+  async function checkForAvailableUpdate(manual = false) {
+    try {
+      const currentVersion = await getVersion();
+      const update = await getAvailableUpdate(currentVersion);
+      if (!update) {
+        if (manual) {
+          availableUpdate = null;
+          errorMessage = `Searchmonkey ${currentVersion} is up to date.`;
+        }
+        return;
+      }
+
+      if (!manual && updateIsDismissed(update.tagName)) {
+        return;
+      }
+
+      if (manual) {
+        localStorage.removeItem(DISMISSED_UPDATE_KEY);
+        errorMessage = '';
+      }
+      availableUpdate = update;
+    } catch (error) {
+      console.warn('[searchmonkey] update check failed', error);
+      if (manual) {
+        errorMessage = normalizeError(error);
+      }
+    }
+  }
+
+  function dismissUpdate() {
+    if (availableUpdate) {
+      localStorage.setItem(
+        DISMISSED_UPDATE_KEY,
+        JSON.stringify({
+          tagName: availableUpdate.tagName,
+          dismissedUntil: Date.now() + UPDATE_DISMISS_MS
+        } satisfies DismissedUpdate)
+      );
+    }
+    availableUpdate = null;
+  }
+
+  function openUpdateDownload() {
+    if (!availableUpdate) return;
+    void openUrl(availableUpdate.downloadUrl).catch(() => {
+      if (availableUpdate) {
+        void openUrl(availableUpdate.releaseUrl).catch(() => {});
+      }
+    });
+  }
+
+  function openUpdateReleaseNotes() {
+    if (!availableUpdate) return;
+    void openUrl(availableUpdate.releaseUrl).catch(() => {});
+  }
+
   onMount(() => {
     const oneUpMedia = window.matchMedia('(max-width: 849px)');
     const fullMedia = window.matchMedia('(min-width: 1100px)');
@@ -254,6 +353,7 @@
 
     recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
     savedSearches = loadCriteria(SAVED_SEARCHES_KEY);
+    void checkForAvailableUpdate();
     void listen('open-improve-searchmonkey', () => {
       openTelemetryPreferences();
     }).then((unlisten) => {
@@ -278,6 +378,11 @@
       void openUrl(REPORT_ISSUE_URL).catch(() => {});
     }).then((unlisten) => {
       reportIssueMenuEventUnlisten = unlisten;
+    });
+    void listen('check-for-updates', () => {
+      void checkForAvailableUpdate(true);
+    }).then((unlisten) => {
+      checkForUpdatesMenuEventUnlisten = unlisten;
     });
     telemetryState = loadTelemetryState();
     if (!telemetryState.prompted || !telemetryState.consent) {
@@ -318,6 +423,8 @@
       websiteMenuEventUnlisten = null;
       reportIssueMenuEventUnlisten?.();
       reportIssueMenuEventUnlisten = null;
+      checkForUpdatesMenuEventUnlisten?.();
+      checkForUpdatesMenuEventUnlisten = null;
       void cleanupSearchListeners();
     };
   });
@@ -969,21 +1076,31 @@
     return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable;
   }
 
+  function openerPath(filePath: string) {
+    const normalizedPath = filePath.trim();
+    if (!normalizedPath) return '';
+    if (/^(?:[a-zA-Z]:[\\/]|\/|\\\\)/.test(normalizedPath)) return normalizedPath;
+
+    return `${path.replace(/[\\/]+$/, '')}/${normalizedPath.replace(/^[\\/]+/, '')}`;
+  }
+
   async function openFile(filePath: string) {
-    if (!filePath) return;
+    const targetPath = openerPath(filePath);
+    if (!targetPath) return;
 
     try {
-      await openPath(filePath);
+      await openFilePath(targetPath);
     } catch (error) {
       errorMessage = normalizeError(error);
     }
   }
 
   async function revealFile(filePath: string) {
-    if (!filePath) return;
+    const targetPath = openerPath(filePath);
+    if (!targetPath) return;
 
     try {
-      await revealItemInDir(filePath);
+      await revealFilePath(targetPath);
     } catch (error) {
       errorMessage = normalizeError(error);
     }
@@ -1282,7 +1399,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<main class="app-shell" class:full-layout={activeLayoutMode === 'full'}>
+<main class="app-shell" class:full-layout={activeLayoutMode === 'full'} class:has-update={Boolean(availableUpdate)}>
   <SearchBar
     bind:query
     bind:options
@@ -1330,6 +1447,26 @@
       </button>
     </div>
   </div>
+
+  {#if availableUpdate}
+    <section class="update-cta" aria-live="polite" aria-label="Searchmonkey update available">
+      <div class="update-copy">
+        <strong>Searchmonkey {availableUpdate.tagName} is available.</strong>
+        <span>You are running {availableUpdate.currentVersion}.</span>
+      </div>
+      <div class="update-actions">
+        <button class="update-primary" type="button" title={availableUpdate.downloadName} onclick={openUpdateDownload}>
+          Download update
+        </button>
+        <button class="update-secondary" type="button" onclick={openUpdateReleaseNotes}>
+          Release notes
+        </button>
+        <button class="update-dismiss" type="button" aria-label={`Dismiss update ${availableUpdate.tagName}`} onclick={dismissUpdate}>
+          x
+        </button>
+      </div>
+    </section>
+  {/if}
 
   <div class="results-toolbar" aria-label="Results actions">
     <span>{groups.length} files</span>
@@ -1560,6 +1697,11 @@
     grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
+  .app-shell.has-update,
+  .app-shell.full-layout.has-update {
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  }
+
   .results-toolbar {
     display: none;
   }
@@ -1576,6 +1718,85 @@
     background: var(--panel);
     font-size: 12px;
     font-weight: 650;
+  }
+
+  .update-cta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    border-bottom: 1px solid #c8d6cc;
+    padding: 8px 12px;
+    background: #ecf7ef;
+    color: var(--text);
+    font-size: 12px;
+  }
+
+  .update-copy {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 5px 8px;
+    align-items: center;
+  }
+
+  .update-copy strong {
+    color: var(--accent-strong);
+  }
+
+  .update-copy span {
+    color: #54616a;
+    font-weight: 650;
+  }
+
+  .update-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .update-actions button {
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0 9px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .update-primary {
+    border-color: var(--accent) !important;
+    color: #ffffff;
+    background: var(--accent);
+  }
+
+  .update-primary:hover,
+  .update-primary:focus-visible {
+    background: var(--accent-strong);
+    outline: none;
+  }
+
+  .update-secondary,
+  .update-dismiss {
+    color: var(--accent-strong);
+    background: #ffffff;
+  }
+
+  .update-secondary:hover,
+  .update-secondary:focus-visible,
+  .update-dismiss:hover,
+  .update-dismiss:focus-visible {
+    border-color: var(--accent-soft);
+    background: var(--accent-wash);
+    outline: none;
+  }
+
+  .update-dismiss {
+    width: 30px;
+    padding: 0;
   }
 
   .scope-path {
@@ -1650,8 +1871,11 @@
     display: grid;
   }
 
-  .workspace.layout-focus :global(.results-panel .panel-title),
-  .workspace.layout-focus :global(.results-panel .current-file-header) {
+  .workspace.layout-focus :global(.results-panel) {
+    --results-title-height: 0px;
+  }
+
+  .workspace.layout-focus :global(.results-panel .panel-title) {
     position: static;
   }
 
@@ -1926,6 +2150,15 @@
     .scope-summary {
       grid-template-columns: minmax(0, 1fr) auto;
     }
+
+    .update-cta {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .update-actions {
+      justify-content: flex-start;
+    }
   }
 
   @media (max-width: 599px) {
@@ -1935,6 +2168,14 @@
 
     .app-shell.full-layout {
       grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .app-shell.has-update {
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    }
+
+    .app-shell.full-layout.has-update {
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     }
 
     .scope-summary {

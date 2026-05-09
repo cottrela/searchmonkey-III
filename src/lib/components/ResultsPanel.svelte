@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { filename, parentPath } from '$lib/paths';
+  import { copyText } from '$lib/clipboard';
   import { defaultSearchOptions, type FileResultGroup, type SearchMatch, type SearchOptions, type SearchState } from '$lib/types';
 
   type SnippetPart = {
@@ -253,13 +254,20 @@
     return spans;
   }
 
-  function copyText(text: string) {
-    if (!text) return;
-    void navigator.clipboard?.writeText(text);
+  function handleAction(event: MouseEvent, action: () => void | Promise<void>) {
+    event.preventDefault();
+    event.stopPropagation();
+    void action();
   }
 
-  function copyFilename(filePath: string) {
-    copyText(filename(filePath));
+  function handleCopy(event: MouseEvent, text: string) {
+    handleAction(event, async () => {
+      await copyText(text);
+    });
+  }
+
+  function copyFilename(event: MouseEvent, filePath: string) {
+    handleCopy(event, filename(filePath));
   }
 
   function visibleMobileMatches(group: FileResultGroup) {
@@ -475,7 +483,7 @@
     setTimeout(() => {
       if (menu.contains(document.activeElement)) return;
       menu.open = false;
-    }, 0);
+    }, 120);
   }
 
   $effect(() => {
@@ -570,15 +578,15 @@
               <span title={parentPath(group.path)}>{parentPath(group.path)}</span>
             </div>
             <div class="mobile-file-actions">
-              <button type="button" onclick={() => onOpen(group.path)}>Open</button>
+              <button type="button" onclick={(event) => handleAction(event, () => onOpen(group.path))}>Open</button>
               <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
                 <summary title="More actions" aria-label="More actions">...</summary>
                 <div class="menu">
                   <div class="menu-title">{matchLabel(group.matches.length)}</div>
-                  <button type="button" onclick={() => onOpen(group.path)}>Open</button>
-                  <button type="button" onclick={() => onReveal(group.path)}>Reveal</button>
-                  <button type="button" onclick={() => copyText(group.path)}>Copy path</button>
-                  <button type="button" onclick={() => copyText(filename(group.path))}>Copy filename</button>
+                  <button type="button" onclick={(event) => handleAction(event, () => onOpen(group.path))}>Open</button>
+                  <button type="button" onclick={(event) => handleAction(event, () => onReveal(group.path))}>Reveal</button>
+                  <button type="button" onclick={(event) => handleCopy(event, group.path)}>Copy path</button>
+                  <button type="button" onclick={(event) => copyFilename(event, group.path)}>Copy filename</button>
                   <button type="button" onclick={() => toggleExpandedFile(group.path)}>
                     {expandedFiles.has(group.path) ? 'Collapse file' : 'Show all matches'}
                   </button>
@@ -631,13 +639,13 @@
         </div>
         <span class="file-actions">
           <span class="count">{matchLabel(currentFileRow.count)}</span>
-          <button type="button" title="Open file" onclick={() => onOpen(currentFileRow.path)}>Open</button>
+          <button type="button" title="Open file" onclick={(event) => handleAction(event, () => onOpen(currentFileRow.path))}>Open</button>
           <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
             <summary title="More actions" aria-label="More actions">...</summary>
             <div class="menu">
-              <button type="button" onclick={() => onReveal(currentFileRow.path)}>Reveal</button>
-              <button type="button" onclick={() => copyText(currentFileRow.path)}>Copy path</button>
-              <button type="button" onclick={() => copyFilename(currentFileRow.path)}>Copy filename</button>
+              <button type="button" onclick={(event) => handleAction(event, () => onReveal(currentFileRow.path))}>Reveal</button>
+              <button type="button" onclick={(event) => handleCopy(event, currentFileRow.path)}>Copy path</button>
+              <button type="button" onclick={(event) => copyFilename(event, currentFileRow.path)}>Copy filename</button>
             </div>
           </details>
         </span>
@@ -654,13 +662,13 @@
             </div>
             <span class="file-actions">
               <span class="count">{matchLabel(row.count)}</span>
-              <button type="button" title="Open file" onclick={() => onOpen(row.path)}>Open</button>
+              <button type="button" title="Open file" onclick={(event) => handleAction(event, () => onOpen(row.path))}>Open</button>
               <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
                 <summary title="More actions" aria-label="More actions">...</summary>
                 <div class="menu">
-                  <button type="button" onclick={() => onReveal(row.path)}>Reveal</button>
-                  <button type="button" onclick={() => copyText(row.path)}>Copy path</button>
-                  <button type="button" onclick={() => copyFilename(row.path)}>Copy filename</button>
+                  <button type="button" onclick={(event) => handleAction(event, () => onReveal(row.path))}>Reveal</button>
+                  <button type="button" onclick={(event) => handleCopy(event, row.path)}>Copy path</button>
+                  <button type="button" onclick={(event) => copyFilename(event, row.path)}>Copy filename</button>
                 </div>
               </details>
             </span>
@@ -706,6 +714,7 @@
 <style>
   .results-panel {
     container-type: inline-size;
+    --results-title-height: 68px;
     min-width: 0;
     background: var(--surface);
     overflow: auto;
@@ -719,7 +728,7 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
     align-items: center;
-    min-height: 54px;
+    min-height: var(--results-title-height);
     border-bottom: 1px solid var(--border);
     padding: 6px 14px;
     background: var(--surface);
@@ -810,7 +819,7 @@
 
   .current-file-header {
     position: sticky;
-    top: 54px;
+    top: var(--results-title-height);
     z-index: 3;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { PreviewState } from '$lib/types';
+  import { copyText } from '$lib/clipboard';
   import { filename, parentPath } from '$lib/paths';
 
   type Segment = {
@@ -189,9 +190,16 @@
     return !selection || selection.isCollapsed;
   }
 
-  function copyText(text: string) {
-    if (!text) return;
-    void navigator.clipboard?.writeText(text);
+  function handleAction(event: MouseEvent, action: () => void | Promise<void>) {
+    event.preventDefault();
+    event.stopPropagation();
+    void action();
+  }
+
+  function handleCopy(event: MouseEvent, text: string) {
+    handleAction(event, async () => {
+      await copyText(text);
+    });
   }
 
   function closeMoreActionMenus(except?: HTMLDetailsElement) {
@@ -215,7 +223,7 @@
     setTimeout(() => {
       if (menu.contains(document.activeElement)) return;
       menu.open = false;
-    }, 0);
+    }, 120);
   }
 
   $effect(() => {
@@ -258,15 +266,15 @@
       <button type="button" onclick={onClose} title="Back to results">← Results</button>
       <span></span>
       <div class="drilldown-actions">
-        <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-        <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
-        <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+        <button type="button" onclick={(event) => handleAction(event, () => onOpen(preview.filePath))} title="Open file">Open</button>
+        <button type="button" onclick={(event) => handleAction(event, () => onReveal(preview.filePath))}>Reveal</button>
+        <button type="button" onclick={(event) => handleCopy(event, activeMatchOnly)} disabled={!activeMatchOnly}>
           Copy match
         </button>
-        <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+        <button type="button" onclick={(event) => handleCopy(event, activeMatchText)} disabled={!activeMatchText}>
           Copy line
         </button>
-        <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+        <button type="button" onclick={(event) => handleCopy(event, preview.filePath)}>Copy path</button>
         <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
           {effectiveWrap ? 'Disable wrap' : 'Wrap'}
         </button>
@@ -274,17 +282,17 @@
       <details class="compact-actions more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
         <summary title="More actions" aria-label="More actions">...</summary>
         <div class="menu">
-          <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-          <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button type="button" onclick={(event) => handleAction(event, () => onOpen(preview.filePath))} title="Open file">Open</button>
+          <button type="button" onclick={(event) => handleAction(event, () => onReveal(preview.filePath))}>Reveal</button>
           <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
           <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
-          <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+          <button type="button" onclick={(event) => handleCopy(event, activeMatchOnly)} disabled={!activeMatchOnly}>
             Copy match
           </button>
-          <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+          <button type="button" onclick={(event) => handleCopy(event, activeMatchText)} disabled={!activeMatchText}>
             Copy line
           </button>
-          <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+          <button type="button" onclick={(event) => handleCopy(event, preview.filePath)}>Copy path</button>
           <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
             {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
           </button>
@@ -293,17 +301,17 @@
       <details class="mobile-actions more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
         <summary title="More actions" aria-label="More actions">...</summary>
         <div class="menu">
-          <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-          <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+          <button type="button" onclick={(event) => handleAction(event, () => onOpen(preview.filePath))} title="Open file">Open</button>
+          <button type="button" onclick={(event) => handleAction(event, () => onReveal(preview.filePath))}>Reveal</button>
           <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
           <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
-          <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+          <button type="button" onclick={(event) => handleCopy(event, activeMatchOnly)} disabled={!activeMatchOnly}>
             Copy match
           </button>
-          <button type="button" onclick={() => copyText(activeMatchText)} disabled={!activeMatchText}>
+          <button type="button" onclick={(event) => handleCopy(event, activeMatchText)} disabled={!activeMatchText}>
             Copy line
           </button>
-          <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+          <button type="button" onclick={(event) => handleCopy(event, preview.filePath)}>Copy path</button>
           <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
             {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
           </button>
@@ -336,18 +344,18 @@
         </div>
       </div>
       <div class="desktop-preview-actions">
-        <button type="button" onclick={() => onOpen(preview.filePath)} title="Open file">Open</button>
-        <button class="reveal-action" type="button" onclick={() => onReveal(preview.filePath)} title="Reveal file">Reveal</button>
+        <button type="button" onclick={(event) => handleAction(event, () => onOpen(preview.filePath))} title="Open file">Open</button>
+        <button class="reveal-action" type="button" onclick={(event) => handleAction(event, () => onReveal(preview.filePath))} title="Reveal file">Reveal</button>
         <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
           <summary title="More actions" aria-label="More actions">...</summary>
           <div class="menu">
-            <button type="button" onclick={() => onReveal(preview.filePath)}>Reveal</button>
+            <button class="reveal-menu-action" type="button" onclick={(event) => handleAction(event, () => onReveal(preview.filePath))}>Reveal</button>
             <button class="file-menu-action" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles}>Previous file</button>
             <button class="file-menu-action" type="button" onclick={onNextFile} disabled={!canNavigateFiles}>Next file</button>
-            <button type="button" onclick={() => copyText(activeMatchOnly)} disabled={!activeMatchOnly}>
+            <button type="button" onclick={(event) => handleCopy(event, activeMatchOnly)} disabled={!activeMatchOnly}>
               Copy match
             </button>
-            <button type="button" onclick={() => copyText(preview.filePath)}>Copy path</button>
+            <button type="button" onclick={(event) => handleCopy(event, preview.filePath)}>Copy path</button>
             <button type="button" onclick={() => (wrapLines = !wrapLines)} disabled={!canWrap}>
               {effectiveWrap ? 'Disable wrap' : 'Toggle wrap'}
             </button>
@@ -544,6 +552,10 @@
   }
 
   .file-menu-action {
+    display: none;
+  }
+
+  .reveal-menu-action {
     display: none;
   }
 
@@ -1032,6 +1044,10 @@
 
     .reveal-action {
       display: none;
+    }
+
+    .reveal-menu-action {
+      display: block;
     }
 
     .desktop-preview-actions {

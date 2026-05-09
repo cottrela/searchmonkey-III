@@ -21,6 +21,18 @@ export async function readFilePreview(
   return invoke<FilePreview>('read_file_preview', { path, startLine, endLine });
 }
 
+export async function openFilePath(path: string): Promise<void> {
+  return invoke<void>('open_file_path', { path });
+}
+
+export async function revealFilePath(path: string): Promise<void> {
+  return invoke<void>('reveal_file_path', { path });
+}
+
+export async function copyTextNative(text: string): Promise<void> {
+  return invoke<void>('copy_text', { text });
+}
+
 export async function homeDir(): Promise<string> {
   return invoke<string>('home_dir');
 }
