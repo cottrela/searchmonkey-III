@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { filename, parentPath } from '$lib/paths';
   import { copyText } from '$lib/clipboard';
   import { defaultSearchOptions, type FileResultGroup, type SearchMatch, type SearchOptions, type SearchState } from '$lib/types';
@@ -610,17 +610,17 @@
 
     lastScrolledMatch = key;
     const selectedRow = rows.find((row) => row.type === 'match' && sameMatch(selected, row.match));
-    if (selectedRow) {
-      resultsElement.scrollTop = Math.max(0, selectedRow.top - resultsElement.clientHeight / 2);
-      updateScrollMetrics();
-    }
+    if (!selectedRow) return;
 
-    tick().then(() => {
-      const selectedRow = resultsElement?.querySelector("[data-selected-match='true']");
-      if (selectedRow instanceof HTMLElement) {
-        selectedRow.scrollIntoView({ block: 'center' });
-      }
-    });
+    const visibleTop = resultsElement.scrollTop;
+    const visibleBottom = visibleTop + resultsElement.clientHeight;
+    const rowTop = selectedRow.top;
+    const rowBottom = selectedRow.top + selectedRow.height;
+
+    if (rowTop >= visibleTop && rowBottom <= visibleBottom) return;
+
+    resultsElement.scrollTop = Math.max(0, selectedRow.top - resultsElement.clientHeight / 2);
+    updateScrollMetrics();
   });
 </script>
 
