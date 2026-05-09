@@ -555,6 +555,19 @@
         <input type="checkbox" bind:checked={options.show_line_numbers} />
         <span>Show line numbers</span>
       </label>
+      <details class="result-options-menu more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
+        <summary title="Result options" aria-label="Result options">...</summary>
+        <div class="menu">
+          <label class="toggle-control">
+            <input type="checkbox" bind:checked={options.group_by_file} />
+            <span>Group by file</span>
+          </label>
+          <label class="toggle-control">
+            <input type="checkbox" bind:checked={options.show_line_numbers} />
+            <span>Show line numbers</span>
+          </label>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -715,6 +728,8 @@
   .results-panel {
     container-type: inline-size;
     --results-title-height: 68px;
+    position: relative;
+    isolation: isolate;
     min-width: 0;
     background: var(--surface);
     overflow: auto;
@@ -723,7 +738,7 @@
   .panel-title {
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: 40;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
@@ -755,9 +770,10 @@
 
   .result-controls {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 6px;
     justify-content: flex-start;
+    min-width: 0;
   }
 
   .result-controls label {
@@ -794,6 +810,51 @@
     height: auto;
   }
 
+  .result-options-menu {
+    position: relative;
+    display: none;
+  }
+
+  .result-options-menu summary {
+    display: inline-grid;
+    width: 30px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    place-items: center;
+    color: var(--text);
+    background: var(--input);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 900;
+    line-height: 1;
+    list-style: none;
+  }
+
+  .result-options-menu summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .result-options-menu .menu {
+    position: absolute;
+    top: 32px;
+    right: 0;
+    z-index: 60;
+    display: grid;
+    min-width: 164px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--panel);
+    box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+  }
+
+  .result-options-menu .toggle-control {
+    justify-content: flex-start;
+    border: 0;
+    background: transparent;
+  }
+
   .empty {
     display: grid;
     gap: 10px;
@@ -820,7 +881,7 @@
   .current-file-header {
     position: sticky;
     top: var(--results-title-height);
-    z-index: 3;
+    z-index: 30;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
@@ -838,6 +899,7 @@
 
   .virtual-list {
     position: relative;
+    z-index: 0;
     margin: 0 10px 10px;
     min-height: 0;
   }
@@ -889,6 +951,8 @@
 
   .mobile-groups {
     display: none;
+    position: relative;
+    z-index: 0;
   }
 
   .file-row,
@@ -1103,9 +1167,12 @@
   }
 
   @media (max-width: 599px) {
+    .results-panel {
+      --results-title-height: 72px;
+    }
+
     .panel-title {
       grid-template-columns: minmax(0, 1fr);
-      min-height: 38px;
       gap: 5px;
     }
 
@@ -1145,8 +1212,8 @@
 
     .mobile-file-header {
       position: sticky;
-      top: 38px;
-      z-index: 2;
+      top: var(--results-title-height);
+      z-index: 30;
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
@@ -1290,6 +1357,16 @@
       margin: 7px 8px 10px;
       color: var(--muted);
       background: var(--surface);
+    }
+  }
+
+  @container (max-width: 520px) {
+    .result-controls > .toggle-control {
+      display: none;
+    }
+
+    .result-options-menu {
+      display: block;
     }
   }
 

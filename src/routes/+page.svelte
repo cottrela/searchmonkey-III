@@ -1871,14 +1871,6 @@
     display: grid;
   }
 
-  .workspace.layout-focus :global(.results-panel) {
-    --results-title-height: 0px;
-  }
-
-  .workspace.layout-focus :global(.results-panel .panel-title) {
-    position: static;
-  }
-
   .workspace.resizing {
     cursor: col-resize;
     user-select: none;
