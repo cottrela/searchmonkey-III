@@ -94,6 +94,7 @@
   let expandedFiles = $state<Set<string>>(new Set());
 
   const rows = $derived.by(() => buildRows(groups));
+  const fileRows = $derived.by(() => rows.filter((row) => row.type === 'file'));
   const matchTotal = $derived.by(() => groups.reduce((total, group) => total + group.matches.length, 0));
   const currentSortMode = $derived.by(() => {
     const mode = `${options.sort_by}_${options.sort_direction}` as SortMode;
@@ -106,18 +107,16 @@
   const visibleRows = $derived.by(() => {
     const start = Math.max(0, scrollTop - OVERSCAN * MATCH_ROW_HEIGHT);
     const end = scrollTop + viewportHeight + OVERSCAN * MATCH_ROW_HEIGHT;
+    const firstIndex = firstRowAtOrAfter(start);
+    const lastIndex = lastRowAtOrBefore(end);
 
-    return rows.filter((row) => row.top + row.height >= start && row.top <= end);
+    if (firstIndex < 0 || lastIndex < firstIndex) return [];
+
+    return rows.slice(firstIndex, lastIndex + 1);
   });
   const currentFileRow = $derived.by(() => {
-    let current: Extract<ResultRow, { type: 'file' }> | null = null;
-
-    for (const row of rows) {
-      if (row.top > scrollTop) break;
-      if (row.type === 'file') current = row;
-    }
-
-    return current;
+    if (!options.group_by_file || !fileRows.length) return null;
+    return lastFileRowAtOrBefore(scrollTop);
   });
   const currentLandmark = $derived.by(() => landmarkForScrollPosition(scrollTop + Math.max(0, viewportHeight * 0.32)));
 
@@ -313,6 +312,11 @@
   }
 
   function rowAtPosition(position: number) {
+    const index = rowIndexAtPosition(position);
+    return index >= 0 ? rows[index] : rows[0];
+  }
+
+  function rowIndexAtPosition(position: number) {
     let low = 0;
     let high = rows.length - 1;
 
@@ -325,11 +329,71 @@
       } else if (position > row.top + row.height) {
         low = middle + 1;
       } else {
-        return row;
+        return middle;
       }
     }
 
-    return rows[Math.max(0, Math.min(rows.length - 1, low))];
+    return rows.length ? Math.max(0, Math.min(rows.length - 1, low)) : -1;
+  }
+
+  function firstRowAtOrAfter(position: number) {
+    let low = 0;
+    let high = rows.length - 1;
+    let match = -1;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const row = rows[middle];
+
+      if (row.top + row.height >= position) {
+        match = middle;
+        high = middle - 1;
+      } else {
+        low = middle + 1;
+      }
+    }
+
+    return match;
+  }
+
+  function lastRowAtOrBefore(position: number) {
+    let low = 0;
+    let high = rows.length - 1;
+    let match = -1;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const row = rows[middle];
+
+      if (row.top <= position) {
+        match = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+
+    return match;
+  }
+
+  function lastFileRowAtOrBefore(position: number) {
+    let low = 0;
+    let high = fileRows.length - 1;
+    let match: Extract<ResultRow, { type: 'file' }> | null = null;
+
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const row = fileRows[middle];
+
+      if (row.top <= position) {
+        match = row;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+
+    return match;
   }
 
   function groupForPath(filePath: string) {
