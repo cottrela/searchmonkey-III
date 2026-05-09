@@ -46,7 +46,6 @@
   const FILE_ROW_HEIGHT = 44;
   const MATCH_ROW_HEIGHT = 28;
   const OVERSCAN = 12;
-  const MOBILE_MATCH_LIMIT = 10;
   const SORT_MODE_OPTIONS: Array<{ value: SortMode; label: string }> = [
     { value: 'relevance_desc', label: 'Default' },
     { value: 'file_name_asc', label: 'File name A-Z' },
@@ -91,8 +90,6 @@
   let scrollScrubbing = $state(false);
   let scrubPreviewTop = $state(0);
   let scrubPreviewLeft = $state(0);
-  let expandedFiles = $state<Set<string>>(new Set());
-  let mobileResults = $state(false);
 
   const rows = $derived.by(() => buildRows(groups));
   const fileRows = $derived.by(() => rows.filter((row) => row.type === 'file'));
@@ -124,14 +121,6 @@
   onMount(() => {
     if (!resultsElement) return;
 
-    const mobileMedia = window.matchMedia('(max-width: 599px)');
-    const syncMobileResults = () => {
-      mobileResults = mobileMedia.matches;
-    };
-
-    syncMobileResults();
-    mobileMedia.addEventListener('change', syncMobileResults);
-
     viewportHeight = resultsElement.clientHeight;
     const observer = new ResizeObserver(() => {
       viewportHeight = resultsElement?.clientHeight ?? 0;
@@ -140,7 +129,6 @@
     observer.observe(resultsElement);
     return () => {
       observer.disconnect();
-      mobileMedia.removeEventListener('change', syncMobileResults);
     };
   });
 
@@ -281,11 +269,6 @@
     handleCopy(event, filename(filePath));
   }
 
-  function visibleMobileMatches(group: FileResultGroup) {
-    if (expandedFiles.has(group.path)) return group.matches;
-    return group.matches.slice(0, MOBILE_MATCH_LIMIT);
-  }
-
   function setSortMode(event: Event) {
     const select = event.currentTarget;
     if (!(select instanceof HTMLSelectElement)) return;
@@ -293,18 +276,6 @@
     const [sortBy, direction] = select.value.replace(/_(asc|desc)$/, '|$1').split('|');
     options.sort_by = sortBy as SearchOptions['sort_by'];
     options.sort_direction = direction as SearchOptions['sort_direction'];
-  }
-
-  function toggleExpandedFile(filePath: string) {
-    const next = new Set(expandedFiles);
-
-    if (next.has(filePath)) {
-      next.delete(filePath);
-    } else {
-      next.add(filePath);
-    }
-
-    expandedFiles = next;
   }
 
   function matchLabel(count: number) {
@@ -673,72 +644,7 @@
   {:else if groups.length === 0}
     <div class="empty">No matches found</div>
   {:else}
-    {#if mobileResults}
-      <div class="mobile-groups">
-      {#each groups as group (group.path)}
-        <section class="mobile-file-group" aria-label={filename(group.path)}>
-          {#if options.group_by_file}
-            <div class="mobile-file-header">
-            <div class="mobile-file-title">
-              <strong title={group.path}>{filename(group.path)}</strong>
-              <span title={parentPath(group.path)}>{parentPath(group.path)}</span>
-            </div>
-            <div class="mobile-file-actions">
-              <button type="button" onclick={(event) => handleAction(event, () => onOpen(group.path))}>Open</button>
-              <details class="more-actions" ontoggle={handleMoreActionsToggle} onfocusout={handleMoreActionsFocusOut}>
-                <summary title="More actions" aria-label="More actions">...</summary>
-                <div class="menu">
-                  <div class="menu-title">{matchLabel(group.matches.length)}</div>
-                  <button type="button" onclick={(event) => handleAction(event, () => onOpen(group.path))}>Open</button>
-                  <button type="button" onclick={(event) => handleAction(event, () => onReveal(group.path))}>Reveal</button>
-                  <button type="button" onclick={(event) => handleCopy(event, group.path)}>Copy path</button>
-                  <button type="button" onclick={(event) => copyFilename(event, group.path)}>Copy filename</button>
-                  <button type="button" onclick={() => toggleExpandedFile(group.path)}>
-                    {expandedFiles.has(group.path) ? 'Collapse file' : 'Show all matches'}
-                  </button>
-                </div>
-              </details>
-            </div>
-          </div>
-          {/if}
-
-          <div class="mobile-matches">
-            {#each visibleMobileMatches(group) as match, index (`${match.path}:${match.line_number}:${index}`)}
-              <button
-                type="button"
-                class:selected={sameMatch(selected, match)}
-                class:no-lines={!options.show_line_numbers}
-                data-selected-match={sameMatch(selected, match) ? 'true' : undefined}
-                class="match-row mobile-match-row"
-                onclick={() => onSelect(match)}
-              >
-                {#if options.show_line_numbers}
-                  <span class="line">{match.line_number}</span>
-                {/if}
-                <span class="snippet">
-                  {#each snippetParts(match, query) as part}
-                    {#if part.hit}
-                      <mark>{part.text}</mark>
-                    {:else}
-                      <span>{part.text}</span>
-                    {/if}
-                  {/each}
-                </span>
-              </button>
-            {/each}
-          </div>
-
-          {#if group.matches.length > MOBILE_MATCH_LIMIT && !expandedFiles.has(group.path)}
-            <button class="show-more" type="button" onclick={() => toggleExpandedFile(group.path)}>
-              Show {group.matches.length - MOBILE_MATCH_LIMIT} more
-            </button>
-          {/if}
-        </section>
-      {/each}
-      </div>
-
-    {:else}
-      {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && options.group_by_file}
+    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && options.group_by_file}
       <div class="current-file-header" aria-label="Current file">
         <div class="file-title">
           <strong title={currentFileRow.path}>{filename(currentFileRow.path)}</strong>
@@ -757,9 +663,9 @@
           </details>
         </span>
       </div>
-      {/if}
+    {/if}
 
-      <div class="virtual-list" style:height={`${totalHeight}px`}>
+    <div class="virtual-list" style:height={`${totalHeight}px`}>
       {#each visibleRows as row (row.key)}
         {#if row.type === 'file'}
           <div class="file-row" style:transform={`translateY(${row.top}px)`}>
@@ -806,15 +712,14 @@
           </div>
         {/if}
       {/each}
-      </div>
+    </div>
 
-      {#if scrollScrubbing && currentLandmark}
+    {#if scrollScrubbing && currentLandmark}
       <div class="scroll-landmark" style={`top: ${scrubPreviewTop}px; left: ${scrubPreviewLeft}px;`} aria-hidden="true">
         <strong>{currentLandmark.cue}</strong>
         <span>{currentLandmark.primary}</span>
         <small>{currentLandmark.secondary}</small>
       </div>
-      {/if}
     {/if}
   {/if}
 </section>
@@ -1042,12 +947,6 @@
     color: var(--muted);
     font-size: 12px;
     font-weight: 700;
-  }
-
-  .mobile-groups {
-    display: none;
-    position: relative;
-    z-index: 0;
   }
 
   .file-row,
@@ -1292,84 +1191,6 @@
       display: none;
     }
 
-    .virtual-list {
-      display: none;
-    }
-
-    .mobile-groups {
-      display: block;
-      padding: 0 0 8px;
-    }
-
-    .mobile-file-group {
-      background: var(--panel);
-    }
-
-    .mobile-file-header {
-      position: sticky;
-      top: var(--results-title-height);
-      z-index: 30;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 8px;
-      align-items: center;
-      min-height: 46px;
-      border-top: 1px solid var(--border-subtle);
-      border-bottom: 1px solid var(--border);
-      padding: 5px 8px;
-      background: var(--panel);
-      box-shadow: 0 1px 0 rgba(30, 37, 45, 0.04);
-    }
-
-    .mobile-file-header:has(details[open]) {
-      z-index: 30;
-    }
-
-    .mobile-file-title {
-      display: grid;
-      gap: 1px;
-      min-width: 0;
-    }
-
-    .mobile-file-title strong,
-    .mobile-file-title span {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .mobile-file-title strong {
-      font-size: 13px;
-      font-weight: 850;
-    }
-
-    .mobile-file-title span,
-    .menu-title {
-      color: #7a8490;
-      font-size: 11px;
-      font-weight: 550;
-    }
-
-    .mobile-file-actions {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-
-    .mobile-file-actions > button,
-    .show-more {
-      height: 26px;
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 0 7px;
-      color: var(--text);
-      background: var(--input);
-      font: inherit;
-      font-size: 11px;
-      font-weight: 800;
-    }
-
     details {
       position: relative;
       z-index: 1;
@@ -1412,12 +1233,6 @@
       box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
     }
 
-    .menu-title {
-      border-bottom: 1px solid var(--border-subtle);
-      padding: 5px 8px 7px;
-      white-space: nowrap;
-    }
-
     .menu button {
       height: 30px;
       border: 0;
@@ -1437,21 +1252,14 @@
       outline: none;
     }
 
-    .mobile-matches {
-      padding: 0;
-    }
-
-    .mobile-match-row {
+    .match-row {
       grid-template-columns: 46px minmax(0, 1fr);
       height: 32px;
       padding: 6px 8px;
     }
 
-    .show-more {
-      width: calc(100% - 16px);
-      margin: 7px 8px 10px;
-      color: var(--muted);
-      background: var(--surface);
+    .match-row.no-lines {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 
