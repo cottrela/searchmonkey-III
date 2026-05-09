@@ -92,6 +92,7 @@
   let scrubPreviewTop = $state(0);
   let scrubPreviewLeft = $state(0);
   let expandedFiles = $state<Set<string>>(new Set());
+  let mobileResults = $state(false);
 
   const rows = $derived.by(() => buildRows(groups));
   const fileRows = $derived.by(() => rows.filter((row) => row.type === 'file'));
@@ -123,13 +124,24 @@
   onMount(() => {
     if (!resultsElement) return;
 
+    const mobileMedia = window.matchMedia('(max-width: 599px)');
+    const syncMobileResults = () => {
+      mobileResults = mobileMedia.matches;
+    };
+
+    syncMobileResults();
+    mobileMedia.addEventListener('change', syncMobileResults);
+
     viewportHeight = resultsElement.clientHeight;
     const observer = new ResizeObserver(() => {
       viewportHeight = resultsElement?.clientHeight ?? 0;
     });
 
     observer.observe(resultsElement);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      mobileMedia.removeEventListener('change', syncMobileResults);
+    };
   });
 
   function matchKey(match: SearchMatch) {
@@ -645,7 +657,8 @@
   {:else if groups.length === 0}
     <div class="empty">No matches found</div>
   {:else}
-    <div class="mobile-groups">
+    {#if mobileResults}
+      <div class="mobile-groups">
       {#each groups as group (group.path)}
         <section class="mobile-file-group" aria-label={filename(group.path)}>
           {#if options.group_by_file}
@@ -706,9 +719,10 @@
           {/if}
         </section>
       {/each}
-    </div>
+      </div>
 
-    {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && options.group_by_file}
+    {:else}
+      {#if currentFileRow && scrollTop > FILE_ROW_HEIGHT && options.group_by_file}
       <div class="current-file-header" aria-label="Current file">
         <div class="file-title">
           <strong title={currentFileRow.path}>{filename(currentFileRow.path)}</strong>
@@ -727,9 +741,9 @@
           </details>
         </span>
       </div>
-    {/if}
+      {/if}
 
-    <div class="virtual-list" style:height={`${totalHeight}px`}>
+      <div class="virtual-list" style:height={`${totalHeight}px`}>
       {#each visibleRows as row (row.key)}
         {#if row.type === 'file'}
           <div class="file-row" style:transform={`translateY(${row.top}px)`}>
@@ -776,14 +790,15 @@
           </div>
         {/if}
       {/each}
-    </div>
+      </div>
 
-    {#if scrollScrubbing && currentLandmark}
+      {#if scrollScrubbing && currentLandmark}
       <div class="scroll-landmark" style={`top: ${scrubPreviewTop}px; left: ${scrubPreviewLeft}px;`} aria-hidden="true">
         <strong>{currentLandmark.cue}</strong>
         <span>{currentLandmark.primary}</span>
         <small>{currentLandmark.secondary}</small>
       </div>
+      {/if}
     {/if}
   {/if}
 </section>
