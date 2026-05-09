@@ -3,6 +3,13 @@ pub mod runner;
 
 use serde::{Deserialize, Serialize};
 
+pub fn debug_logging_enabled() -> bool {
+    matches!(
+        std::env::var("SEARCHMONKEY_DEBUG").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
     pub query: String,

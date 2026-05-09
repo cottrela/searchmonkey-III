@@ -1,4 +1,4 @@
-use super::{SearchMatch, SearchProvider, SearchRequest, SearchSubmatch};
+use super::{debug_logging_enabled, SearchMatch, SearchProvider, SearchRequest, SearchSubmatch};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -136,10 +136,12 @@ impl RipgrepSidecarProvider {
         let program = sidecar_path("rg")?;
         let args = Self::args(request);
 
-        eprintln!(
-            "searchmonkey rg command: {}",
-            debug_command_line(&program, &args)
-        );
+        if debug_logging_enabled() {
+            eprintln!(
+                "searchmonkey rg command: {}",
+                debug_command_line(&program, &args)
+            );
+        }
 
         let mut command = Command::new(program);
         command

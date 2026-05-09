@@ -1,4 +1,4 @@
-use super::{ripgrep, SearchMatch, SearchState};
+use super::{debug_logging_enabled, ripgrep, SearchMatch, SearchState};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Child;
 use std::time::Instant;
@@ -39,12 +39,15 @@ where
     let mut read_errors = 0usize;
     let started_at = Instant::now();
     let reader = BufReader::new(stdout);
+    let debug_logging = debug_logging_enabled();
 
-    eprintln!(
-        "searchmonkey search {search_id}: rg runner started pid={} result_limit={}",
-        child.id(),
-        options.result_limit
-    );
+    if debug_logging {
+        eprintln!(
+            "searchmonkey search {search_id}: rg runner started pid={} result_limit={}",
+            child.id(),
+            options.result_limit
+        );
+    }
 
     for line in reader.split(b'\n') {
         let line = match line {
@@ -75,11 +78,13 @@ where
         }
         if buffered_matches >= options.result_limit {
             limit_reached = true;
-            eprintln!(
-                "searchmonkey search {search_id}: result limit {} reached; terminating rg pid={}",
-                options.result_limit,
-                child.id()
-            );
+            if debug_logging {
+                eprintln!(
+                    "searchmonkey search {search_id}: result limit {} reached; terminating rg pid={}",
+                    options.result_limit,
+                    child.id()
+                );
+            }
             if let Err(err) = terminate_child(&mut child) {
                 eprintln!(
                     "searchmonkey search {search_id}: failed to terminate rg at limit: {err}"
@@ -88,7 +93,7 @@ where
             break;
         }
 
-        if total_matches % 10_000 == 0 {
+        if debug_logging && total_matches % 10_000 == 0 {
             eprintln!(
                 "searchmonkey search {search_id}: parsed {total_matches} matches in {:.2}s",
                 started_at.elapsed().as_secs_f64()
@@ -98,7 +103,9 @@ where
 
     let exit_status = match child.wait() {
         Ok(status) => {
-            eprintln!("searchmonkey search {search_id}: rg exited: {status}");
+            if debug_logging {
+                eprintln!("searchmonkey search {search_id}: rg exited: {status}");
+            }
             status.to_string()
         }
         Err(err) => {
@@ -122,9 +129,11 @@ where
     };
     let elapsed_secs = started_at.elapsed().as_secs_f64();
 
-    eprintln!(
-        "searchmonkey search {search_id}: rg runner finished total_matches={total_matches} buffered_matches={buffered_matches} limit_reached={limit_reached} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
-    );
+    if debug_logging {
+        eprintln!(
+            "searchmonkey search {search_id}: rg runner finished total_matches={total_matches} buffered_matches={buffered_matches} limit_reached={limit_reached} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
+        );
+    }
 
     SearchRunSummary {
         total_matches,
