@@ -533,6 +533,9 @@ pub fn run() {
                 .text(IMPROVE_MENU_ID, "Improve Searchmonkey")
                 .build()?;
             let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
                 .cut()
                 .copy()
                 .paste()
