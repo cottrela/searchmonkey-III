@@ -4,6 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import PathInput from '$lib/components/PathInput.svelte';
+  import PluginsDialog from '$lib/components/PluginsDialog.svelte';
   import AboutDialog from '$lib/components/AboutDialog.svelte';
   import PreviewPanel from '$lib/components/PreviewPanel.svelte';
   import RegexCheatSheetDialog from '$lib/components/RegexCheatSheetDialog.svelte';
@@ -16,6 +17,10 @@
   import {
     cancelSearch as cancelSearchCommand,
     getResults,
+    getPluginIndexStatus,
+    pluginFolderPath,
+    queuePluginScan,
+    rebuildPluginIndex,
     getSearchStatus,
     homeDir,
     listenSearchBufferUpdated,
@@ -23,6 +28,7 @@
     openFilePath,
     readFilePreview,
     revealFilePath,
+    setPluginIndexPaused,
     startSearch as startSearchCommand
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
@@ -34,6 +40,7 @@
     FileResultGroup,
     FilePreview,
     PreviewState,
+    PluginIndexStatus,
     SearchBufferUpdatedEvent,
     SearchCriteria,
     SearchMatch,
@@ -66,6 +73,11 @@
   let websiteMenuEventUnlisten: (() => void) | null = null;
   let reportIssueMenuEventUnlisten: (() => void) | null = null;
   let checkForUpdatesMenuEventUnlisten: (() => void) | null = null;
+  let managePluginsMenuEventUnlisten: (() => void) | null = null;
+  let installPluginMenuEventUnlisten: (() => void) | null = null;
+  let togglePluginIndexingMenuEventUnlisten: (() => void) | null = null;
+  let rebuildPluginIndexMenuEventUnlisten: (() => void) | null = null;
+  let openPluginFolderMenuEventUnlisten: (() => void) | null = null;
   let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
   let loadedPreviewKey = '';
@@ -107,6 +119,12 @@
   let resizeFrame = 0;
   let pendingPreviewWidth = 0;
   let scopePanelVisible = true;
+  let pluginDialogOpen = $state(false);
+  let pluginDialogSelection = $state<string | null>(null);
+  let pluginStatus = $state<PluginIndexStatus | null>(null);
+  let pluginStatusError = $state('');
+  let pluginStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+  let startupPluginScanTimer: ReturnType<typeof setTimeout> | null = null;
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
@@ -114,6 +132,8 @@
   const SEARCH_RESULT_FLUSH_MS = 500;
   const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 750;
   const SEARCH_STATUS_POLL_MS = 150;
+  const PLUGIN_STATUS_POLL_MS = 1000;
+  const STARTUP_PLUGIN_SCAN_DELAY_MS = 1500;
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
   const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
@@ -393,6 +413,35 @@
     }).then((unlisten) => {
       checkForUpdatesMenuEventUnlisten = unlisten;
     });
+    void listen<string | null>('open-manage-plugins', (event) => {
+      pluginDialogSelection = event.payload ?? null;
+      pluginDialogOpen = true;
+      void refreshPluginStatus();
+    }).then((unlisten) => {
+      managePluginsMenuEventUnlisten = unlisten;
+    });
+    void listen('open-install-plugin', () => {
+      pluginDialogSelection = null;
+      pluginDialogOpen = true;
+      void refreshPluginStatus();
+    }).then((unlisten) => {
+      installPluginMenuEventUnlisten = unlisten;
+    });
+    void listen('toggle-plugin-indexing', () => {
+      void togglePluginIndexing();
+    }).then((unlisten) => {
+      togglePluginIndexingMenuEventUnlisten = unlisten;
+    });
+    void listen('rebuild-plugin-index', () => {
+      void handleRebuildPluginIndex();
+    }).then((unlisten) => {
+      rebuildPluginIndexMenuEventUnlisten = unlisten;
+    });
+    void listen('open-plugin-folder', () => {
+      void handleOpenPluginFolder();
+    }).then((unlisten) => {
+      openPluginFolderMenuEventUnlisten = unlisten;
+    });
     telemetryState = loadTelemetryState();
     if (!telemetryState.prompted || !telemetryState.consent) {
       telemetryFirstRun = true;
@@ -411,15 +460,21 @@
       .then((home) => {
         defaultHomePath = home;
         if (!path) path = home;
+        scheduleStartupPluginScan();
       })
       .catch(() => {
         if (!path) path = '/';
+        scheduleStartupPluginScan();
       });
+    void refreshPluginStatus();
+    startPluginStatusPolling();
 
     return () => {
       oneUpMedia.removeEventListener('change', syncConstraint);
       fullMedia.removeEventListener('change', syncConstraint);
       clearStatusPollTimer();
+      clearPluginStatusPollTimer();
+      clearStartupPluginScanTimer();
       clearElapsedTimer();
       clearResultFlushTimer();
       improveMenuEventUnlisten?.();
@@ -436,9 +491,111 @@
       reportIssueMenuEventUnlisten = null;
       checkForUpdatesMenuEventUnlisten?.();
       checkForUpdatesMenuEventUnlisten = null;
+      managePluginsMenuEventUnlisten?.();
+      managePluginsMenuEventUnlisten = null;
+      installPluginMenuEventUnlisten?.();
+      installPluginMenuEventUnlisten = null;
+      togglePluginIndexingMenuEventUnlisten?.();
+      togglePluginIndexingMenuEventUnlisten = null;
+      rebuildPluginIndexMenuEventUnlisten?.();
+      rebuildPluginIndexMenuEventUnlisten = null;
+      openPluginFolderMenuEventUnlisten?.();
+      openPluginFolderMenuEventUnlisten = null;
       void cleanupSearchListeners();
     };
   });
+
+  function startPluginStatusPolling() {
+    clearPluginStatusPollTimer();
+    pluginStatusPollTimer = setInterval(() => {
+      void refreshPluginStatus();
+    }, PLUGIN_STATUS_POLL_MS);
+  }
+
+  function clearPluginStatusPollTimer() {
+    if (!pluginStatusPollTimer) return;
+    clearInterval(pluginStatusPollTimer);
+    pluginStatusPollTimer = null;
+  }
+
+  function scheduleStartupPluginScan() {
+    clearStartupPluginScanTimer();
+    startupPluginScanTimer = setTimeout(() => {
+      startupPluginScanTimer = null;
+      if (hasSearched || activeSearchId !== null || searchState !== 'idle') return;
+      const targetPath = path.trim() || defaultHomePath;
+      if (!targetPath) return;
+      void queuePluginScan(targetPath)
+        .then((status) => {
+          pluginStatus = status;
+          pluginStatusError = '';
+        })
+        .catch((error) => {
+          pluginStatusError = normalizeError(error);
+        });
+    }, STARTUP_PLUGIN_SCAN_DELAY_MS);
+  }
+
+  function clearStartupPluginScanTimer() {
+    if (!startupPluginScanTimer) return;
+    clearTimeout(startupPluginScanTimer);
+    startupPluginScanTimer = null;
+  }
+
+  async function refreshPluginStatus() {
+    try {
+      pluginStatus = await getPluginIndexStatus();
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function togglePluginIndexing() {
+    try {
+      pluginStatus = await setPluginIndexPaused(!(pluginStatus?.paused ?? false));
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function handleRebuildPluginIndex() {
+    try {
+      pluginStatus = await rebuildPluginIndex();
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function handleOpenPluginFolder() {
+    try {
+      await openFilePath(await pluginFolderPath());
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function retryPluginFailure(sourcePath: string) {
+    try {
+      pluginStatus = await queuePluginScan(sourcePath);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function revealPluginFailure(sourcePath: string) {
+    try {
+      await revealFilePath(sourcePath);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
 
   function groupMatches(searchMatches: SearchMatch[]): FileResultGroup[] {
     const byPath = new Map<string, SearchMatch[]>();
@@ -1654,12 +1811,30 @@
     <RegexCheatSheetDialog onClose={closeRegexCheatSheet} />
   {/if}
 
+  {#if pluginDialogOpen}
+    <PluginsDialog
+      status={pluginStatus}
+      selectedPluginId={pluginDialogSelection}
+      onClose={() => {
+        pluginDialogOpen = false;
+        pluginDialogSelection = null;
+      }}
+      onRefresh={refreshPluginStatus}
+      onOpenFolder={handleOpenPluginFolder}
+      onTogglePaused={togglePluginIndexing}
+      onRebuild={handleRebuildPluginIndex}
+      onRetryFailure={retryPluginFailure}
+      onRevealFailure={revealPluginFailure}
+    />
+  {/if}
+
   <StatusBar
     state={searchState}
     totalMatches={Math.max(displayedMatchCount, backendMatchCount)}
     filesWithMatches={groups.length}
     {elapsedMs}
     {errorMessage}
+    pluginStatus={pluginStatus}
   />
 </main>
 

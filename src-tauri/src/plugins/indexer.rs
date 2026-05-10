@@ -1,5 +1,6 @@
 use crate::plugins::cache::{self, CacheStatus};
 use crate::plugins::classifier::{FileClassifier, FileKind};
+use crate::plugins::failure_state::{classify_failure, remove_failure_state, save_failure_state, FailureDisplay};
 use crate::plugins::index_paths::{
     default_index_roots, mirror_meta_path, mirror_meta_tmp_path, mirror_text_path,
     mirror_text_tmp_path,
@@ -34,6 +35,19 @@ pub struct IndexResult {
     pub meta_path: String,
     pub cache_status: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct IndexFailure {
+    pub display: FailureDisplay,
+}
+
+impl std::fmt::Display for IndexFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display.message)
+    }
+}
+
+impl std::error::Error for IndexFailure {}
 
 pub fn index_file_with_plugin(source_path: &Path) -> Result<IndexResult> {
     let plugin_roots = default_plugin_roots();
@@ -109,7 +123,9 @@ pub fn index_file_with_plugin_paths(
     if let Err(err) = run_result {
         let _ = cleanup_tmp_path(&output_text_tmp_path);
         let _ = cleanup_tmp_path(&output_meta_tmp_path);
-        return Err(err);
+        let display = classify_failure(&err.to_string());
+        let _ = save_failure_state(&index_root, &source_path, plugin, 1, display.clone());
+        return Err(IndexFailure { display }.into());
     }
 
     let validation = cache::validate_cache_paths(
@@ -135,6 +151,7 @@ pub fn index_file_with_plugin_paths(
 
     promote_output(&output_text_tmp_path, &output_text_final_path)?;
     promote_output(&output_meta_tmp_path, &output_meta_final_path)?;
+    let _ = remove_failure_state(&index_root, &source_path);
 
     Ok(IndexResult {
         outcome: IndexOutcome::Indexed,

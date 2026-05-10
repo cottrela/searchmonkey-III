@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   FilePreview,
+  PluginIndexStatus,
   SearchBufferUpdatedEvent,
   SearchMatch,
   SearchRequest,
@@ -67,4 +68,24 @@ export async function cancelSearch(searchId: number): Promise<void> {
 
 export async function clearSearch(searchId: number): Promise<void> {
   return invoke<void>('clear_search', { searchId });
+}
+
+export async function getPluginIndexStatus(): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('get_plugin_index_status');
+}
+
+export async function setPluginIndexPaused(paused: boolean): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('set_plugin_index_paused', { paused });
+}
+
+export async function rebuildPluginIndex(): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('rebuild_plugin_index');
+}
+
+export async function pluginFolderPath(): Promise<string> {
+  return invoke<string>('plugin_folder_path');
+}
+
+export async function queuePluginScan(path: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('queue_plugin_scan', { path });
 }

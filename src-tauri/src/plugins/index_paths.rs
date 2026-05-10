@@ -93,6 +93,16 @@ pub fn mirror_meta_tmp_path(index_root: &Path, source_path: &Path) -> PathBuf {
         .with_file_name(format!("{source_name}.sm.meta.tmp"))
 }
 
+pub fn mirror_failure_state_path(index_root: &Path, source_path: &Path) -> PathBuf {
+    let source_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    index_root
+        .join(mirror_relative_path(source_path))
+        .with_file_name(format!("{source_name}.sm.state"))
+}
+
 pub fn mirror_search_path(index_root: &Path, search_path: &Path) -> PathBuf {
     index_root.join(mirror_relative_path(search_path))
 }
@@ -147,8 +157,8 @@ pub fn source_path_from_mirror_text_path_with_root(
 #[cfg(test)]
 mod tests {
     use super::{
-        mirror_meta_path, mirror_meta_tmp_path, mirror_search_path, mirror_text_path,
-        mirror_text_tmp_path,
+        mirror_failure_state_path, mirror_meta_path, mirror_meta_tmp_path, mirror_search_path,
+        mirror_text_path, mirror_text_tmp_path,
         source_path_from_mirror_text_path_with_root,
     };
     use std::path::PathBuf;
@@ -173,6 +183,10 @@ mod tests {
         assert_eq!(
             mirror_meta_tmp_path(&root, &source),
             PathBuf::from("/index/Users/acottrell/sm-test/valid.pdf.sm.meta.tmp")
+        );
+        assert_eq!(
+            mirror_failure_state_path(&root, &source),
+            PathBuf::from("/index/Users/acottrell/sm-test/valid.pdf.sm.state")
         );
         assert_eq!(
             mirror_search_path(&root, PathBuf::from("/Users/acottrell/sm-test").as_path()),

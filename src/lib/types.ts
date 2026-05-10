@@ -166,3 +166,48 @@ export type PreviewState = {
   activeMatchIndex: number;
   activeMatch: SearchMatch | null;
 };
+
+export type PluginCapabilitySummary = {
+  text: boolean;
+  layout: boolean;
+  ocr: boolean;
+};
+
+export type InstalledPluginInfo = {
+  id: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  requires_entitlement: boolean;
+  handles: string[];
+  root_path: string;
+  capabilities: PluginCapabilitySummary;
+};
+
+export type PluginIndexFailure = {
+  source_path: string;
+  plugin_id: string;
+  attempts: number;
+  code: string;
+  message: string;
+  details: string;
+  next_retry_at?: string | null;
+};
+
+export type PluginIndexStatus = {
+  enabled_plugins: string[];
+  installed_plugins: InstalledPluginInfo[];
+  indexing_state: string;
+  total_known: number;
+  ready_count: number;
+  processing_count: number;
+  queued_count: number;
+  pending_count: number;
+  failed_count: number;
+  skipped_count: number;
+  paused: boolean;
+  search_active: boolean;
+  scanner_running: boolean;
+  worker_running: boolean;
+  failures: PluginIndexFailure[];
+};

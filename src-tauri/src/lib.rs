@@ -11,6 +11,8 @@ use std::thread;
 use plugins::{
     classifier::meta_for_sm_text,
     indexer,
+    registry::PluginRegistry,
+    runtime::PluginIndexRuntime,
     meta::{SmMeta, SmRangeType},
 };
 use search::{
@@ -34,6 +36,12 @@ const RELEASE_NOTES_MENU_ID: &str = "release-notes";
 const WEBSITE_MENU_ID: &str = "searchmonkey-website";
 const REPORT_ISSUE_MENU_ID: &str = "report-issue";
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
+const MANAGE_PLUGINS_MENU_ID: &str = "manage-plugins";
+const INSTALL_PLUGIN_MENU_ID: &str = "install-plugin";
+const PAUSE_BACKGROUND_INDEXING_MENU_ID: &str = "pause-background-indexing";
+const REBUILD_PLUGIN_CACHE_MENU_ID: &str = "rebuild-plugin-cache";
+const OPEN_PLUGIN_FOLDER_MENU_ID: &str = "open-plugin-folder";
+const PLUGIN_MENU_ITEM_PREFIX: &str = "plugin-entry:";
 
 #[derive(Default)]
 struct SearchSessions {
@@ -66,13 +74,18 @@ impl SearchSession {
 async fn search_files(
     app: tauri::AppHandle,
     request: SearchRequest,
+    plugin_index: State<'_, PluginIndexRuntime>,
 ) -> Result<Vec<SearchMatch>, String> {
+    queue_plugin_scan_for_path(&plugin_index, &request.path);
     let provider = RipgrepSidecarProvider::new(app);
+    plugin_index.search_started();
 
-    provider
+    let result = provider
         .search(request)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string());
+    plugin_index.search_finished();
+    result
 }
 
 #[tauri::command]
@@ -273,6 +286,50 @@ async fn index_file_with_plugin(source_path: String) -> Result<indexer::IndexRes
 }
 
 #[tauri::command]
+fn get_plugin_index_status(
+    plugin_index: State<'_, PluginIndexRuntime>,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    Ok(plugin_index.status())
+}
+
+#[tauri::command]
+fn queue_plugin_scan(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    path: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    let path = expand_home_path(path.trim())?;
+    if path.exists() {
+        plugin_index
+            .request_scan(&path)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(plugin_index.status())
+}
+
+#[tauri::command]
+fn set_plugin_index_paused(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    paused: bool,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    Ok(plugin_index.set_paused(paused))
+}
+
+#[tauri::command]
+fn rebuild_plugin_index(
+    plugin_index: State<'_, PluginIndexRuntime>,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    Ok(plugin_index.rebuild())
+}
+
+#[tauri::command]
+fn plugin_folder_path(plugin_index: State<'_, PluginIndexRuntime>) -> Result<String, String> {
+    plugin_index
+        .default_plugin_folder()
+        .map(|path| path.display().to_string())
+        .ok_or_else(|| "Could not resolve the plugin folder.".to_string())
+}
+
+#[tauri::command]
 async fn reveal_file_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || reveal_path_native(path))
         .await
@@ -398,7 +455,9 @@ async fn start_search(
     app: tauri::AppHandle,
     request: SearchRequest,
     sessions: State<'_, SearchSessions>,
+    plugin_index: State<'_, PluginIndexRuntime>,
 ) -> Result<u64, String> {
+    queue_plugin_scan_for_path(&plugin_index, &request.path);
     let search_id = sessions.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let session = Arc::new(SearchSession::new(search_id));
     let provider = RipgrepSidecarProvider::new(app.clone());
@@ -421,6 +480,8 @@ async fn start_search(
         .insert(search_id, session.clone());
 
     set_search_state(&session, SearchState::Running, None);
+    plugin_index.search_started();
+    let plugin_index = plugin_index.inner().clone();
 
     thread::spawn(move || {
         let summary = run_rg_child(
@@ -460,6 +521,7 @@ async fn start_search(
         if let Ok(mut session_child_pid) = session.child_pid.lock() {
             *session_child_pid = None;
         }
+        plugin_index.search_finished();
     });
 
     Ok(search_id)
@@ -585,10 +647,33 @@ fn kill_search_process(pid: u32) -> std::io::Result<()> {
     }
 }
 
+fn queue_plugin_scan_for_path(plugin_index: &PluginIndexRuntime, path: &str) {
+    let Ok(path) = expand_home_path(path.trim()) else {
+        return;
+    };
+    if path.exists() {
+        let _ = plugin_index.request_scan(&path);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let plugin_discovery = PluginRegistry::discover_default().unwrap_or_default();
+    let mut installed_plugin_labels = plugin_discovery
+        .registry
+        .by_id
+        .values()
+        .map(|plugin| {
+            (
+                format!("{PLUGIN_MENU_ITEM_PREFIX}{}", plugin.id),
+                format!("{}        ✓ Enabled", plugin.name),
+            )
+        })
+        .collect::<Vec<_>>();
+    installed_plugin_labels.sort_by(|left, right| left.1.cmp(&right.1));
+
     tauri::Builder::default()
-        .menu(|app| {
+        .menu(move |app| {
             let app_menu = SubmenuBuilder::new(app, "Searchmonkey III")
                 .text(ABOUT_SEARCHMONKEY_MENU_ID, "About Searchmonkey III")
                 .separator()
@@ -614,10 +699,24 @@ pub fn run() {
                 .paste()
                 .select_all()
                 .build()?;
+            let mut plugins_menu = SubmenuBuilder::new(app, "Plugins")
+                .text(MANAGE_PLUGINS_MENU_ID, "Manage Plugins…")
+                .text(INSTALL_PLUGIN_MENU_ID, "Install Plugin…")
+                .separator();
+            for (id, label) in &installed_plugin_labels {
+                plugins_menu = plugins_menu.text(id, label);
+            }
+            let plugins_menu = plugins_menu
+                .separator()
+                .text(PAUSE_BACKGROUND_INDEXING_MENU_ID, "Pause Background Indexing")
+                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Rebuild Plugin Cache")
+                .text(OPEN_PLUGIN_FOLDER_MENU_ID, "Open Plugin Folder")
+                .build()?;
 
             MenuBuilder::new(app)
                 .item(&app_menu)
                 .item(&edit_menu)
+                .item(&plugins_menu)
                 .item(&help_menu)
                 .build()
         })
@@ -649,8 +748,33 @@ pub fn run() {
             if event.id() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit("check-for-updates", ());
             }
+
+            if event.id() == MANAGE_PLUGINS_MENU_ID {
+                let _ = app.emit("open-manage-plugins", Option::<String>::None);
+            }
+
+            if event.id() == INSTALL_PLUGIN_MENU_ID {
+                let _ = app.emit("open-install-plugin", ());
+            }
+
+            if event.id() == PAUSE_BACKGROUND_INDEXING_MENU_ID {
+                let _ = app.emit("toggle-plugin-indexing", ());
+            }
+
+            if event.id() == REBUILD_PLUGIN_CACHE_MENU_ID {
+                let _ = app.emit("rebuild-plugin-index", ());
+            }
+
+            if event.id() == OPEN_PLUGIN_FOLDER_MENU_ID {
+                let _ = app.emit("open-plugin-folder", ());
+            }
+
+            if let Some(plugin_id) = event.id().0.strip_prefix(PLUGIN_MENU_ITEM_PREFIX) {
+                let _ = app.emit("open-manage-plugins", Some(plugin_id.to_string()));
+            }
         })
         .manage(SearchSessions::default())
+        .manage(PluginIndexRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -659,14 +783,19 @@ pub fn run() {
             clear_search,
             copy_text,
             get_results,
+            get_plugin_index_status,
             get_search_status,
             home_dir,
             index_file_with_plugin,
             list_directory,
             open_file_path,
+            plugin_folder_path,
+            queue_plugin_scan,
             read_file_preview,
+            rebuild_plugin_index,
             reveal_file_path,
             search_files,
+            set_plugin_index_paused,
             start_search
         ])
         .run(tauri::generate_context!())

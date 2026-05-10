@@ -1,18 +1,20 @@
 <script lang="ts">
-  import type { SearchState } from '$lib/types';
+  import type { PluginIndexStatus, SearchState } from '$lib/types';
 
   let {
     state,
     totalMatches,
     filesWithMatches,
     elapsedMs = 0,
-    errorMessage = ''
+    errorMessage = '',
+    pluginStatus = null
   }: {
     state: SearchState;
     totalMatches: number;
     filesWithMatches: number;
     elapsedMs?: number;
     errorMessage?: string;
+    pluginStatus?: PluginIndexStatus | null;
   } = $props();
 
   const labels: Record<SearchState, string> = {
@@ -38,6 +40,20 @@
 
     return labels[state];
   });
+  const pluginLabel = $derived.by(() => {
+    if (!pluginStatus) return '';
+    if (pluginStatus.paused) return 'PDF index paused';
+    if (pluginStatus.processing_count > 0) {
+      return `Indexing PDFs… ${pluginStatus.ready_count}/${pluginStatus.total_known} ready · ${pluginStatus.processing_count} processing · ${pluginStatus.queued_count} queued now · ${pluginStatus.pending_count} pending`;
+    }
+    if (pluginStatus.queued_count > 0 || pluginStatus.pending_count > 0) {
+      return `PDF index queued · ${pluginStatus.ready_count}/${pluginStatus.total_known} ready · ${pluginStatus.queued_count} queued now · ${pluginStatus.pending_count} pending`;
+    }
+    if (pluginStatus.ready_count > 0) {
+      return `PDF index: ${pluginStatus.ready_count}/${pluginStatus.total_known} ready`;
+    }
+    return '';
+  });
 </script>
 
 <footer
@@ -57,10 +73,13 @@
   <div class="metrics">
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
+    {#if pluginLabel}
+      <span>{pluginLabel}</span>
+    {/if}
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
     {/if}
-    <span class="tagline">No index. No daemon. No stale results.</span>
+    <span class="tagline">Fast grep with smarter files.</span>
   </div>
 </footer>
 
