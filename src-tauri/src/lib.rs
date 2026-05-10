@@ -10,6 +10,7 @@ use std::thread;
 
 use plugins::{
     classifier::meta_for_sm_text,
+    indexer,
     meta::{SmMeta, SmRangeType},
 };
 use search::{
@@ -259,6 +260,16 @@ async fn open_file_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || open_path_native(path))
         .await
         .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn index_file_with_plugin(source_path: String) -> Result<indexer::IndexResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source_path = expand_home_path(source_path.trim())?;
+        indexer::index_file_with_plugin(&source_path).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -650,6 +661,7 @@ pub fn run() {
             get_results,
             get_search_status,
             home_dir,
+            index_file_with_plugin,
             list_directory,
             open_file_path,
             read_file_preview,

@@ -6,10 +6,10 @@ pub fn default_index_roots() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
+            roots.push(PathBuf::from(&home).join(".local/share/searchmonkey-3/index"));
             roots.push(
                 PathBuf::from(&home).join("Library/Application Support/Searchmonkey-3/index"),
             );
-            roots.push(PathBuf::from(home).join(".local/share/searchmonkey-3/index"));
         }
     }
 
@@ -73,6 +73,26 @@ pub fn mirror_meta_path(index_root: &Path, source_path: &Path) -> PathBuf {
         .with_file_name(format!("{source_name}.sm.meta"))
 }
 
+pub fn mirror_text_tmp_path(index_root: &Path, source_path: &Path) -> PathBuf {
+    let source_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    index_root
+        .join(mirror_relative_path(source_path))
+        .with_file_name(format!("{source_name}.sm.txt.tmp"))
+}
+
+pub fn mirror_meta_tmp_path(index_root: &Path, source_path: &Path) -> PathBuf {
+    let source_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    index_root
+        .join(mirror_relative_path(source_path))
+        .with_file_name(format!("{source_name}.sm.meta.tmp"))
+}
+
 pub fn mirror_search_path(index_root: &Path, search_path: &Path) -> PathBuf {
     index_root.join(mirror_relative_path(search_path))
 }
@@ -127,7 +147,8 @@ pub fn source_path_from_mirror_text_path_with_root(
 #[cfg(test)]
 mod tests {
     use super::{
-        mirror_meta_path, mirror_search_path, mirror_text_path,
+        mirror_meta_path, mirror_meta_tmp_path, mirror_search_path, mirror_text_path,
+        mirror_text_tmp_path,
         source_path_from_mirror_text_path_with_root,
     };
     use std::path::PathBuf;
@@ -144,6 +165,14 @@ mod tests {
         assert_eq!(
             mirror_meta_path(&root, &source),
             PathBuf::from("/index/Users/acottrell/sm-test/valid.pdf.sm.meta")
+        );
+        assert_eq!(
+            mirror_text_tmp_path(&root, &source),
+            PathBuf::from("/index/Users/acottrell/sm-test/valid.pdf.sm.txt.tmp")
+        );
+        assert_eq!(
+            mirror_meta_tmp_path(&root, &source),
+            PathBuf::from("/index/Users/acottrell/sm-test/valid.pdf.sm.meta.tmp")
         );
         assert_eq!(
             mirror_search_path(&root, PathBuf::from("/Users/acottrell/sm-test").as_path()),

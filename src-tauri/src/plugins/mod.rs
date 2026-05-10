@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod classifier;
 pub mod index_paths;
+pub mod indexer;
 pub mod manifest;
 pub mod meta;
 pub mod registry;

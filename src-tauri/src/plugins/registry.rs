@@ -101,35 +101,37 @@ impl PluginRegistry {
 }
 
 pub fn default_plugin_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            return vec![
-                PathBuf::from(home).join("Library/Application Support/Searchmonkey-3/plugins")
-            ];
+            roots.push(PathBuf::from(&home).join(".local/share/searchmonkey-3/plugins"));
+            roots.push(PathBuf::from(&home).join("Library/Application Support/searchmonkey-3/plugins"));
+            roots.push(PathBuf::from(home).join("Library/Application Support/Searchmonkey-3/plugins"));
         }
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            return vec![PathBuf::from(appdata)
-                .join("Searchmonkey-3")
-                .join("plugins")];
+            roots.push(PathBuf::from(appdata).join("Searchmonkey-3").join("plugins"));
         }
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-            return vec![PathBuf::from(config_home).join("searchmonkey-3/plugins")];
+        if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+            roots.push(PathBuf::from(&data_home).join("searchmonkey-3/plugins"));
         }
         if let Ok(home) = std::env::var("HOME") {
-            return vec![PathBuf::from(home).join(".config/searchmonkey-3/plugins")];
+            roots.push(PathBuf::from(&home).join(".local/share/searchmonkey-3/plugins"));
+            roots.push(PathBuf::from(home).join(".config/searchmonkey-3/plugins"));
         }
     }
 
-    Vec::new()
+    roots.dedup();
+    roots
 }
 
 fn find_manifest_paths(plugin_root: &Path) -> Result<Vec<PathBuf>> {
@@ -174,13 +176,7 @@ fn register_plugin(
     }
     let timeout_seconds = manifest.timeout_seconds();
 
-    let command = plugin_dir
-        .join("bin")
-        .join(platform.as_str())
-        .join(&manifest.entry.command);
-    if !command.is_file() {
-        anyhow::bail!("plugin entry binary is missing at {}", command.display());
-    }
+    let command = resolve_plugin_command(&plugin_dir, &manifest.entry.command, platform)?;
 
     Ok(RegisteredPlugin {
         id: manifest.id,
@@ -197,6 +193,31 @@ fn register_plugin(
     })
 }
 
+fn resolve_plugin_command(
+    plugin_dir: &Path,
+    command_name: &str,
+    platform: PluginPlatform,
+) -> Result<PathBuf> {
+    let flat_command = plugin_dir.join("bin").join(command_name);
+    if flat_command.is_file() {
+        return Ok(flat_command);
+    }
+
+    let platform_command = plugin_dir
+        .join("bin")
+        .join(platform.as_str())
+        .join(command_name);
+    if platform_command.is_file() {
+        return Ok(platform_command);
+    }
+
+    anyhow::bail!(
+        "plugin entry binary is missing at {} or {}",
+        flat_command.display(),
+        platform_command.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::PluginRegistry;
@@ -207,8 +228,8 @@ mod tests {
     #[test]
     fn discovers_compatible_plugin_and_indexes_by_extension() {
         let temp = tempdir().unwrap();
-        let plugin_root = temp.path().join("sm.plugin.pdf");
-        fs::create_dir_all(plugin_root.join("bin/linux-x64")).unwrap();
+        let plugin_root = temp.path().join("sm.plugin.pdf/0.1.0");
+        fs::create_dir_all(plugin_root.join("bin")).unwrap();
         fs::write(
             plugin_root.join("plugin.toml"),
             r#"
@@ -226,7 +247,7 @@ args = ["--job"]
 "#,
         )
         .unwrap();
-        fs::write(plugin_root.join("bin/linux-x64/sm-plugin-pdf"), "").unwrap();
+        fs::write(plugin_root.join("bin/sm-plugin-pdf"), "").unwrap();
 
         let report = PluginRegistry::discover_for_platform(
             &[temp.path().to_path_buf()],
@@ -248,7 +269,7 @@ args = ["--job"]
     #[test]
     fn records_issue_for_missing_binary() {
         let temp = tempdir().unwrap();
-        let plugin_root = temp.path().join("sm.plugin.pdf");
+        let plugin_root = temp.path().join("sm.plugin.pdf/0.1.0");
         fs::create_dir_all(&plugin_root).unwrap();
         fs::write(
             plugin_root.join("plugin.toml"),

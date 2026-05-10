@@ -82,6 +82,15 @@ pub fn validate_cache(source_path: &Path, plugin: &RegisteredPlugin) -> CacheVal
     validate_cache_with_plugin(source_path, Some(plugin))
 }
 
+pub fn validate_cache_paths(
+    source_path: &Path,
+    text_path: &Path,
+    meta_path: &Path,
+    plugin: Option<&RegisteredPlugin>,
+) -> CacheValidationResult {
+    validate_cache_at_paths(source_path, text_path.to_path_buf(), meta_path.to_path_buf(), plugin)
+}
+
 pub fn validate_generated_text_standalone(text_path: &Path) -> CacheValidationResult {
     let source_path = source_path_from_mirror_text_path(text_path)
         .or_else(|| source_for_sm_text(text_path))
@@ -117,6 +126,15 @@ fn validate_cache_with_plugin(
         }
     };
 
+    validate_cache_at_paths(source_path, text_path, meta_path, plugin)
+}
+
+fn validate_cache_at_paths(
+    source_path: &Path,
+    text_path: PathBuf,
+    meta_path: PathBuf,
+    plugin: Option<&RegisteredPlugin>,
+) -> CacheValidationResult {
     if !text_path.is_file() {
         return CacheValidationResult {
             status: CacheStatus::MissingText,
