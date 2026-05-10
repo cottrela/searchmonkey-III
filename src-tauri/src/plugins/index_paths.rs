@@ -33,6 +33,13 @@ pub fn default_index_roots() -> Vec<PathBuf> {
     roots
 }
 
+pub fn default_state_db_path() -> Option<PathBuf> {
+    default_index_roots()
+        .into_iter()
+        .next()
+        .and_then(|index_root| index_root.parent().map(|parent| parent.join("searchmonkey.sqlite")))
+}
+
 pub fn mirror_relative_path(source_path: &Path) -> PathBuf {
     let mut relative = PathBuf::new();
 

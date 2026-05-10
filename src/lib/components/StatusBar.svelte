@@ -40,19 +40,25 @@
 
     return labels[state];
   });
-  const pluginLabel = $derived.by(() => {
-    if (!pluginStatus) return '';
-    if (pluginStatus.paused) return 'PDF index paused';
-    if (pluginStatus.processing_count > 0) {
-      return `Indexing PDFs… ${pluginStatus.ready_count}/${pluginStatus.total_known} ready · ${pluginStatus.processing_count} processing · ${pluginStatus.queued_count} queued now · ${pluginStatus.pending_count} pending`;
-    }
-    if (pluginStatus.queued_count > 0 || pluginStatus.pending_count > 0) {
-      return `PDF index queued · ${pluginStatus.ready_count}/${pluginStatus.total_known} ready · ${pluginStatus.queued_count} queued now · ${pluginStatus.pending_count} pending`;
-    }
-    if (pluginStatus.ready_count > 0) {
-      return `PDF index: ${pluginStatus.ready_count}/${pluginStatus.total_known} ready`;
-    }
-    return '';
+  const pluginSummary = $derived.by(() => {
+    if (!pluginStatus) return null;
+    const totals = pluginStatus.plugin_summaries.reduce(
+      (acc, summary) => {
+        acc.attention += summary.attention_count;
+        acc.processing += summary.processing_count;
+        acc.queued += summary.queued_count;
+        acc.blocked += pluginStatus.issues.filter(
+          (issue) => issue.plugin_id === summary.plugin_id && issue.attempts >= 4
+        ).length;
+        return acc;
+      },
+      { attention: 0, processing: 0, queued: 0, blocked: 0 }
+    );
+    const tone = totals.blocked > 0 ? 'blocked' : totals.attention > 0 ? 'warning' : 'none';
+    return {
+      label: `Plugins: ${pluginStatus.plugin_state}`,
+      tone
+    };
   });
 </script>
 
@@ -73,8 +79,20 @@
   <div class="metrics">
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
-    {#if pluginLabel}
-      <span>{pluginLabel}</span>
+    {#if pluginSummary}
+      <span class="plugin-summary">
+        {pluginSummary.label}
+        {#if pluginSummary.tone !== 'none'}
+          <span
+            class:warning={pluginSummary.tone === 'warning'}
+            class:blocked={pluginSummary.tone === 'blocked'}
+            class="plugin-triangle"
+            aria-hidden="true"
+          >
+            ▲
+          </span>
+        {/if}
+      </span>
     {/if}
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
@@ -118,6 +136,26 @@
   .metrics span {
     color: #7d8790;
     font-weight: 550;
+  }
+
+  .plugin-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .plugin-triangle {
+    font-size: 10px;
+    line-height: 1;
+    opacity: 0.8;
+  }
+
+  .plugin-triangle.warning {
+    color: #c27a15;
+  }
+
+  .plugin-triangle.blocked {
+    color: #c24b3a;
   }
 
   .tagline {

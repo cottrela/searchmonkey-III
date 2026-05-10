@@ -1,5 +1,10 @@
 <script lang="ts">
-  import type { InstalledPluginInfo, PluginIndexStatus } from '$lib/types';
+  import type {
+    InstalledPluginInfo,
+    PluginHealthSummary,
+    PluginIndexStatus,
+    PluginIssue
+  } from '$lib/types';
 
   let {
     status,
@@ -23,13 +28,12 @@
     onRevealFailure?: (path: string) => void;
   } = $props();
 
-  let section = $state<'installed' | 'available' | 'updates'>('installed');
   let internalSelectedPluginId = $state<string | null>(null);
+  let selectedIssueCode = $state<string | null>(null);
 
   $effect(() => {
     if (selectedPluginId) {
       internalSelectedPluginId = selectedPluginId;
-      section = 'installed';
     }
   });
 
@@ -41,15 +45,81 @@
     }
     return installedPlugins[0];
   });
+  const selectedSummary = $derived.by<PluginHealthSummary | null>(() => {
+    if (!status || !selectedPlugin) return null;
+    return status.plugin_summaries.find((summary) => summary.plugin_id === selectedPlugin.id) ?? null;
+  });
+  const selectedIssues = $derived.by<PluginIssue[]>(() => {
+    if (!status || !selectedPlugin) return [];
+    let issues = status.issues.filter((issue) => issue.plugin_id === selectedPlugin.id);
+    if (selectedIssueCode) {
+      issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
+    }
+    return issues;
+  });
+  const issueCategories = $derived.by(() => {
+    if (!status || !selectedPlugin) return [];
+    const counts = new Map<string, { code: string; label: string; count: number }>();
+    for (const issue of status.issues) {
+      if (issue.plugin_id !== selectedPlugin.id) continue;
+      const existing = counts.get(issue.error_code);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+      counts.set(issue.error_code, {
+        code: issue.error_code,
+        label: labelForIssue(issue),
+        count: 1
+      });
+    }
+    return [...counts.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+  });
   const indexingLabel = $derived.by(() => {
     if (!status) return 'Idle';
-    if (status.paused) return 'Paused';
-    return status.indexing_state === 'running' ? 'Running' : status.indexing_state === 'queued' ? 'Queued' : 'Idle';
+    if (status.paused) return 'Processing paused';
+    if (status.plugin_state === 'working') return 'Working';
+    return 'Idle';
   });
 
   function selectPlugin(plugin: InstalledPluginInfo) {
     internalSelectedPluginId = plugin.id;
-    section = 'installed';
+    selectedIssueCode = null;
+  }
+
+  function labelForIssue(issue: PluginIssue): string {
+    switch (issue.error_code) {
+      case 'cloud_file_unavailable':
+        return 'Cloud file unavailable';
+      case 'pdf_open_failed':
+        return 'Could not open PDF';
+      case 'encrypted_pdf':
+        return 'Encrypted PDF';
+      case 'corrupt_pdf':
+        return 'Corrupt PDF';
+      case 'plugin_timeout':
+        return 'Plugin timed out';
+      case 'stale_source':
+        return 'Needs reprocessing';
+      case 'missing_source':
+        return 'Source file missing';
+      default:
+        return issue.message;
+    }
+  }
+
+  function retryMessage(retryAfter?: string | null): string | null {
+    if (!retryAfter) return null;
+    const retryTime = new Date(retryAfter).getTime();
+    if (!Number.isFinite(retryTime)) return 'Will retry later';
+    const deltaMs = retryTime - Date.now();
+    if (deltaMs <= 0) return 'Retry available now';
+    const minutes = Math.ceil(deltaMs / 60000);
+    if (minutes < 60) return `Retry available in ${minutes} minute${minutes === 1 ? '' : 's'}`;
+    const hours = Math.ceil(minutes / 60);
+    if (hours < 24) return `Retry available in ${hours} hour${hours === 1 ? '' : 's'}`;
+    const days = Math.ceil(hours / 24);
+    return `Retry available in ${days} day${days === 1 ? '' : 's'}`;
   }
 </script>
 
@@ -59,17 +129,8 @@
   <div class="plugins-dialog" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
     <aside class="sidebar">
       <h2 id="plugins-title">Plugins</h2>
-      <button type="button" class:active={section === 'installed'} onclick={() => (section = 'installed')}>
-        Installed
-      </button>
-      <button type="button" class:active={section === 'available'} onclick={() => (section = 'available')}>
-        Available
-      </button>
-      <button type="button" class:active={section === 'updates'} onclick={() => (section = 'updates')}>
-        Updates
-      </button>
 
-      {#if section === 'installed' && installedPlugins.length}
+      {#if installedPlugins.length}
         <div class="plugin-list">
           {#each installedPlugins as plugin}
             <button
@@ -86,111 +147,110 @@
     </aside>
 
     <section class="detail">
-      {#if section !== 'installed'}
-        <div class="empty-state">
-          <h3>{section === 'available' ? 'Available Plugins' : 'Plugin Updates'}</h3>
-          <p>{section === 'available' ? 'Install plugins by dropping signed packages into the plugin folder.' : 'No plugin updates are available.'}</p>
-          {#if section === 'available'}
-            <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugin Folder</button>
-          {/if}
-        </div>
-      {:else if selectedPlugin}
+      {#if selectedPlugin}
         <header class="detail-header">
           <div>
             <h3>{selectedPlugin.name}</h3>
-            <p>Version {selectedPlugin.version}</p>
+            <p>{selectedPlugin.enabled ? 'Enabled' : 'Disabled'}</p>
           </div>
-          <span class:enabled={selectedPlugin.enabled} class="status-pill">
-            {selectedPlugin.enabled ? 'Enabled' : 'Disabled'}
-          </span>
+
+          <details class="menu">
+            <summary>More...</summary>
+            <div class="menu-panel">
+              <button type="button" class="secondary" disabled>{selectedPlugin.enabled ? 'Disable' : 'Enable'}</button>
+              <button type="button" class="secondary" disabled>Uninstall</button>
+              <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugin Folder</button>
+              <button type="button" class="secondary" onclick={onTogglePaused}>
+                {status?.paused ? 'Resume Background Processing' : 'Pause Background Processing'}
+              </button>
+              <button type="button" class="secondary" onclick={onRefresh}>Refresh</button>
+              <button type="button" class="secondary reset-action" onclick={onRebuild}>Reset Processing Cache</button>
+            </div>
+          </details>
         </header>
 
-        <p class="description">
-          Extracts searchable text and page metadata from {selectedPlugin.handles.join(', ')} files.
-        </p>
+        <p class="description">Extracts searchable text from {selectedPlugin.handles.join(', ')} files.</p>
 
-        <dl class="detail-grid">
-          <div>
-            <dt>Capabilities</dt>
-            <dd>
-              <span>✓ Text extraction</span>
-              <span>{selectedPlugin.capabilities.layout ? '✓' : '✗'} Layout preservation</span>
-              <span>{selectedPlugin.capabilities.ocr ? '✓' : '✗'} OCR</span>
-            </dd>
-          </div>
-          <div>
-            <dt>Handles</dt>
-            <dd>{selectedPlugin.handles.join(', ')}</dd>
-          </div>
-          <div>
-            <dt>Storage</dt>
-            <dd>{selectedPlugin.root_path}</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd>{indexingLabel}</dd>
-          </div>
-        </dl>
+        <section class="panel">
+          <h4>Status</h4>
+          <p class="summary-line">
+            <strong>{selectedSummary?.indexed_count ?? 0} processed</strong>
+            <span>·</span>
+            <strong>{selectedSummary?.attention_count ?? 0} need attention</strong>
+          </p>
+          <p class="muted">{indexingLabel}</p>
+        </section>
 
-        {#if status}
-          <div class="index-summary">
-            <strong>Indexing</strong>
-            <span>{status.total_known} total</span>
-            <span>{status.ready_count} ready</span>
-            <span>{status.processing_count} processing</span>
-            <span>{status.queued_count} queued now</span>
-            <span>{status.pending_count} pending</span>
-            {#if status.failed_count > 0}
-              <span>{status.failed_count} failed</span>
-            {/if}
-          </div>
-        {/if}
+        <section class="panel">
+          <h4>Capabilities</h4>
+          <p class="chips">
+            <span>Text extraction</span>
+            <span>{selectedPlugin.capabilities.layout ? 'Layout preservation' : 'Plain text only'}</span>
+            <span>{selectedPlugin.capabilities.ocr ? 'OCR' : 'No OCR'}</span>
+          </p>
+        </section>
 
-        {#if status?.failures.length}
-          <div class="failures">
-            <div class="failures-header">
-              <strong>Failures</strong>
-              <span>{status.failed_count} files failed indexing</span>
+        <section class="panel">
+          <h4>Storage</h4>
+          <button type="button" class="linkish" onclick={onOpenFolder}>Open plugin folder</button>
+        </section>
+
+        <section class="panel issues-panel">
+          <div class="panel-header">
+            <div>
+              <h4>Issues</h4>
+              <p class="muted">{selectedSummary?.attention_count ?? 0} files need attention</p>
             </div>
-            <div class="failures-list">
-              {#each status.failures as failure}
-                <article class="failure-item">
-                  <div class="failure-main">
-                    <strong>{failure.source_path.split('/').at(-1)}</strong>
-                    <p class="failure-path">{failure.source_path}</p>
-                    <p class="failure-message">{failure.message}</p>
-                    {#if failure.next_retry_at}
-                      <p class="failure-retry">Retry after {failure.next_retry_at}</p>
+          </div>
+
+          {#if issueCategories.length}
+            <div class="issue-categories">
+              {#each issueCategories as category}
+                <button
+                  type="button"
+                  class:selected={selectedIssueCode === category.code}
+                  onclick={() => (selectedIssueCode = selectedIssueCode === category.code ? null : category.code)}
+                >
+                  <span>{category.label}</span>
+                  <strong>{category.count}</strong>
+                </button>
+              {/each}
+            </div>
+
+            <div class="issues-list">
+              {#each selectedIssues as issue}
+                <article class="issue-card">
+                  <div class="issue-copy">
+                    <strong>{issue.file_name}</strong>
+                    <p>{labelForIssue(issue)}</p>
+                    {#if retryMessage(issue.retry_after)}
+                      <p class="muted">{retryMessage(issue.retry_after)}</p>
                     {/if}
                   </div>
-                  <div class="failure-actions">
-                    <button type="button" class="secondary" onclick={() => onRetryFailure?.(failure.source_path)}>
+                  <div class="issue-actions">
+                    <button type="button" class="secondary" onclick={() => onRetryFailure?.(issue.source_path)}>
                       Retry
                     </button>
-                    <button type="button" class="secondary" onclick={() => onRevealFailure?.(failure.source_path)}>
+                    <button type="button" class="secondary" onclick={() => onRevealFailure?.(issue.source_path)}>
                       Reveal
                     </button>
-                    <details>
+                    <details class="details">
                       <summary>Details</summary>
-                      <pre>{failure.details}</pre>
+                      <div class="details-copy">
+                        <p><strong>Full path</strong><br />{issue.source_path}</p>
+                        <p><strong>Error code</strong><br />{issue.error_code}</p>
+                        <p><strong>Attempts</strong><br />{issue.attempts}</p>
+                        <p><strong>Raw plugin output</strong><br />{issue.details}</p>
+                      </div>
                     </details>
                   </div>
                 </article>
               {/each}
             </div>
-          </div>
-        {/if}
-
-        <div class="actions">
-          <button type="button" class="secondary" disabled>{selectedPlugin.enabled ? 'Disable' : 'Enable'}</button>
-          <button type="button" class="secondary" disabled>Uninstall</button>
-          <button type="button" class="secondary" onclick={onOpenFolder}>Open Folder</button>
-          <button type="button" class="secondary" onclick={onTogglePaused}>
-            {status?.paused ? 'Resume Background Indexing' : 'Pause Background Indexing'}
-          </button>
-          <button type="button" class="primary" onclick={onRebuild}>Rebuild Plugin Cache</button>
-          <button type="button" class="secondary" onclick={onRefresh}>Refresh</button>
-        </div>
+          {:else}
+            <p class="muted">No issues.</p>
+          {/if}
+        </section>
       {:else}
         <div class="empty-state">
           <h3>No Plugins Installed</h3>
@@ -223,9 +283,10 @@
     position: relative;
     z-index: 1;
     display: grid;
-    grid-template-columns: 220px minmax(480px, 1fr);
-    width: min(920px, calc(100vw - 36px));
-    min-height: min(620px, calc(100vh - 48px));
+    grid-template-columns: 220px minmax(540px, 1fr);
+    width: min(980px, calc(100vw - 36px));
+    height: min(680px, calc(100vh - 48px));
+    max-height: calc(100vh - 48px);
     border: 1px solid #d9e0d9;
     border-radius: 14px;
     background: #ffffff;
@@ -236,32 +297,43 @@
   .sidebar {
     display: grid;
     grid-auto-rows: min-content;
-    gap: 6px;
+    gap: 10px;
+    min-height: 0;
     padding: 20px 14px;
     border-right: 1px solid #e2e7e2;
     background: #f6f8f6;
+    overflow: auto;
+  }
+
+  .sidebar h2,
+  .detail-header h3,
+  .panel h4 {
+    margin: 0;
   }
 
   .sidebar h2 {
-    margin: 0 0 10px;
     padding: 0 10px;
     color: #1c232b;
     font-size: 18px;
     font-weight: 760;
   }
 
-  .sidebar > button,
+  .plugin-list {
+    display: grid;
+    gap: 4px;
+  }
+
   .plugin-list button,
-  .actions button {
+  .issue-categories button,
+  .menu-panel button {
     font: inherit;
   }
 
-  .sidebar > button,
   .plugin-list button {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-height: 34px;
+    min-height: 38px;
     border: 0;
     border-radius: 8px;
     padding: 0 10px;
@@ -270,28 +342,19 @@
     text-align: left;
   }
 
-  .sidebar > button.active,
   .plugin-list button.selected {
     background: #e7efe7;
     color: #0f6b3b;
     font-weight: 700;
   }
 
-  .plugin-list {
-    display: grid;
-    gap: 4px;
-    margin-top: 10px;
-  }
-
   .plugin-list span:last-child,
-  .status-pill {
+  .muted {
     color: #65707a;
-    font-size: 12px;
-    font-weight: 700;
+    font-size: 13px;
   }
 
-  .plugin-list span:last-child.enabled,
-  .status-pill.enabled {
+  .plugin-list span:last-child.enabled {
     color: #16834a;
   }
 
@@ -299,196 +362,209 @@
     display: grid;
     align-content: start;
     gap: 18px;
+    min-height: 0;
     padding: 24px 28px;
+    overflow: auto;
   }
 
-  .detail-header {
+  .detail-header,
+  .panel-header,
+  .issue-card {
     display: flex;
     align-items: start;
     justify-content: space-between;
     gap: 16px;
   }
 
-  .detail-header h3 {
+  .detail-header p,
+  .description,
+  .summary-line,
+  .muted,
+  .issue-copy p {
     margin: 0;
+  }
+
+  .detail-header h3 {
     color: #1c232b;
     font-size: 22px;
     font-weight: 780;
   }
 
-  .detail-header p,
-  .description,
-  .empty-state p,
-  .failures p {
-    margin: 0;
-    color: #5e6974;
-    font-size: 14px;
+  .description {
+    color: #45515d;
     line-height: 1.5;
   }
 
-  .detail-grid {
+  .panel {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px 24px;
-    margin: 0;
+    gap: 10px;
+    padding: 18px;
+    border: 1px solid #e2e7e2;
+    border-radius: 12px;
+    background: #fbfcfb;
   }
 
-  .detail-grid div {
+  .summary-line {
+    display: flex;
+    gap: 10px;
+    color: #1c232b;
+    font-size: 18px;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chips span,
+  .issue-categories button {
+    border: 1px solid #d8dfd8;
+    border-radius: 999px;
+    background: #fff;
+  }
+
+  .chips span {
+    padding: 7px 11px;
+    color: #31404d;
+    font-size: 13px;
+  }
+
+  .linkish,
+  .secondary {
+    border-radius: 10px;
+    font: inherit;
+  }
+
+  .linkish {
+    width: fit-content;
+    border: 0;
+    padding: 0;
+    color: #0f6b3b;
+    background: transparent;
+  }
+
+  .secondary {
+    min-height: 36px;
+    padding: 0 14px;
+  }
+
+  .secondary {
+    border: 1px solid #d8dfd8;
+    color: #24313d;
+    background: #fff;
+  }
+
+  .reset-action {
+    color: #6c5252;
+    border-color: #e5d9d9;
+    background: #fcf8f8;
+  }
+
+  .issues-panel {
+    gap: 14px;
+  }
+
+  .issue-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .issue-categories button {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    color: #24313d;
+  }
+
+  .issue-categories button.selected {
+    border-color: #0f6b3b;
+    color: #0f6b3b;
+    background: #edf7f1;
+  }
+
+  .issues-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .issue-card {
+    padding: 14px;
+    border: 1px solid #e2e7e2;
+    border-radius: 12px;
+    background: #fff;
+  }
+
+  .issue-copy {
     display: grid;
     gap: 6px;
   }
 
-  dt {
-    color: #77828c;
-    font-size: 12px;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-
-  dd {
-    display: grid;
-    gap: 4px;
-    margin: 0;
-    color: #1f2831;
-    font-size: 14px;
-    font-weight: 600;
-  }
-
-  .index-summary {
+  .issue-actions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    border-top: 1px solid #e5e9e5;
-    border-bottom: 1px solid #e5e9e5;
-    padding: 12px 0;
-    color: #50606c;
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  .failures {
-    display: grid;
-    gap: 8px;
-  }
-
-  .failures-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .failures strong {
-    color: #1c232b;
-    font-size: 14px;
-  }
-
-  .failures-header span,
-  .failure-path,
-  .failure-retry {
-    color: #6a7680;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .failures-list {
-    display: grid;
-    gap: 10px;
-    max-height: 240px;
-    overflow: auto;
-    padding-right: 6px;
-  }
-
-  .failure-item {
-    display: grid;
-    gap: 10px;
-    border: 1px solid #e4e8e4;
-    border-radius: 10px;
-    padding: 12px;
-    background: #fbfcfb;
-  }
-
-  .failure-main {
-    display: grid;
-    gap: 4px;
-  }
-
-  .failure-main strong {
-    font-size: 13px;
-  }
-
-  .failure-message {
-    margin: 0;
-    color: #1f2831;
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  .failure-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
     align-items: start;
-  }
-
-  details {
-    min-width: 180px;
-  }
-
-  summary {
-    color: #2f3942;
-    font-size: 12px;
-    font-weight: 700;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  pre {
-    margin: 8px 0 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: #5b6670;
-    font-size: 12px;
-    line-height: 1.45;
-  }
-
-  .actions {
-    display: flex;
+    gap: 8px;
     flex-wrap: wrap;
-    gap: 10px;
-    margin-top: auto;
+    justify-content: end;
   }
 
-  .actions button,
-  .empty-state button {
+  .details summary,
+  .menu summary {
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .details-copy {
+    margin-top: 10px;
+    color: #45515d;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .menu {
+    position: relative;
+  }
+
+  .menu summary {
     min-height: 36px;
-    border-radius: 9px;
-    padding: 0 14px;
+    border: 1px solid #d8dfd8;
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: #24313d;
+    background: #fff;
   }
 
-  .primary {
-    border: 1px solid #16834a;
-    color: #ffffff;
-    background: #16834a;
-  }
-
-  .secondary {
-    border: 1px solid #d6ddd6;
-    color: #2e3842;
-    background: #ffffff;
+  .menu-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 4;
+    display: grid;
+    gap: 8px;
+    min-width: 220px;
+    padding: 10px;
+    border: 1px solid #d8dfd8;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 12px 24px rgba(27, 35, 42, 0.14);
   }
 
   .empty-state {
     display: grid;
     align-content: center;
+    justify-items: start;
     gap: 12px;
-    min-height: 360px;
+    min-height: 320px;
   }
 
-  @media (max-width: 920px) {
+  @media (max-width: 860px) {
     .plugins-dialog {
       grid-template-columns: 1fr;
-      width: min(760px, calc(100vw - 24px));
+      width: min(720px, calc(100vw - 24px));
+      height: min(720px, calc(100vh - 24px));
+      max-height: calc(100vh - 24px);
     }
 
     .sidebar {
@@ -496,8 +572,10 @@
       border-bottom: 1px solid #e2e7e2;
     }
 
-    .detail-grid {
-      grid-template-columns: 1fr;
+    .issue-card,
+    .detail-header,
+    .panel-header {
+      display: grid;
     }
   }
 </style>

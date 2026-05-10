@@ -184,6 +184,26 @@ export type InstalledPluginInfo = {
   capabilities: PluginCapabilitySummary;
 };
 
+export type PluginHealthSummary = {
+  plugin_id: string;
+  indexed_count: number;
+  attention_count: number;
+  queued_count: number;
+  processing_count: number;
+};
+
+export type PluginIssue = {
+  source_path: string;
+  file_name: string;
+  plugin_id: string;
+  status: string;
+  error_code: string;
+  message: string;
+  details: string;
+  attempts: number;
+  retry_after?: string | null;
+};
+
 export type PluginIndexFailure = {
   source_path: string;
   plugin_id: string;
@@ -198,16 +218,11 @@ export type PluginIndexStatus = {
   enabled_plugins: string[];
   installed_plugins: InstalledPluginInfo[];
   indexing_state: string;
-  total_known: number;
-  ready_count: number;
-  processing_count: number;
-  queued_count: number;
-  pending_count: number;
-  failed_count: number;
-  skipped_count: number;
+  plugin_state: string;
   paused: boolean;
   search_active: boolean;
   scanner_running: boolean;
   worker_running: boolean;
-  failures: PluginIndexFailure[];
+  plugin_summaries: PluginHealthSummary[];
+  issues: PluginIssue[];
 };

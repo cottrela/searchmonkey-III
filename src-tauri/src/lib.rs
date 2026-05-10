@@ -708,8 +708,8 @@ pub fn run() {
             }
             let plugins_menu = plugins_menu
                 .separator()
-                .text(PAUSE_BACKGROUND_INDEXING_MENU_ID, "Pause Background Indexing")
-                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Rebuild Plugin Cache")
+                .text(PAUSE_BACKGROUND_INDEXING_MENU_ID, "Pause Background Processing")
+                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Reset Processing Cache")
                 .text(OPEN_PLUGIN_FOLDER_MENU_ID, "Open Plugin Folder")
                 .build()?;
 

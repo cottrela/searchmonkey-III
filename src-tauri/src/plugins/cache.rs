@@ -32,6 +32,7 @@ pub struct CacheValidationResult {
     pub text_path: PathBuf,
     pub meta_path: PathBuf,
     pub meta: Option<SmMeta>,
+    pub problem: Option<String>,
 }
 
 impl CacheValidationResult {
@@ -122,6 +123,7 @@ fn validate_cache_with_plugin(
                 text_path: source_path.to_path_buf(),
                 meta_path: source_path.to_path_buf(),
                 meta: None,
+                problem: Some("could not resolve expected cache paths".to_string()),
             };
         }
     };
@@ -142,6 +144,7 @@ fn validate_cache_at_paths(
             text_path,
             meta_path,
             meta: None,
+            problem: None,
         };
     }
 
@@ -152,44 +155,48 @@ fn validate_cache_at_paths(
             text_path,
             meta_path,
             meta: None,
+            problem: None,
         };
     }
 
     let source_metadata = match fs::metadata(source_path) {
         Ok(metadata) => metadata,
-        Err(_) => {
+        Err(err) => {
             return CacheValidationResult {
                 status: CacheStatus::InvalidMeta,
                 source_path: source_path.to_path_buf(),
                 text_path,
                 meta_path,
                 meta: None,
+                problem: Some(err.to_string()),
             };
         }
     };
 
     let text_metadata = match fs::metadata(&text_path) {
         Ok(metadata) => metadata,
-        Err(_) => {
+        Err(err) => {
             return CacheValidationResult {
                 status: CacheStatus::InvalidText,
                 source_path: source_path.to_path_buf(),
                 text_path,
                 meta_path,
                 meta: None,
+                problem: Some(err.to_string()),
             };
         }
     };
 
     let meta = match SmMeta::load(&meta_path) {
         Ok(meta) => meta,
-        Err(_) => {
+        Err(err) => {
             return CacheValidationResult {
                 status: CacheStatus::InvalidMeta,
                 source_path: source_path.to_path_buf(),
                 text_path,
                 meta_path,
                 meta: None,
+                problem: Some(err.to_string()),
             };
         }
     };
@@ -201,6 +208,11 @@ fn validate_cache_at_paths(
             text_path,
             meta_path,
             meta: None,
+            problem: Some(format!(
+                "source.path mismatch: recorded={} expected={}",
+                meta.source.path,
+                source_path.display()
+            )),
         };
     }
 
@@ -213,6 +225,7 @@ fn validate_cache_at_paths(
                 text_path,
                 meta_path,
                 meta: Some(meta),
+                problem: Some("failed to read source file modified time".to_string()),
             };
         }
     };
@@ -238,6 +251,7 @@ fn validate_cache_at_paths(
                 text_path,
                 meta_path,
                 meta: Some(meta),
+                problem: None,
             };
         }
     }
@@ -251,17 +265,25 @@ fn validate_cache_at_paths(
                 text_path,
                 meta_path,
                 meta: Some(meta),
+                problem: None,
             };
         }
     }
 
     if resolve_meta_path(&meta_path, &meta.text.path) != text_path {
+        let recorded_text_path = meta.text.path.clone();
+        let expected_text_path = text_path.display().to_string();
         return CacheValidationResult {
             status: CacheStatus::InvalidMeta,
             source_path: source_path.to_path_buf(),
             text_path,
             meta_path,
             meta: Some(meta),
+            problem: Some(format!(
+                "text.path mismatch: recorded={} expected={}",
+                recorded_text_path,
+                expected_text_path
+            )),
         };
     }
 
@@ -291,6 +313,7 @@ fn validate_cache_at_paths(
                 text_path,
                 meta_path,
                 meta: Some(meta),
+                problem: None,
             };
         }
     }
@@ -301,6 +324,7 @@ fn validate_cache_at_paths(
         text_path,
         meta_path,
         meta: Some(meta),
+        problem: None,
     }
 }
 

@@ -1,18 +1,20 @@
 use crate::plugins::cache::{self, CacheStatus};
 use crate::plugins::classifier::{FileClassifier, FileKind};
-use crate::plugins::failure_state::{
-    classify_failure, load_failure_state, remove_failure_state, retry_allowed, save_failure_state,
-};
+use crate::plugins::failure_state::{classify_failure, FailureDisplay};
 use crate::plugins::index_paths::default_index_roots;
 use crate::plugins::indexer::{self, IndexFailure};
 use crate::plugins::registry::{default_plugin_roots, PluginRegistry};
+use crate::plugins::state_db::{
+    is_attention_status, is_retry_ready, now_rfc3339, queued_status, ready_status,
+    retry_after_for_attempt, PluginCounts, PluginIssueRow, PluginRunRecord, StateDb,
+};
 use anyhow::Result;
 use ignore::{DirEntry, WalkBuilder};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use serde::Serialize;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -20,28 +22,22 @@ use std::time::Duration;
 use std::time::Instant;
 
 const WORKER_DELAY: Duration = Duration::from_millis(250);
-const FAILURE_HISTORY_LIMIT: usize = 20;
-const RETRY_LIMIT: u32 = 3;
+const RETRY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 const ACTIVE_QUEUE_TARGET: usize = 16;
-const RUNTIME_STATE_SCHEMA: &str = "sm.plugin-runtime.v1";
+const RUN_COUNTER_START: u64 = 1;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginIndexStatus {
     pub enabled_plugins: Vec<String>,
     pub installed_plugins: Vec<InstalledPluginInfo>,
     pub indexing_state: String,
-    pub total_known: usize,
-    pub ready_count: usize,
-    pub processing_count: usize,
-    pub queued_count: usize,
-    pub pending_count: usize,
-    pub failed_count: usize,
-    pub skipped_count: usize,
+    pub plugin_state: String,
     pub paused: bool,
     pub search_active: bool,
     pub scanner_running: bool,
     pub worker_running: bool,
-    pub failures: Vec<PluginIndexFailure>,
+    pub plugin_summaries: Vec<PluginHealthSummary>,
+    pub issues: Vec<PluginIssue>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,32 +60,25 @@ pub struct PluginCapabilitySummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct PluginIndexFailure {
-    pub source_path: String,
+pub struct PluginHealthSummary {
     pub plugin_id: String,
-    pub attempts: u32,
-    pub code: String,
+    pub indexed_count: usize,
+    pub attention_count: usize,
+    pub queued_count: usize,
+    pub processing_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginIssue {
+    pub source_path: String,
+    pub file_name: String,
+    pub plugin_id: String,
+    pub status: String,
+    pub error_code: String,
     pub message: String,
     pub details: String,
-    pub next_retry_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IndexedFileState {
-    Ready,
-    Pending,
-    Queued,
-    Processing,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone)]
-struct FileStatus {
-    plugin_id: String,
-    state: IndexedFileState,
-    attempts: u32,
-    last_error: Option<String>,
+    pub attempts: u32,
+    pub retry_after: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +86,7 @@ struct PluginJob {
     source_path: PathBuf,
     plugin_id: String,
     attempts: u32,
+    run_id: String,
 }
 
 #[derive(Default)]
@@ -109,46 +99,9 @@ struct RuntimeState {
     jobs: VecDeque<PluginJob>,
     queued_jobs: HashSet<String>,
     processing_jobs: HashSet<String>,
-    statuses: HashMap<PathBuf, FileStatus>,
-    failures: VecDeque<PluginIndexFailure>,
-    known_roots: HashSet<PathBuf>,
-    loaded_roots: HashSet<PathBuf>,
     paused: bool,
     scanner_running: bool,
     worker_running: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedRuntimeState {
-    schema: String,
-    roots: Vec<PersistedRootState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedRootState {
-    root_path: String,
-    files: Vec<PersistedFileState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedFileState {
-    source_path: String,
-    plugin_id: String,
-    state: PersistedFileKind,
-    attempts: u32,
-    code: Option<String>,
-    message: Option<String>,
-    details: Option<String>,
-    next_retry_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum PersistedFileKind {
-    Ready,
-    Pending,
-    Failed,
-    Skipped,
 }
 
 struct RuntimeInner {
@@ -156,7 +109,9 @@ struct RuntimeInner {
     wake: Condvar,
     plugin_roots: Vec<PathBuf>,
     index_roots: Vec<PathBuf>,
+    state_db: StateDb,
     search_active: AtomicUsize,
+    run_counter: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -172,12 +127,16 @@ impl Default for PluginIndexRuntime {
 
 impl PluginIndexRuntime {
     pub fn new(plugin_roots: Vec<PathBuf>, index_roots: Vec<PathBuf>) -> Self {
+        let state_db =
+            StateDb::new(&index_roots).expect("plugin sqlite state database should initialize");
         let inner = Arc::new(RuntimeInner {
             state: Mutex::new(RuntimeState::default()),
             wake: Condvar::new(),
             plugin_roots,
             index_roots,
+            state_db,
             search_active: AtomicUsize::new(0),
+            run_counter: AtomicU64::new(RUN_COUNTER_START),
         });
 
         spawn_scanner_thread(inner.clone());
@@ -188,19 +147,14 @@ impl PluginIndexRuntime {
 
     pub fn request_scan(&self, root: &Path) -> Result<()> {
         let root = root.canonicalize()?;
+        self.inner.state_db.upsert_scan_root(&root)?;
         {
             let mut state = self.inner.state.lock().expect("plugin runtime lock poisoned");
-            if !state.loaded_roots.contains(&root) {
-                load_persisted_root(&self.inner, &mut state, &root);
-                state.loaded_roots.insert(root.clone());
-            }
             if state.queued_roots.contains(&root) || state.active_roots.contains(&root) {
                 return Ok(());
             }
-
-            state.known_roots.insert(root.clone());
             state.queued_roots.insert(root.clone());
-            state.pending_roots.push_back(root);
+            state.pending_roots.push_front(root);
         }
         self.inner.wake.notify_all();
         Ok(())
@@ -217,50 +171,57 @@ impl PluginIndexRuntime {
     }
 
     pub fn status(&self) -> PluginIndexStatus {
-        let state = self.inner.state.lock().expect("plugin runtime lock poisoned");
         let installed_plugins = discovered_plugins(&self.inner.plugin_roots);
-        let mut ready_count = 0;
-        let mut processing_count = 0;
-        let mut queued_count = 0;
-        let mut pending_count = 0;
-        let mut failed_count = 0;
-        let mut skipped_count = 0;
+        let plugin_ids = installed_plugins
+            .iter()
+            .map(|plugin| plugin.id.clone())
+            .collect::<Vec<_>>();
+        let counts = self
+            .inner
+            .state_db
+            .list_plugin_counts(&plugin_ids)
+            .unwrap_or_default();
+        let issues = plugin_ids
+            .iter()
+            .flat_map(|plugin_id| self.inner.state_db.list_plugin_issues(plugin_id).unwrap_or_default())
+            .map(map_issue_row)
+            .collect::<Vec<_>>();
 
-        for status in state.statuses.values() {
-            match status.state {
-                IndexedFileState::Ready => ready_count += 1,
-                IndexedFileState::Pending => pending_count += 1,
-                IndexedFileState::Processing => processing_count += 1,
-                IndexedFileState::Queued => queued_count += 1,
-                IndexedFileState::Failed => failed_count += 1,
-                IndexedFileState::Skipped => skipped_count += 1,
-            }
-        }
-
-        let indexing_state = if state.worker_running || state.scanner_running {
+        let state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+        let indexing_state = if state.paused {
+            "paused"
+        } else if state.worker_running || state.scanner_running {
             "running"
-        } else if queued_count > 0 || processing_count > 0 || pending_count > 0 {
+        } else if !state.jobs.is_empty() || !state.pending_jobs.is_empty() {
             "queued"
         } else {
             "idle"
         };
+        let plugin_state = if state.paused
+            || (!state.worker_running
+                && !state.scanner_running
+                && state.jobs.is_empty()
+                && state.pending_jobs.is_empty())
+        {
+            "idle"
+        } else {
+            "working"
+        };
 
         PluginIndexStatus {
             enabled_plugins: installed_plugins.iter().map(|plugin| plugin.id.clone()).collect(),
-            installed_plugins,
+            installed_plugins: installed_plugins.clone(),
             indexing_state: indexing_state.to_string(),
-            total_known: state.statuses.len(),
-            ready_count,
-            processing_count,
-            queued_count,
-            pending_count,
-            failed_count,
-            skipped_count,
+            plugin_state: plugin_state.to_string(),
             paused: state.paused,
             search_active: self.inner.search_active.load(Ordering::SeqCst) > 0,
             scanner_running: state.scanner_running,
             worker_running: state.worker_running,
-            failures: state.failures.iter().cloned().collect(),
+            plugin_summaries: installed_plugins
+                .iter()
+                .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
+                .collect(),
+            issues,
         }
     }
 
@@ -279,17 +240,9 @@ impl PluginIndexRuntime {
         state.jobs.clear();
         state.queued_jobs.clear();
         state.processing_jobs.clear();
-        state.statuses.clear();
-        state.failures.clear();
         state.pending_roots.clear();
         state.queued_roots.clear();
-        state.loaded_roots.clear();
-        let mut roots = state.known_roots.iter().cloned().collect::<Vec<_>>();
-        roots.sort();
-        for root in roots {
-            state.queued_roots.insert(root.clone());
-            state.pending_roots.push_back(root);
-        }
+        let _ = self.inner.state_db.clear_all();
         self.inner.wake.notify_all();
         drop(state);
         self.status()
@@ -334,127 +287,6 @@ impl PluginIndexRuntime {
     }
 }
 
-fn persisted_state_path(index_roots: &[PathBuf]) -> Option<PathBuf> {
-    index_roots.first().map(|root| root.join(".sm-plugin-runtime.json"))
-}
-
-fn load_persisted_root(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, root: &Path) {
-    let Some(path) = persisted_state_path(&inner.index_roots) else {
-        return;
-    };
-    let Ok(contents) = fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(snapshot) = serde_json::from_str::<PersistedRuntimeState>(&contents) else {
-        return;
-    };
-    if snapshot.schema != RUNTIME_STATE_SCHEMA {
-        return;
-    }
-    let Some(root_state) = snapshot
-        .roots
-        .into_iter()
-        .find(|entry| entry.root_path == root.display().to_string())
-    else {
-        return;
-    };
-
-    for file in root_state.files {
-        let source_path = PathBuf::from(&file.source_path);
-        let indexed_state = match file.state {
-            PersistedFileKind::Ready => IndexedFileState::Ready,
-            PersistedFileKind::Pending => IndexedFileState::Pending,
-            PersistedFileKind::Failed => IndexedFileState::Failed,
-            PersistedFileKind::Skipped => IndexedFileState::Skipped,
-        };
-        state.statuses.insert(
-            source_path.clone(),
-            FileStatus {
-                plugin_id: file.plugin_id.clone(),
-                state: indexed_state,
-                attempts: file.attempts,
-                last_error: file.message.clone(),
-            },
-        );
-        if indexed_state == IndexedFileState::Failed {
-            upsert_failure(
-                &mut state.failures,
-                PluginIndexFailure {
-                    source_path: file.source_path,
-                    plugin_id: file.plugin_id,
-                    attempts: file.attempts,
-                    code: file.code.unwrap_or_else(|| "plugin_failed".to_string()),
-                    message: file.message.unwrap_or_else(|| "Plugin failed".to_string()),
-                    details: file.details.unwrap_or_default(),
-                    next_retry_at: file.next_retry_at,
-                },
-            );
-        }
-    }
-}
-
-fn persist_runtime_state(inner: &Arc<RuntimeInner>) {
-    let Some(path) = persisted_state_path(&inner.index_roots) else {
-        return;
-    };
-
-    let snapshot = {
-        let state = inner.state.lock().expect("plugin runtime lock poisoned");
-        let mut roots = state.known_roots.iter().cloned().collect::<Vec<_>>();
-        roots.sort();
-        let persisted_roots = roots
-            .into_iter()
-            .map(|root| {
-                let mut files = state
-                    .statuses
-                    .iter()
-                    .filter(|(source_path, _)| source_path.starts_with(&root))
-                    .map(|(source_path, file_status)| {
-                        let failure = state
-                            .failures
-                            .iter()
-                            .find(|failure| failure.source_path == source_path.display().to_string());
-                        PersistedFileState {
-                            source_path: source_path.display().to_string(),
-                            plugin_id: file_status.plugin_id.clone(),
-                            state: match file_status.state {
-                                IndexedFileState::Ready => PersistedFileKind::Ready,
-                                IndexedFileState::Pending
-                                | IndexedFileState::Queued
-                                | IndexedFileState::Processing => PersistedFileKind::Pending,
-                                IndexedFileState::Failed => PersistedFileKind::Failed,
-                                IndexedFileState::Skipped => PersistedFileKind::Skipped,
-                            },
-                            attempts: file_status.attempts,
-                            code: failure.map(|failure| failure.code.clone()),
-                            message: file_status.last_error.clone(),
-                            details: failure.map(|failure| failure.details.clone()),
-                            next_retry_at: failure.and_then(|failure| failure.next_retry_at.clone()),
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
-                PersistedRootState {
-                    root_path: root.display().to_string(),
-                    files,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        PersistedRuntimeState {
-            schema: RUNTIME_STATE_SCHEMA.to_string(),
-            roots: persisted_roots,
-        }
-    };
-
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
-        let _ = fs::write(path, bytes);
-    }
-}
-
 fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
     thread::spawn(move || loop {
         let root = {
@@ -474,14 +306,14 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
             root
         };
 
-        let _ = scan_root(&inner, &root);
+        let _ = inner.state_db.mark_scan_root_started(&root);
+        let scanned_count = scan_root(&inner, &root).unwrap_or(0);
+        let _ = inner.state_db.mark_scan_root_completed(&root, scanned_count);
 
         let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
         state.active_roots.remove(&root);
         state.scanner_running = !state.pending_roots.is_empty();
         inner.wake.notify_all();
-        drop(state);
-        persist_runtime_state(&inner);
     });
 }
 
@@ -490,6 +322,7 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
         let job = {
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
             loop {
+                enqueue_due_retries(&inner, &mut state);
                 promote_pending_jobs(&mut state);
                 if !state.jobs.is_empty()
                     && !state.paused
@@ -498,24 +331,34 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
                     break;
                 }
                 state.worker_running = false;
-                state = inner
+                let (next_state, _) = inner
                     .wake
-                    .wait(state)
+                    .wait_timeout(state, RETRY_SWEEP_INTERVAL)
                     .expect("plugin runtime condvar poisoned");
+                state = next_state;
             }
 
             let job = state.jobs.pop_front().expect("queued job disappeared");
             let key = job_key(&job.source_path, &job.plugin_id);
             state.queued_jobs.remove(&key);
             state.processing_jobs.insert(key);
-            if let Some(status) = state.statuses.get_mut(&job.source_path) {
-                status.state = IndexedFileState::Processing;
-                status.attempts = job.attempts;
-                status.last_error = None;
-            }
             state.worker_running = true;
             job
         };
+
+        let _ = inner
+            .state_db
+            .mark_processing(&job.source_path, &job.plugin_id, job.attempts);
+        let _ = inner.state_db.start_plugin_run(&PluginRunRecord {
+            id: job.run_id.clone(),
+            plugin_id: job.plugin_id.clone(),
+            source_path: job.source_path.display().to_string(),
+            started_at: now_rfc3339(),
+            finished_at: None,
+            status: "processing".to_string(),
+            error_code: None,
+            error_message: None,
+        });
 
         let job_key_value = job_key(&job.source_path, &job.plugin_id);
         let plugin = registered_plugin(&inner.plugin_roots, &job.plugin_id);
@@ -530,94 +373,56 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
 
         match result {
             Ok(_) => {
-                state.statuses.insert(
-                    job.source_path.clone(),
-                    FileStatus {
-                        plugin_id: job.plugin_id.clone(),
-                        state: IndexedFileState::Ready,
-                        attempts: job.attempts,
-                        last_error: None,
-                    },
-                );
-                state.failures.retain(|failure| {
-                    !(failure.source_path == job.source_path.display().to_string()
-                        && failure.plugin_id == job.plugin_id)
-                });
+                if let Ok(metadata) = fs::metadata(&job.source_path) {
+                    let source_mtime = system_time_rfc3339(
+                        metadata.modified().unwrap_or_else(|_| std::time::SystemTime::now()),
+                    );
+                    let _ = inner.state_db.mark_ready(
+                        &job.source_path,
+                        &job.plugin_id,
+                        &plugin.version,
+                        metadata.len() as i64,
+                        &source_mtime,
+                        job.attempts,
+                    );
+                }
+                let _ = inner
+                    .state_db
+                    .finish_plugin_run(&job.run_id, ready_status(), None, None);
             }
             Err(err) => {
-                let message = err.to_string();
                 if !job.source_path.exists() {
-                    state.statuses.insert(
-                        job.source_path.clone(),
-                        FileStatus {
-                            plugin_id: job.plugin_id.clone(),
-                            state: IndexedFileState::Skipped,
-                            attempts: job.attempts,
-                            last_error: Some(message),
-                        },
+                    let _ = inner
+                        .state_db
+                        .mark_missing(&job.source_path, &job.plugin_id, job.attempts);
+                    let _ = inner.state_db.finish_plugin_run(
+                        &job.run_id,
+                        "missing",
+                        Some("missing_source"),
+                        Some("Source file is missing"),
                     );
                 } else {
                     let display = classify_index_error(&err);
-                    let failure_state = save_failure_state(
-                        &inner.index_roots[0],
+                    let retry_after = retry_after_for_attempt(job.attempts);
+                    let _ = inner.state_db.mark_failed(
                         &job.source_path,
-                        &plugin,
+                        &job.plugin_id,
                         job.attempts,
-                        display.clone(),
-                    )
-                    .ok();
-                    let failure = PluginIndexFailure {
-                        source_path: job.source_path.display().to_string(),
-                        plugin_id: job.plugin_id.clone(),
-                        attempts: job.attempts,
-                        code: failure_state
-                            .as_ref()
-                            .map(|state| state.code.clone())
-                            .unwrap_or_else(|| display.code.clone()),
-                        message: failure_state
-                            .as_ref()
-                            .map(|state| state.message.clone())
-                            .unwrap_or_else(|| display.message.clone()),
-                        details: failure_state
-                            .as_ref()
-                            .map(|state| state.details.clone())
-                            .unwrap_or_else(|| display.details.clone()),
-                        next_retry_at: failure_state
-                            .as_ref()
-                            .map(|state| state.next_retry_at.clone()),
-                    };
-                    upsert_failure(&mut state.failures, failure);
-                    state.statuses.insert(
-                        job.source_path.clone(),
-                        FileStatus {
-                            plugin_id: job.plugin_id.clone(),
-                            state: IndexedFileState::Failed,
-                            attempts: job.attempts,
-                            last_error: Some(display.message),
+                        &display.code,
+                        &display.message,
+                        if display.details.is_empty() {
+                            None
+                        } else {
+                            Some(display.details.as_str())
                         },
+                        retry_after.as_deref(),
                     );
-                    if job.attempts < RETRY_LIMIT
-                        && failure_state
-                            .as_ref()
-                            .map(|saved| {
-                                retry_allowed(
-                                    saved,
-                                    &job.source_path,
-                                    &plugin,
-                                    std::time::SystemTime::now(),
-                                )
-                            })
-                            .unwrap_or(false)
-                    {
-                        enqueue_pending_job(
-                            &mut state,
-                            PluginJob {
-                                source_path: job.source_path.clone(),
-                                plugin_id: job.plugin_id.clone(),
-                                attempts: job.attempts + 1,
-                            },
-                        );
-                    }
+                    let _ = inner.state_db.finish_plugin_run(
+                        &job.run_id,
+                        "failed",
+                        Some(&display.code),
+                        Some(&display.message),
+                    );
                 }
             }
         }
@@ -625,9 +430,27 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
         state.worker_running = false;
         inner.wake.notify_all();
         drop(state);
-        persist_runtime_state(&inner);
         thread::sleep(WORKER_DELAY);
     });
+}
+
+fn enqueue_due_retries(inner: &Arc<RuntimeInner>, state: &mut RuntimeState) {
+    let Ok(rows) = inner.state_db.list_retry_ready(ACTIVE_QUEUE_TARGET) else {
+        return;
+    };
+
+    for row in rows {
+        enqueue_pending_job(
+            inner,
+            state,
+            PluginJob {
+                source_path: PathBuf::from(row.source_path),
+                plugin_id: row.plugin_id,
+                attempts: row.attempts + 1,
+                run_id: next_run_id(inner),
+            },
+        );
+    }
 }
 
 fn promote_pending_jobs(state: &mut RuntimeState) {
@@ -638,15 +461,11 @@ fn promote_pending_jobs(state: &mut RuntimeState) {
         let key = job_key(&job.source_path, &job.plugin_id);
         state.pending_job_keys.remove(&key);
         state.queued_jobs.insert(key);
-        if let Some(status) = state.statuses.get_mut(&job.source_path) {
-            status.state = IndexedFileState::Queued;
-            status.attempts = job.attempts;
-        }
         state.jobs.push_back(job);
     }
 }
 
-fn enqueue_pending_job(state: &mut RuntimeState, job: PluginJob) {
+fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job: PluginJob) {
     let key = job_key(&job.source_path, &job.plugin_id);
     if state.pending_job_keys.contains(&key)
         || state.queued_jobs.contains(&key)
@@ -655,26 +474,34 @@ fn enqueue_pending_job(state: &mut RuntimeState, job: PluginJob) {
         return;
     }
     state.pending_job_keys.insert(key);
-    state.statuses.insert(
-        job.source_path.clone(),
-        FileStatus {
-            plugin_id: job.plugin_id.clone(),
-            state: IndexedFileState::Pending,
-            attempts: job.attempts.saturating_sub(1),
-            last_error: None,
-        },
+    let _ = inner.state_db.upsert_discovered_file(
+        &job.source_path,
+        &job.plugin_id,
+        &registered_plugin(&inner.plugin_roots, &job.plugin_id).version,
+        fs::metadata(&job.source_path).map(|value| value.len() as i64).unwrap_or(0),
+        &fs::metadata(&job.source_path)
+            .and_then(|value| value.modified())
+            .map(system_time_rfc3339)
+            .unwrap_or_else(|_| now_rfc3339()),
+        queued_status(),
+        job.attempts.saturating_sub(1),
     );
     state.pending_jobs.push_back(job);
 }
 
-fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<()> {
-        let discovery = PluginRegistry::discover(&inner.plugin_roots)?;
-
-        let classifier = FileClassifier::new(&discovery.registry);
+fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<usize> {
+    let discovery = PluginRegistry::discover(&inner.plugin_roots)?;
+    let classifier = FileClassifier::new(&discovery.registry);
+    let mut seen = HashSet::new();
+    let mut supported_file_count = 0usize;
 
     if root.is_file() {
-        scan_file(inner, root, &classifier, &discovery.registry);
-        return Ok(());
+        if let Some(key) = scan_file(inner, root, &classifier, &discovery.registry) {
+            seen.insert(key);
+            supported_file_count += 1;
+        }
+        mark_missing_for_root(inner, root, &seen);
+        return Ok(supported_file_count);
     }
 
     let plugin_roots = discovery
@@ -684,7 +511,6 @@ fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<()> {
         .cloned()
         .collect::<Vec<_>>();
     let index_roots = inner.index_roots.clone();
-
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(false)
@@ -700,10 +526,34 @@ fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<()> {
         if !entry.file_type().is_some_and(|file_type| file_type.is_file()) {
             continue;
         }
-        scan_file(inner, entry.path(), &classifier, &discovery.registry);
+        if let Some(key) = scan_file(inner, entry.path(), &classifier, &discovery.registry) {
+            seen.insert(key);
+            supported_file_count += 1;
+        }
     }
 
-    Ok(())
+    mark_missing_for_root(inner, root, &seen);
+    Ok(supported_file_count)
+}
+
+fn mark_missing_for_root(inner: &Arc<RuntimeInner>, root: &Path, seen: &HashSet<String>) {
+    let Ok(rows) = inner.state_db.list_root_rows(root) else {
+        return;
+    };
+
+    for row in rows {
+        let key = format!("{}\0{}", row.source_path, row.plugin_id);
+        if seen.contains(&key) {
+            continue;
+        }
+        let source_path = PathBuf::from(&row.source_path);
+        if source_path.exists() {
+            continue;
+        }
+        let _ = inner
+            .state_db
+            .mark_missing(&source_path, &row.plugin_id, row.attempts);
+    }
 }
 
 fn scan_entry_allowed(entry: &DirEntry, plugin_roots: &[PathBuf], index_roots: &[PathBuf]) -> bool {
@@ -730,101 +580,104 @@ fn scan_file(
     path: &Path,
     classifier: &FileClassifier,
     registry: &PluginRegistry,
-) {
-    let kind = classifier.classify(path);
-    let FileKind::SupportedByPlugin { plugin_id } = kind else {
-        return;
+) -> Option<String> {
+    let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(path) else {
+        return None;
     };
-
-    let Some(plugin) = registry.by_id.get(&plugin_id) else {
-        return;
-    };
-
+    let plugin = registry.by_id.get(&plugin_id)?;
+    let metadata = fs::metadata(path).ok()?;
+    let source_size = metadata.len() as i64;
+    let source_mtime = system_time_rfc3339(metadata.modified().ok()?);
+    let key = job_key(path, &plugin.id);
+    let existing = inner.state_db.get_indexed_file(path, &plugin.id).ok().flatten();
     let validation = cache::validate_cache(path, plugin);
-    if validation.status == CacheStatus::Ready {
-        if let Some(index_root) = inner.index_roots.first() {
-            let _ = remove_failure_state(index_root, path);
-        }
-        let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-        state.statuses.insert(
-            path.to_path_buf(),
-            FileStatus {
-                plugin_id: plugin.id.clone(),
-                state: IndexedFileState::Ready,
-                attempts: 0,
-                last_error: None,
-            },
-        );
-        return;
-    }
 
-    if let Some(index_root) = inner.index_roots.first() {
-        if let Some(failure_state) = load_failure_state(index_root, path) {
-            if !retry_allowed(&failure_state, path, plugin, std::time::SystemTime::now()) {
-                let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-                state.statuses.insert(
-                    path.to_path_buf(),
-                    FileStatus {
-                        plugin_id: plugin.id.clone(),
-                        state: IndexedFileState::Failed,
-                        attempts: failure_state.attempts,
-                        last_error: Some(failure_state.message.clone()),
-                    },
+    match existing {
+        None => {
+            enqueue_job(inner, path, &plugin.id, 1);
+        }
+        Some(row) => {
+            let changed = row.source_size != source_size
+                || row.source_mtime != source_mtime
+                || row.plugin_version != plugin.version;
+            if changed {
+                let _ = inner.state_db.mark_stale(
+                    path,
+                    &plugin.id,
+                    row.attempts,
+                    Some("Source file or plugin version changed"),
                 );
-                upsert_failure(
-                    &mut state.failures,
-                    PluginIndexFailure {
-                        source_path: path.display().to_string(),
-                        plugin_id: plugin.id.clone(),
-                        attempts: failure_state.attempts,
-                        code: failure_state.code,
-                        message: failure_state.message,
-                        details: failure_state.details,
-                        next_retry_at: Some(failure_state.next_retry_at),
-                    },
-                );
-                return;
+                enqueue_job(inner, path, &plugin.id, 1);
+                return Some(key);
             }
+
+            if validation.status == CacheStatus::Ready {
+                let _ = inner.state_db.mark_ready(
+                    path,
+                    &plugin.id,
+                    &plugin.version,
+                    source_size,
+                    &source_mtime,
+                    row.attempts,
+                );
+                return Some(key);
+            }
+
+            if row.status == "failed" {
+                if row.attempts >= 4 || !is_retry_ready(row.retry_after.as_deref()) {
+                    let _ = inner.state_db.touch_checked_at(path, &plugin.id);
+                    return Some(key);
+                }
+                enqueue_job(inner, path, &plugin.id, row.attempts + 1);
+                return Some(key);
+            }
+
+            if matches!(row.status.as_str(), "stale" | "missing" | "queued" | "processing") {
+                enqueue_job(inner, path, &plugin.id, row.attempts.max(1));
+                return Some(key);
+            }
+
+            if row.status == "skipped" {
+                let _ = inner.state_db.touch_checked_at(path, &plugin.id);
+                return Some(key);
+            }
+
+            let _ = inner.state_db.mark_stale(path, &plugin.id, row.attempts, Some("Cache missing"));
+            enqueue_job(inner, path, &plugin.id, row.attempts.max(1));
         }
     }
 
-    enqueue_job(inner, path, &plugin.id);
+    Some(key)
 }
 
-fn enqueue_job(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id: &str) {
+fn enqueue_job(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id: &str, attempts: u32) {
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
     enqueue_pending_job(
+        inner,
         &mut state,
         PluginJob {
             source_path: source_path.to_path_buf(),
             plugin_id: plugin_id.to_string(),
-            attempts: 1,
+            attempts,
+            run_id: next_run_id(inner),
         },
     );
     inner.wake.notify_all();
+}
+
+fn next_run_id(inner: &RuntimeInner) -> String {
+    let next = inner.run_counter.fetch_add(1, Ordering::SeqCst);
+    format!("plugin-run-{next}")
 }
 
 fn job_key(source_path: &Path, plugin_id: &str) -> String {
     format!("{}\0{plugin_id}", source_path.display())
 }
 
-fn classify_index_error(err: &anyhow::Error) -> crate::plugins::failure_state::FailureDisplay {
+fn classify_index_error(err: &anyhow::Error) -> FailureDisplay {
     err.downcast_ref::<IndexFailure>()
         .map(|failure| failure.display.clone())
         .unwrap_or_else(|| classify_failure(&err.to_string()))
-}
-
-fn upsert_failure(failures: &mut VecDeque<PluginIndexFailure>, failure: PluginIndexFailure) {
-    if let Some(index) = failures
-        .iter()
-        .position(|existing| existing.source_path == failure.source_path && existing.plugin_id == failure.plugin_id)
-    {
-        failures.remove(index);
-    }
-    if failures.len() >= FAILURE_HISTORY_LIMIT {
-        failures.pop_front();
-    }
-    failures.push_back(failure);
 }
 
 fn registered_plugin(plugin_roots: &[PathBuf], plugin_id: &str) -> crate::plugins::registry::RegisteredPlugin {
@@ -862,143 +715,67 @@ fn discovered_plugins(plugin_roots: &[PathBuf]) -> Vec<InstalledPluginInfo> {
     plugins
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PluginIndexRuntime;
-    use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::time::Duration;
-    use tempfile::tempdir;
-
-    #[cfg(unix)]
-    fn write_plugin(root: &PathBuf, sleep_seconds: u64) {
-        fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(
-            root.join("plugin.toml"),
-            r#"
-schema = "sm.plugin.v1"
-id = "sm.plugin.pdf"
-name = "PDF Plugin"
-version = "0.1.0"
-handles = [".pdf"]
-platforms = ["macos-arm64", "macos-x64", "linux-x64"]
-timeout_seconds = 5
-
-[entry]
-kind = "process"
-command = "sm-plugin-pdf"
-args = ["--job"]
-"#,
-        )
-        .unwrap();
-
-        let script = format!(
-            r#"#!/bin/sh
-JOB_PATH="$2"
-sleep {sleep_seconds}
-python3 - "$JOB_PATH" <<'PY'
-import json
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-job = json.load(open(sys.argv[1], "r", encoding="utf-8"))
-source = Path(job["source_path"])
-text = Path(job["output_text_path"])
-meta = Path(job["output_meta_path"])
-text.parent.mkdir(parents=True, exist_ok=True)
-content = "plugin indexed text\n"
-text.write_text(content, encoding="utf-8")
-source_stat = source.stat()
-text_stat = text.stat()
-def mtime(stat):
-    return datetime.fromtimestamp(stat.st_mtime, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-meta.write_text(json.dumps({{
-    "schema": "sm.meta.v1",
-    "source": {{
-        "path": str(source),
-        "size": source_stat.st_size,
-        "mtime": mtime(source_stat)
-    }},
-    "generator": {{
-        "plugin_id": job["plugin_id"],
-        "plugin_version": "0.1.0"
-    }},
-    "text": {{
-        "path": str(text),
-        "encoding": "utf-8",
-        "length_bytes": text_stat.st_size,
-        "mtime": mtime(text_stat),
-        "offsets": "utf8-bytes"
-    }},
-    "ranges": [
-        {{"type": "document", "start": 0, "end": text_stat.st_size, "index": 1}},
-        {{"type": "page", "start": 0, "end": text_stat.st_size, "page": 1, "index": 1}}
-    ]
-}}, indent=2), encoding="utf-8")
-PY
-"#
-        );
-        let script_path = root.join("bin/sm-plugin-pdf");
-        fs::write(&script_path, script).unwrap();
-        let mut perms = fs::metadata(&script_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms).unwrap();
+fn plugin_health_summary(plugin_id: &str, counts: Option<&PluginCounts>) -> PluginHealthSummary {
+    let counts = counts.cloned().unwrap_or_default();
+    PluginHealthSummary {
+        plugin_id: plugin_id.to_string(),
+        indexed_count: counts.indexed_count,
+        attention_count: counts.attention_count,
+        queued_count: counts.queued_count,
+        processing_count: counts.processing_count,
     }
+}
 
-    #[cfg(unix)]
-    #[test]
-    fn scanner_indexes_supported_files_in_background() {
-        let temp = tempdir().unwrap();
-        let plugin_root = temp.path().join("plugins/sm.plugin.pdf/0.1.0");
-        let index_root = temp.path().join("index");
-        let source_root = temp.path().join("docs");
-        fs::create_dir_all(&source_root).unwrap();
-        fs::write(source_root.join("report.pdf"), b"%PDF-test").unwrap();
-        write_plugin(&plugin_root, 0);
-
-        let runtime = PluginIndexRuntime::new(vec![temp.path().join("plugins")], vec![index_root.clone()]);
-        runtime.request_scan(&source_root).unwrap();
-        assert!(runtime.wait_for_idle(Duration::from_secs(10)));
-
-        let status = runtime.status();
-        assert_eq!(status.ready_count, 1);
-        assert_eq!(status.failed_count, 0);
-        assert!(index_root.join("private").exists() || index_root.join("var").exists() || index_root.join("Users").exists());
+fn map_issue_row(row: PluginIssueRow) -> PluginIssue {
+    let error_code = row
+        .error_code
+        .clone()
+        .unwrap_or_else(|| row.status.clone());
+    let message = issue_message(&row);
+    let details = row
+        .error_hint
+        .or(row.error_message.clone())
+        .unwrap_or_else(|| message.clone());
+    PluginIssue {
+        file_name: Path::new(&row.source_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&row.source_path)
+            .to_string(),
+        source_path: row.source_path,
+        plugin_id: row.plugin_id,
+        status: row.status,
+        error_code,
+        message,
+        details,
+        attempts: row.attempts,
+        retry_after: row.retry_after,
     }
+}
 
-    #[cfg(unix)]
-    #[test]
-    fn worker_waits_until_search_is_idle() {
-        let temp = tempdir().unwrap();
-        let plugin_root = temp.path().join("plugins/sm.plugin.pdf/0.1.0");
-        let index_root = temp.path().join("index");
-        let source_root = temp.path().join("docs");
-        fs::create_dir_all(&source_root).unwrap();
-        let source_path = source_root.join("report.pdf");
-        fs::write(&source_path, b"%PDF-test").unwrap();
-        write_plugin(&plugin_root, 0);
-
-        let runtime = PluginIndexRuntime::new(vec![temp.path().join("plugins")], vec![index_root.clone()]);
-        runtime.search_started();
-        runtime.request_scan(&source_root).unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-        let status = runtime.status();
-        assert_eq!(status.processing_count, 0);
-        assert_eq!(status.queued_count, 1);
-
-        runtime.search_finished();
-        assert!(runtime.wait_for_idle(Duration::from_secs(10)));
-        let final_status = runtime.status();
-        assert_eq!(final_status.ready_count, 1);
-        assert_eq!(final_status.queued_count, 0);
-        let text_path = index_root
-            .join(crate::plugins::index_paths::mirror_relative_path(
-                &source_path.canonicalize().unwrap(),
-            ))
-            .with_file_name("report.pdf.sm.txt");
-        assert!(text_path.is_file());
+fn issue_message(row: &PluginIssueRow) -> String {
+    if is_attention_status(&row.status) {
+        match row.status.as_str() {
+            "stale" => return "Needs reprocessing".to_string(),
+            "missing" => return "Source file missing".to_string(),
+            "skipped" => return row
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "Skipped".to_string()),
+            _ => {}
+        }
     }
+    row.error_message
+        .clone()
+        .unwrap_or_else(|| "Plugin issue".to_string())
+}
+
+fn system_time_rfc3339(value: std::time::SystemTime) -> String {
+    let datetime = time::OffsetDateTime::from(value)
+        .to_offset(time::UtcOffset::UTC)
+        .replace_nanosecond(0)
+        .expect("zero nanoseconds should be valid");
+    datetime
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }

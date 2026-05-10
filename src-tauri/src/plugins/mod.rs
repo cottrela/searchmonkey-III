@@ -9,3 +9,4 @@ pub mod registry;
 pub mod result_mapper;
 pub mod runtime;
 pub mod search_filter;
+pub mod state_db;

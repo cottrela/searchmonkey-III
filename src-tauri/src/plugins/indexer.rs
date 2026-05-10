@@ -1,6 +1,6 @@
 use crate::plugins::cache::{self, CacheStatus};
 use crate::plugins::classifier::{FileClassifier, FileKind};
-use crate::plugins::failure_state::{classify_failure, remove_failure_state, save_failure_state, FailureDisplay};
+use crate::plugins::failure_state::{classify_failure, FailureDisplay};
 use crate::plugins::index_paths::{
     default_index_roots, mirror_meta_path, mirror_meta_tmp_path, mirror_text_path,
     mirror_text_tmp_path,
@@ -123,10 +123,17 @@ pub fn index_file_with_plugin_paths(
     if let Err(err) = run_result {
         let _ = cleanup_tmp_path(&output_text_tmp_path);
         let _ = cleanup_tmp_path(&output_meta_tmp_path);
-        let display = classify_failure(&err.to_string());
-        let _ = save_failure_state(&index_root, &source_path, plugin, 1, display.clone());
-        return Err(IndexFailure { display }.into());
+        return Err(IndexFailure {
+            display: classify_failure(&err.to_string()),
+        }
+        .into());
     }
+
+    normalize_generated_meta_text_path(
+        &output_meta_tmp_path,
+        &output_text_tmp_path,
+        Some(&output_text_final_path),
+    )?;
 
     let validation = cache::validate_cache_paths(
         &source_path,
@@ -137,10 +144,17 @@ pub fn index_file_with_plugin_paths(
     if validation.status != CacheStatus::Ready {
         let _ = cleanup_tmp_path(&output_text_tmp_path);
         let _ = cleanup_tmp_path(&output_meta_tmp_path);
-        bail!(
-            "plugin outputs failed validation: {}",
-            cache_status_name(&validation.status)
-        );
+        if let Some(problem) = validation.problem.as_deref() {
+            bail!(
+                "plugin outputs failed validation: {} ({problem})",
+                cache_status_name(&validation.status)
+            );
+        } else {
+            bail!(
+                "plugin outputs failed validation: {}",
+                cache_status_name(&validation.status)
+            );
+        }
     }
 
     rewrite_promoted_meta_paths(
@@ -151,8 +165,6 @@ pub fn index_file_with_plugin_paths(
 
     promote_output(&output_text_tmp_path, &output_text_final_path)?;
     promote_output(&output_meta_tmp_path, &output_meta_final_path)?;
-    let _ = remove_failure_state(&index_root, &source_path);
-
     Ok(IndexResult {
         outcome: IndexOutcome::Indexed,
         plugin_id: plugin.id.clone(),
@@ -276,10 +288,18 @@ fn promote_output(tmp_path: &Path, final_path: &Path) -> Result<()> {
 }
 
 fn rewrite_promoted_meta_paths(meta_tmp_path: &Path, text_tmp_path: &Path, text_final_path: &Path) -> Result<()> {
-    let contents = fs::read_to_string(meta_tmp_path)
-        .with_context(|| format!("failed reading plugin meta output {}", meta_tmp_path.display()))?;
+    normalize_generated_meta_text_path(meta_tmp_path, text_final_path, Some(text_tmp_path))
+}
+
+fn normalize_generated_meta_text_path(
+    meta_path: &Path,
+    desired_text_path: &Path,
+    alternate_text_path: Option<&Path>,
+) -> Result<()> {
+    let contents = fs::read_to_string(meta_path)
+        .with_context(|| format!("failed reading plugin meta output {}", meta_path.display()))?;
     let mut json: serde_json::Value = serde_json::from_str(&contents)
-        .with_context(|| format!("failed parsing plugin meta output {}", meta_tmp_path.display()))?;
+        .with_context(|| format!("failed parsing plugin meta output {}", meta_path.display()))?;
 
     let Some(text) = json.get_mut("text").and_then(|value| value.as_object_mut()) else {
         bail!("plugin meta output is missing text object");
@@ -290,20 +310,80 @@ fn rewrite_promoted_meta_paths(meta_tmp_path: &Path, text_tmp_path: &Path, text_
         .and_then(|value| value.as_str())
         .context("plugin meta output is missing text.path")?;
 
-    if current_path == text_tmp_path.to_string_lossy() {
+    let resolved_current = normalize_lexical_path(resolve_recorded_meta_path(meta_path, current_path));
+    let desired_normalized = normalize_lexical_path(desired_text_path.to_path_buf());
+    let alternate_normalized = alternate_text_path.map(|path| normalize_lexical_path(path.to_path_buf()));
+
+    if resolved_current == desired_normalized
+        || alternate_normalized
+            .as_ref()
+            .is_some_and(|alternate| *alternate == resolved_current)
+        || sibling_name_matches(&resolved_current, desired_text_path, alternate_text_path)
+    {
         text.insert(
             "path".to_string(),
-            serde_json::Value::String(text_final_path.display().to_string()),
+            serde_json::Value::String(desired_text_path.display().to_string()),
         );
-        fs::write(meta_tmp_path, serde_json::to_vec_pretty(&json)?).with_context(|| {
+        fs::write(meta_path, serde_json::to_vec_pretty(&json)?).with_context(|| {
             format!(
                 "failed rewriting plugin meta output {} for promotion",
-                meta_tmp_path.display()
+                meta_path.display()
             )
         })?;
     }
 
     Ok(())
+}
+
+fn sibling_name_matches(
+    resolved_current: &Path,
+    desired_text_path: &Path,
+    alternate_text_path: Option<&Path>,
+) -> bool {
+    let Some(current_parent) = resolved_current.parent() else {
+        return false;
+    };
+    let Some(desired_parent) = desired_text_path.parent() else {
+        return false;
+    };
+    if normalize_lexical_path(current_parent.to_path_buf())
+        != normalize_lexical_path(desired_parent.to_path_buf())
+    {
+        return false;
+    }
+
+    let current_name = resolved_current.file_name();
+    let desired_name = desired_text_path.file_name();
+    let alternate_name = alternate_text_path.and_then(|path| path.file_name());
+    current_name.is_some() && (current_name == desired_name || current_name == alternate_name)
+}
+
+fn resolve_recorded_meta_path(meta_path: &Path, recorded_path: &str) -> PathBuf {
+    let recorded = Path::new(recorded_path);
+    if recorded.is_absolute() {
+        return recorded.to_path_buf();
+    }
+
+    meta_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(recorded)
+}
+
+fn normalize_lexical_path(path: PathBuf) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn next_job_id() -> String {
@@ -330,7 +410,9 @@ fn cache_status_name(status: &CacheStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{index_file_with_plugin_paths, IndexOutcome};
+    use super::{
+        index_file_with_plugin_paths, normalize_generated_meta_text_path, IndexOutcome,
+    };
     use crate::plugins::index_paths::mirror_text_path;
     use std::fs;
     use std::path::Path;
@@ -443,5 +525,50 @@ PY
         assert!(meta.contains(&format!("\"path\": \"{}\"", result.text_path)));
         assert!(!Path::new(&format!("{}.tmp", result.text_path)).exists());
         assert!(!Path::new(&format!("{}.tmp", result.meta_path)).exists());
+    }
+
+    #[test]
+    fn normalizes_meta_path_from_final_to_tmp_and_back() {
+        let temp = tempdir().unwrap();
+        let meta_path = temp.path().join("report.pdf.sm.meta.tmp");
+        let tmp_text_path = temp.path().join("report.pdf.sm.txt.tmp");
+        let final_text_path = temp.path().join("report.pdf.sm.txt");
+
+        fs::write(
+            &meta_path,
+            format!(
+                r#"{{
+  "schema": "sm.meta.v1",
+  "source": {{
+    "path": "/tmp/report.pdf",
+    "size": 3,
+    "mtime": "2026-05-10T12:00:00Z"
+  }},
+  "generator": {{
+    "plugin_id": "sm.plugin.pdf",
+    "plugin_version": "0.1.0"
+  }},
+  "text": {{
+    "path": "{}",
+    "encoding": "utf-8",
+    "length_bytes": 11,
+    "offsets": "utf8-bytes"
+  }},
+  "ranges": [{{ "type": "document", "start": 0, "end": 11, "index": 1 }}]
+}}"#,
+                final_text_path.display()
+            ),
+        )
+        .unwrap();
+
+        normalize_generated_meta_text_path(&meta_path, &tmp_text_path, Some(&final_text_path))
+            .unwrap();
+        let tmp_contents = fs::read_to_string(&meta_path).unwrap();
+        assert!(tmp_contents.contains(&format!(r#""path": "{}""#, tmp_text_path.display())));
+
+        normalize_generated_meta_text_path(&meta_path, &final_text_path, Some(&tmp_text_path))
+            .unwrap();
+        let final_contents = fs::read_to_string(&meta_path).unwrap();
+        assert!(final_contents.contains(&format!(r#""path": "{}""#, final_text_path.display())));
     }
 }
