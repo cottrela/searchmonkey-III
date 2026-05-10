@@ -27,6 +27,7 @@ async-trait = "0.1"
 grep = "0.3"
 ignore = "0.4"
 libc = "0.2"
+sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 toml = "0.8"
 url = "2"

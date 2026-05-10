@@ -23,7 +23,7 @@ pub struct RegisteredPlugin {
     pub permissions: Vec<PluginPermission>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PluginRegistry {
     pub by_id: HashMap<String, RegisteredPlugin>,
     pub by_extension: HashMap<String, Vec<String>>,
@@ -36,13 +36,17 @@ pub struct PluginDiscoveryIssue {
     pub message: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PluginDiscoveryReport {
     pub registry: PluginRegistry,
     pub issues: Vec<PluginDiscoveryIssue>,
 }
 
 impl PluginRegistry {
+    pub fn discover_default() -> Result<PluginDiscoveryReport> {
+        Self::discover(&default_plugin_roots())
+    }
+
     pub fn discover(plugin_roots: &[PathBuf]) -> Result<PluginDiscoveryReport> {
         let platform = current_platform()?;
         Self::discover_for_platform(plugin_roots, platform)
@@ -55,6 +59,9 @@ impl PluginRegistry {
         let mut report = PluginDiscoveryReport::default();
 
         for plugin_root in plugin_roots {
+            if !plugin_root.exists() {
+                continue;
+            }
             for manifest_path in find_manifest_paths(plugin_root)? {
                 let plugin_dir = manifest_path
                     .parent()
@@ -91,6 +98,38 @@ impl PluginRegistry {
             .and_then(|plugin_ids| plugin_ids.first())
             .and_then(|plugin_id| self.by_id.get(plugin_id))
     }
+}
+
+pub fn default_plugin_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return vec![
+                PathBuf::from(home).join("Library/Application Support/Searchmonkey-3/plugins")
+            ];
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return vec![PathBuf::from(appdata)
+                .join("Searchmonkey-3")
+                .join("plugins")];
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+            return vec![PathBuf::from(config_home).join("searchmonkey-3/plugins")];
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return vec![PathBuf::from(home).join(".config/searchmonkey-3/plugins")];
+        }
+    }
+
+    Vec::new()
 }
 
 fn find_manifest_paths(plugin_root: &Path) -> Result<Vec<PathBuf>> {

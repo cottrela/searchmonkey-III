@@ -40,6 +40,7 @@ pub struct SmText {
     pub path: String,
     pub encoding: String,
     pub length_bytes: Option<u64>,
+    pub mtime: Option<String>,
     pub hash: Option<String>,
     pub offsets: Option<String>,
 }
@@ -53,6 +54,7 @@ pub enum SmRangeType {
     Heading,
     Paragraph,
     Block,
+    PageBreak,
     ListItem,
     Table,
     Row,
@@ -131,6 +133,9 @@ impl SmMeta {
                 bail!("text.offsets must be utf8-bytes when present");
             }
         }
+        if let Some(mtime) = &self.text.mtime {
+            parse_rfc3339(mtime).context("text.mtime must be RFC 3339")?;
+        }
         validate_optional_sha256(&self.text.hash, "text.hash")?;
 
         for (index, range) in self.ranges.iter().enumerate() {
@@ -162,7 +167,7 @@ impl SmMeta {
             .ranges
             .iter()
             .filter(|range| range.start <= offset && offset < range.end)
-            .min_by_key(|range| range.end - range.start)?
+            .min_by_key(|range| (range.end - range.start, range_priority(&range.kind)))?
             .clone();
 
         let page = self
@@ -174,6 +179,25 @@ impl SmMeta {
             .cloned();
 
         Some(RangeContext { page, smallest })
+    }
+}
+
+fn range_priority(kind: &SmRangeType) -> u8 {
+    match kind {
+        SmRangeType::Block => 0,
+        SmRangeType::PageBreak => 1,
+        SmRangeType::ListItem => 2,
+        SmRangeType::Heading => 3,
+        SmRangeType::Paragraph => 4,
+        SmRangeType::Section => 5,
+        SmRangeType::Cell => 6,
+        SmRangeType::Row => 7,
+        SmRangeType::Table => 8,
+        SmRangeType::Footnote => 9,
+        SmRangeType::Annotation => 10,
+        SmRangeType::ImageAlt => 11,
+        SmRangeType::Page => 12,
+        SmRangeType::Document => 13,
     }
 }
 

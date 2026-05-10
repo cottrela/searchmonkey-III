@@ -8,11 +8,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use plugins::{
+    classifier::meta_for_sm_text,
+    meta::{SmMeta, SmRangeType},
+};
 use search::{
     ripgrep::RipgrepSidecarProvider,
     runner::{run_rg_child, SearchRunOptions},
-    FilePreview, FilePreviewLine, SearchMatch, SearchProvider, SearchRequest, SearchState,
-    SearchStatus,
+    FilePreview, FilePreviewLine, FilePreviewPageBreak, SearchMatch, SearchProvider, SearchRequest,
+    SearchState, SearchStatus,
 };
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
@@ -93,12 +97,26 @@ fn read_file_preview_range(
     end_line: u64,
 ) -> Result<FilePreview, String> {
     let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+    let preview_meta = load_preview_meta(Path::new(&path));
     let mut lines = Vec::new();
     let mut saw_after_window = false;
+    let mut buffer = Vec::new();
+    let mut offset = 0u64;
+    let mut number = 0u64;
 
-    for (index, line) in reader.lines().enumerate() {
-        let number = index as u64 + 1;
+    loop {
+        buffer.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut buffer)
+            .map_err(|err| err.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        number += 1;
+        let line_start = offset;
+        offset += bytes_read as u64;
 
         if number > PREVIEW_MAX_SCAN_LINES {
             return Err(
@@ -107,7 +125,6 @@ fn read_file_preview_range(
         }
 
         if number < start_line {
-            line.map_err(|err| err.to_string())?;
             continue;
         }
 
@@ -116,13 +133,18 @@ fn read_file_preview_range(
             break;
         }
 
-        let text = line.map_err(|err| err.to_string())?;
+        let trimmed = trim_line_ending(&buffer);
+        let text = String::from_utf8_lossy(trimmed).to_string();
 
         lines.push(FilePreviewLine {
             number,
             text,
             is_match: false,
             match_ranges: Vec::new(),
+            page_breaks: preview_meta
+                .as_ref()
+                .map(|meta| page_breaks_for_line(meta, line_start, trimmed.len() as u64))
+                .unwrap_or_default(),
         });
     }
 
@@ -135,6 +157,41 @@ fn read_file_preview_range(
         lines,
         truncated: start_line > 1 || saw_after_window,
     })
+}
+
+fn trim_line_ending(bytes: &[u8]) -> &[u8] {
+    if bytes.ends_with(b"\r\n") {
+        &bytes[..bytes.len() - 2]
+    } else if bytes.ends_with(b"\n") {
+        &bytes[..bytes.len() - 1]
+    } else {
+        bytes
+    }
+}
+
+fn load_preview_meta(path: &Path) -> Option<SmMeta> {
+    let meta_path = meta_for_sm_text(path)?;
+    SmMeta::load(meta_path).ok()
+}
+
+fn page_breaks_for_line(
+    meta: &SmMeta,
+    line_start: u64,
+    line_length: u64,
+) -> Vec<FilePreviewPageBreak> {
+    let line_end = line_start + line_length;
+    let mut page_breaks = meta
+        .ranges
+        .iter()
+        .filter(|range| range.kind == SmRangeType::PageBreak)
+        .filter(|range| line_start <= range.start && range.start < line_end)
+        .map(|range| FilePreviewPageBreak {
+            page: range.page,
+            label: range.label.clone(),
+        })
+        .collect::<Vec<_>>();
+    page_breaks.sort_by_key(|page_break| page_break.page.unwrap_or(0));
+    page_breaks
 }
 
 #[tauri::command]
@@ -362,6 +419,7 @@ async fn start_search(
                 search_id,
                 result_limit,
                 modified_after,
+                plugin_registry: provider.plugin_registry(),
             },
             |result, total_matches| {
                 if let Ok(mut results) = session.results.lock() {

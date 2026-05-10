@@ -1,3 +1,4 @@
+use searchmonkey_lib::plugins::registry::PluginRegistry;
 use searchmonkey_lib::search::runner::{run_rg_child, SearchRunOptions};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
@@ -393,6 +394,7 @@ fn read_with_shared_runner(
             search_id: 9_999,
             result_limit,
             modified_after: None,
+            plugin_registry: Arc::new(PluginRegistry::default()),
         },
         |_result, total_matches| {
             stored += 1;

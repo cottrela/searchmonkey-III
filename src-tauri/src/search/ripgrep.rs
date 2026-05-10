@@ -1,10 +1,17 @@
 use super::{debug_logging_enabled, SearchMatch, SearchProvider, SearchRequest, SearchSubmatch};
+use crate::plugins::{
+    index_paths::{default_index_roots, mirror_search_path},
+    registry::PluginRegistry,
+    result_mapper,
+    search_filter::SearchFilter,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 #[cfg(windows)]
@@ -15,16 +22,32 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct RipgrepSidecarProvider {
     _app_handle: tauri::AppHandle,
+    plugin_registry: Arc<PluginRegistry>,
 }
 
 impl RipgrepSidecarProvider {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
+        let discovery = PluginRegistry::discover_default().unwrap_or_default();
+        if debug_logging_enabled() {
+            for issue in &discovery.issues {
+                eprintln!(
+                    "searchmonkey plugin discovery issue: {}: {}",
+                    issue.manifest_path.display(),
+                    issue.message
+                );
+            }
+        }
         Self {
             _app_handle: app_handle,
+            plugin_registry: Arc::new(discovery.registry),
         }
     }
 
-    pub fn args(request: SearchRequest) -> Vec<String> {
+    pub fn plugin_registry(&self) -> Arc<PluginRegistry> {
+        self.plugin_registry.clone()
+    }
+
+    pub fn args(request: SearchRequest, plugin_registry: &PluginRegistry) -> Vec<String> {
         let mut args = vec![
             "--json".to_string(),
             "--line-number".to_string(),
@@ -63,6 +86,9 @@ impl RipgrepSidecarProvider {
             ignore_build_artifacts,
             ..
         } = request;
+        let path = expand_search_path(&path);
+
+        let plugin_filter = SearchFilter::for_search_root(Path::new(&path), plugin_registry);
 
         for pattern in include_patterns {
             args.push("--glob".to_string());
@@ -126,15 +152,22 @@ impl RipgrepSidecarProvider {
             args.push("--no-ignore".to_string());
         }
 
+        plugin_filter.apply_to_args(&mut args);
         args.push(query);
-        args.push(path);
+        args.push(path.clone());
+        for index_root in default_index_roots() {
+            let mirror_path = mirror_search_path(&index_root, Path::new(&path));
+            if mirror_path.exists() {
+                args.push(mirror_path.to_string_lossy().to_string());
+            }
+        }
 
         args
     }
 
     pub fn spawn(&self, request: SearchRequest) -> Result<Child> {
         let program = sidecar_path("rg")?;
-        let args = Self::args(request);
+        let args = Self::args(request, &self.plugin_registry);
 
         if debug_logging_enabled() {
             eprintln!(
@@ -189,15 +222,26 @@ impl RipgrepSidecarProvider {
             .as_array()
             .map(|items| parse_submatches(items, &line_text))
             .unwrap_or_default();
+        let first_byte_offset = data["submatches"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item["start"].as_u64());
+        let absolute_offset = data["absolute_offset"]
+            .as_u64()
+            .map(|offset| offset + first_byte_offset.unwrap_or(0));
 
         Some(SearchMatch {
             path: data["path"]["text"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
+            preview_path: None,
+            display_context: None,
+            plugin_id: None,
             line_number: data["line_number"].as_u64().unwrap_or(0),
             line_text,
             submatches,
+            absolute_offset,
             file_size: None,
             modified_secs: None,
         })
@@ -331,7 +375,12 @@ impl SearchProvider for RipgrepSidecarProvider {
 
             for line in reader.split(b'\n') {
                 let line = line?;
-                if let Some(mut result) = Self::parse_match(&line) {
+                if let Some(result) = Self::parse_match(&line) {
+                    let Some(mut result) =
+                        result_mapper::map_search_match(result, &self.plugin_registry)
+                    else {
+                        continue;
+                    };
                     add_file_metadata(&mut result);
                     if !matches_modified_filter(&result, modified_after) {
                         continue;
@@ -378,4 +427,36 @@ pub fn sidecar_path(program: &str) -> Result<PathBuf> {
 
 fn normalize_glob_pattern(pattern: String) -> String {
     pattern.replace('\\', "/")
+}
+
+fn expand_search_path(path: &str) -> String {
+    if path == "~" {
+        return home_dir().unwrap_or_else(|| path.to_string());
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home_dir()
+            .map(|home| Path::new(&home).join(rest).to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+    }
+
+    path.to_string()
+}
+
+fn home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_search_path;
+
+    #[test]
+    fn expands_tilde_search_path() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        assert_eq!(expand_search_path("~"), home);
+        assert!(expand_search_path("~/sm-test").ends_with("/sm-test"));
+    }
 }

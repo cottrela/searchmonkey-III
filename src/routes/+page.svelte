@@ -735,6 +735,10 @@
     return a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text;
   }
 
+  function previewTargetPath(match: SearchMatch) {
+    return match.preview_path?.trim() || match.path;
+  }
+
   function previewFor(filePath: string, filePreview: PreviewState['filePreview']) {
     const activeSelection = selected;
     const viewportStart = filePreview?.start_line ?? previewViewport?.start ?? 0;
@@ -1237,8 +1241,9 @@
   }
 
   function updateViewportForMatch(match: SearchMatch) {
-    const currentStart = previewViewport?.path === match.path ? previewViewport.start : 0;
-    const currentEnd = previewViewport?.path === match.path ? previewViewport.end : 0;
+    const targetPath = previewTargetPath(match);
+    const currentStart = previewViewport?.path === targetPath ? previewViewport.start : 0;
+    const currentEnd = previewViewport?.path === targetPath ? previewViewport.end : 0;
     const selectedLine = match.line_number;
     const isVisible =
       selectedLine >= currentStart + PREVIEW_EDGE_MARGIN &&
@@ -1251,7 +1256,7 @@
     const start = Math.max(1, selectedLine - PREVIEW_CONTEXT_LINES);
     const end = selectedLine + PREVIEW_CONTEXT_LINES;
 
-    return { path: match.path, start, end };
+    return { path: targetPath, start, end };
   }
 
   function clampPreviewWidth(width: number) {
@@ -1362,7 +1367,7 @@
       return;
     }
 
-    const filePath = selected.path;
+    const filePath = previewTargetPath(selected);
     const nextViewport = updateViewportForMatch(selected);
 
     if (!nextViewport) return;
@@ -1385,13 +1390,15 @@
       'Preview is taking too long. Search is still usable; try another result or a smaller file.'
     )
       .then((filePreview) => {
-        if (loadId !== previewLoadId || selected?.path !== filePath) return;
+        if (loadId !== previewLoadId) return;
+        if (!selected || previewTargetPath(selected) !== filePath) return;
         previewData = filePreview;
         previewIsLoading = false;
         scheduleResultFlush(0);
       })
       .catch((error) => {
-        if (loadId !== previewLoadId || selected?.path !== filePath) return;
+        if (loadId !== previewLoadId) return;
+        if (!selected || previewTargetPath(selected) !== filePath) return;
         previewError = normalizeError(error);
         previewIsLoading = false;
         scheduleResultFlush(0);

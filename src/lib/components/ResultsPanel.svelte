@@ -173,9 +173,14 @@
     return Boolean(a && a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text);
   }
 
+  function displayLineText(text: string) {
+    return text.replace(/\f/g, ' ');
+  }
+
   function snippetParts(match: SearchMatch, term: string): SnippetPart[] {
-    const spans = match.submatches?.length ? match.submatches : fallbackSpans(match.line_text, term);
-    const snippet = snippetWindow(match.line_text, spans);
+    const lineText = displayLineText(match.line_text);
+    const spans = match.submatches?.length ? match.submatches : fallbackSpans(lineText, term);
+    const snippet = snippetWindow(lineText, spans);
     const visibleSpans = spans
       .map((span) => ({
         start: Math.max(span.start, snippet.start) - snippet.start,
@@ -183,7 +188,7 @@
       }))
       .filter((span) => span.start < span.end);
 
-    const parts = splitSnippet(match.line_text.slice(snippet.start, snippet.end), visibleSpans);
+    const parts = splitSnippet(lineText.slice(snippet.start, snippet.end), visibleSpans);
 
     if (snippet.clippedStart) {
       parts.unshift({ text: '...', hit: false });

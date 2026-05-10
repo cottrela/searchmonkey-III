@@ -36,9 +36,17 @@ pub struct SearchRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchMatch {
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
     pub line_number: u64,
     pub line_text: String,
     pub submatches: Vec<SearchSubmatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub absolute_offset: Option<u64>,
     pub file_size: Option<u64>,
     pub modified_secs: Option<u64>,
 }
@@ -59,11 +67,21 @@ pub struct FilePreview {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct FilePreviewPageBreak {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FilePreviewLine {
     pub number: u64,
     pub text: String,
     pub is_match: bool,
     pub match_ranges: Vec<SearchSubmatch>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub page_breaks: Vec<FilePreviewPageBreak>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

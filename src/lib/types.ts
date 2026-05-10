@@ -22,9 +22,13 @@ export type SearchRequest = {
 
 export type SearchMatch = {
   path: string;
+  preview_path?: string | null;
+  display_context?: string | null;
+  plugin_id?: string | null;
   line_number: number;
   line_text: string;
   submatches: SearchSubmatch[];
+  absolute_offset?: number | null;
   file_size: number | null;
   modified_secs: number | null;
 };
@@ -66,6 +70,12 @@ export type FilePreviewLine = {
   text: string;
   is_match: boolean;
   match_ranges: SearchSubmatch[];
+  page_breaks?: FilePreviewPageBreak[];
+};
+
+export type FilePreviewPageBreak = {
+  page?: number | null;
+  label?: string | null;
 };
 
 export type SearchMode = 'literal' | 'regex';

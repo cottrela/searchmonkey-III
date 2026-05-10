@@ -1,12 +1,15 @@
 use super::{debug_logging_enabled, ripgrep, SearchMatch, SearchState};
+use crate::plugins::{registry::PluginRegistry, result_mapper};
 use std::io::{BufRead, BufReader, Read};
 use std::process::Child;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct SearchRunOptions {
     pub search_id: u64,
     pub result_limit: usize,
     pub modified_after: Option<u64>,
+    pub plugin_registry: Arc<PluginRegistry>,
 }
 
 pub struct SearchRunSummary {
@@ -59,7 +62,12 @@ where
             }
         };
 
-        let Some(mut result) = ripgrep::RipgrepSidecarProvider::parse_match(&line) else {
+        let Some(result) = ripgrep::RipgrepSidecarProvider::parse_match(&line) else {
+            continue;
+        };
+
+        let Some(mut result) = result_mapper::map_search_match(result, &options.plugin_registry)
+        else {
             continue;
         };
 

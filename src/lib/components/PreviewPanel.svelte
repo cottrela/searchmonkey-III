@@ -5,6 +5,7 @@
   import { filename, parentPath } from '$lib/paths';
 
   type Segment = {
+    kind: 'text';
     text: string;
     match: boolean;
     active: boolean;
@@ -16,11 +17,21 @@
     isMatch: boolean;
     isActive: boolean;
     matchRanges: Array<{ start: number; end: number }>;
+    pageBreaks: Array<{ page?: number | null; label?: string | null }>;
   };
 
-  type RenderLine = SourceLine & {
-    segments: Segment[];
-  };
+  type RenderLine =
+    | (SourceLine & {
+        key: string;
+        kind: 'text';
+        segments: Segment[];
+      })
+    | {
+        key: string;
+        kind: 'page-break';
+        pageNumber: number;
+        label: string;
+      };
 
   const WRAP_LIMIT = 50_000;
 
@@ -71,12 +82,7 @@
   );
   const canWrap = $derived(previewTextLength < WRAP_LIMIT);
   const effectiveWrap = $derived(wrapLines && canWrap);
-  const renderLines = $derived.by(() =>
-    sourceLines.map((line) => ({
-      ...line,
-      segments: splitLine(line.text, line.matchRanges, line.isActive)
-    }))
-  );
+  const renderLines = $derived.by(() => buildRenderLines(sourceLines));
   const activeMatchText = $derived(preview.activeMatch?.line_text ?? '');
   const activeMatchOnly = $derived.by(() => {
     const match = preview.activeMatch;
@@ -107,7 +113,8 @@
         text: line.text,
         isMatch: matchesByLine.has(line.number),
         isActive: active?.line_number === line.number,
-        matchRanges: mergeMatchRanges(matchesByLine.get(line.number) ?? [])
+        matchRanges: mergeMatchRanges(matchesByLine.get(line.number) ?? []),
+        pageBreaks: line.page_breaks ?? []
       })) ?? []
     );
   }
@@ -131,12 +138,64 @@
     return merged;
   }
 
-  function splitLine(
+  function buildRenderLines(lines: SourceLine[]): RenderLine[] {
+    const rendered: RenderLine[] = [];
+
+    for (const line of lines) {
+      const { lines: splitLines } = splitLine(line);
+      rendered.push(...splitLines);
+    }
+
+    return rendered;
+  }
+
+  function splitLine(line: SourceLine): { lines: RenderLine[] } {
+    const pieces = line.text.split('\f');
+    const rendered: RenderLine[] = [];
+    let pieceStart = 0;
+
+    for (let index = 0; index < pieces.length; index += 1) {
+      const piece = pieces[index];
+      const pieceEnd = pieceStart + piece.length;
+      rendered.push({
+        ...line,
+        key: `${line.number}:${index}`,
+        kind: 'text',
+        text: piece,
+        segments: splitTextSegment(
+          piece,
+          line.matchRanges
+            .map((range) => ({
+              start: Math.max(range.start, pieceStart) - pieceStart,
+              end: Math.min(range.end, pieceEnd) - pieceStart
+            }))
+            .filter((range) => range.start < range.end),
+          line.isActive
+        )
+      });
+
+      if (index < pieces.length - 1) {
+        const pageBreak = line.pageBreaks[index];
+        rendered.push({
+          key: `${line.number}:page:${index}`,
+          kind: 'page-break',
+          pageNumber: pageBreak?.page ?? 0,
+          label: pageBreak?.label ?? (pageBreak?.page ? `Page ${pageBreak.page}` : 'Page break')
+        });
+      }
+
+      pieceStart = pieceEnd + 1;
+    }
+
+    return { lines: rendered };
+  }
+
+  function splitTextSegment(
     text: string,
     matchRanges: Array<{ start: number; end: number }>,
     active: boolean
   ): Segment[] {
-    if (!matchRanges.length) return [{ text, match: false, active }];
+    if (!matchRanges.length) return [{ kind: 'text', text, match: false, active }];
 
     const segments: Segment[] = [];
     let cursor = 0;
@@ -150,10 +209,11 @@
       }
 
       if (start > cursor) {
-        segments.push({ text: text.slice(cursor, start), match: false, active });
+        segments.push({ kind: 'text', text: text.slice(cursor, start), match: false, active });
       }
 
       segments.push({
+        kind: 'text',
         text: text.slice(Math.max(start, cursor), end),
         match: true,
         active
@@ -162,10 +222,10 @@
     }
 
     if (cursor < text.length) {
-      segments.push({ text: text.slice(cursor), match: false, active });
+      segments.push({ kind: 'text', text: text.slice(cursor), match: false, active });
     }
 
-    return segments.length ? segments : [{ text, match: false, active }];
+    return segments.length ? segments : [{ kind: 'text', text, match: false, active }];
   }
 
   function selectLineMatch(lineNumber: number) {
@@ -380,8 +440,13 @@
           class="preview"
           class:wrap={effectiveWrap}
         >
-          {#each renderLines as line (line.number)}
-            {#if line.isMatch}
+          {#each renderLines as line (line.key)}
+            {#if line.kind === 'page-break'}
+              <div class="page-break-line" aria-hidden="true">
+                <span class="page-break-gutter"></span>
+                <code class="source"><span class="page-break">──────── {line.label} ────────</span></code>
+              </div>
+            {:else if line.isMatch}
               <div
                 class="line"
                 role="button"
@@ -754,12 +819,28 @@
     background: var(--highlight-row-soft);
   }
 
+  .page-break-line {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    min-width: max-content;
+    min-height: 17px;
+  }
+
+  .page-break-gutter {
+    border-right: 1px solid var(--border-subtle);
+    background: #edf2f0;
+  }
+
   .source {
     padding: 0 8px;
     overflow-wrap: normal;
     white-space: pre;
     word-break: normal;
     user-select: text;
+  }
+
+  .page-break {
+    color: var(--muted);
   }
 
   .preview.wrap .line {
