@@ -1,3 +1,4 @@
+pub mod plugins;
 pub mod search;
 
 use std::io::{BufRead, BufReader, Write};

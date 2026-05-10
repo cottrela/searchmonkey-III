@@ -1,6 +1,6 @@
 [package]
 name = "searchmonkey"
-version = "0.2.5"
+version = "0.3.0"
 description = "Searchmonkey desktop search application"
 authors = ["Adam Cottrell <adam@searchmonkey.dev>"]
 edition = "2021"
@@ -27,3 +27,9 @@ async-trait = "0.1"
 grep = "0.3"
 ignore = "0.4"
 libc = "0.2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+toml = "0.8"
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

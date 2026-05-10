@@ -1,3 +1,4 @@
+use searchmonkey_lib::search::runner::{run_rg_child, SearchRunOptions};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -6,7 +7,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri_app_lib::search::runner::{run_rg_child, SearchRunOptions};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
