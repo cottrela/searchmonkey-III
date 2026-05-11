@@ -3,6 +3,7 @@ use crate::plugins::manifest::{
 };
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
+use semver::Version;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -71,21 +72,32 @@ impl PluginRegistry {
 
                 match register_plugin(&manifest_path, plugin_dir, platform) {
                     Ok(plugin) => {
-                        for handle in &plugin.handles {
-                            report
-                                .registry
-                                .by_extension
-                                .entry(handle.clone())
-                                .or_default()
-                                .push(plugin.id.clone());
+                        let should_replace = report
+                            .registry
+                            .by_id
+                            .get(&plugin.id)
+                            .map(|existing| plugin_version_cmp(&plugin.version, &existing.version).is_gt())
+                            .unwrap_or(true);
+                        if should_replace {
+                            report.registry.by_id.insert(plugin.id.clone(), plugin);
                         }
-                        report.registry.by_id.insert(plugin.id.clone(), plugin);
                     }
                     Err(err) => report.issues.push(PluginDiscoveryIssue {
                         manifest_path,
                         message: err.to_string(),
                     }),
                 }
+            }
+        }
+
+        for plugin in report.registry.by_id.values() {
+            for handle in &plugin.handles {
+                report
+                    .registry
+                    .by_extension
+                    .entry(handle.clone())
+                    .or_default()
+                    .push(plugin.id.clone());
             }
         }
 
@@ -97,6 +109,13 @@ impl PluginRegistry {
             .get(extension)
             .and_then(|plugin_ids| plugin_ids.first())
             .and_then(|plugin_id| self.by_id.get(plugin_id))
+    }
+}
+
+fn plugin_version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    match (Version::parse(left), Version::parse(right)) {
+        (Ok(left_version), Ok(right_version)) => left_version.cmp(&right_version),
+        _ => left.cmp(right),
     }
 }
 
@@ -264,6 +283,45 @@ args = ["--job"]
             &vec!["sm.plugin.pdf".to_string()]
         );
         assert!(report.registry.ignored_paths.contains(&plugin_root));
+    }
+
+    #[test]
+    fn prefers_newest_semver_for_duplicate_plugin_ids() {
+        let temp = tempdir().unwrap();
+        let plugin_root_v1 = temp.path().join("sm.plugin.pdf/0.1.0");
+        let plugin_root_v2 = temp.path().join("sm.plugin.pdf/0.1.1");
+
+        for (root, version) in [(&plugin_root_v1, "0.1.0"), (&plugin_root_v2, "0.1.1")] {
+            fs::create_dir_all(root.join("bin")).unwrap();
+            fs::write(
+                root.join("plugin.toml"),
+                format!(
+                    r#"
+schema = "sm.plugin.v1"
+id = "sm.plugin.pdf"
+name = "PDF Plugin"
+version = "{version}"
+handles = [".pdf"]
+
+[entry]
+kind = "process"
+command = "sm-plugin-pdf"
+"#
+                ),
+            )
+            .unwrap();
+            fs::write(root.join("bin/sm-plugin-pdf"), "").unwrap();
+        }
+
+        let report = PluginRegistry::discover_for_platform(
+            &[temp.path().to_path_buf()],
+            PluginPlatform::LinuxX64,
+        )
+        .unwrap();
+
+        let plugin = report.registry.by_id.get("sm.plugin.pdf").unwrap();
+        assert_eq!(plugin.version, "0.1.1");
+        assert_eq!(plugin.root_dir, plugin_root_v2);
     }
 
     #[test]

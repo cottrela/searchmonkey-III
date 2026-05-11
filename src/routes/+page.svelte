@@ -18,6 +18,7 @@
     cancelSearch as cancelSearchCommand,
     getResults,
     getPluginIndexStatus,
+    ignorePluginIssue,
     pluginFolderPath,
     queuePluginScan,
     rebuildPluginIndex,
@@ -29,7 +30,8 @@
     readFilePreview,
     revealFilePath,
     setPluginIndexPaused,
-    startSearch as startSearchCommand
+    startSearch as startSearchCommand,
+    unignorePluginIssue
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import { filename, normalizeGlobPattern, parentPath } from '$lib/paths';
@@ -591,6 +593,24 @@
   async function revealPluginFailure(sourcePath: string) {
     try {
       await revealFilePath(sourcePath);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function ignorePluginFailure(sourcePath: string, pluginId: string) {
+    try {
+      pluginStatus = await ignorePluginIssue(sourcePath, pluginId);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function unignorePluginFailure(sourcePath: string, pluginId: string) {
+    try {
+      pluginStatus = await unignorePluginIssue(sourcePath, pluginId);
       pluginStatusError = '';
     } catch (error) {
       pluginStatusError = normalizeError(error);
@@ -1825,6 +1845,8 @@
       onRebuild={handleRebuildPluginIndex}
       onRetryFailure={retryPluginFailure}
       onRevealFailure={revealPluginFailure}
+      onIgnoreFailure={ignorePluginFailure}
+      onUnignoreFailure={unignorePluginFailure}
     />
   {/if}
 
@@ -1835,6 +1857,11 @@
     {elapsedMs}
     {errorMessage}
     pluginStatus={pluginStatus}
+    onManagePlugins={() => {
+      pluginDialogSelection = null;
+      pluginDialogOpen = true;
+      void refreshPluginStatus();
+    }}
   />
 </main>
 

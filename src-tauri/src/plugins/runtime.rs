@@ -79,6 +79,7 @@ pub struct PluginIssue {
     pub details: String,
     pub attempts: u32,
     pub retry_after: Option<String>,
+    pub last_reported_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +140,7 @@ impl PluginIndexRuntime {
             run_counter: AtomicU64::new(RUN_COUNTER_START),
         });
 
+        recover_queued_jobs(inner.clone());
         spawn_scanner_thread(inner.clone());
         spawn_worker_thread(inner.clone());
 
@@ -157,6 +159,25 @@ impl PluginIndexRuntime {
             state.pending_roots.push_front(root);
         }
         self.inner.wake.notify_all();
+        Ok(())
+    }
+
+    pub fn request_retry(&self, path: &Path) -> Result<()> {
+        let path = path.canonicalize()?;
+        let discovery = PluginRegistry::discover(&self.inner.plugin_roots)?;
+        let classifier = FileClassifier::new(&discovery.registry);
+        let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(&path) else {
+            self.request_scan(&path)?;
+            return Ok(());
+        };
+
+        let attempts = self
+            .inner
+            .state_db
+            .get_indexed_file(&path, &plugin_id)?
+            .map(|row| row.attempts.max(1))
+            .unwrap_or(1);
+        enqueue_job(&self.inner, &path, &plugin_id, attempts);
         Ok(())
     }
 
@@ -248,6 +269,40 @@ impl PluginIndexRuntime {
         self.status()
     }
 
+    pub fn ignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexStatus> {
+        let attempts = self
+            .inner
+            .state_db
+            .get_indexed_file(source_path, plugin_id)?
+            .map(|row| row.attempts)
+            .unwrap_or(0);
+        self.inner
+            .state_db
+            .mark_ignored(source_path, plugin_id, attempts)?;
+        Ok(self.status())
+    }
+
+    pub fn unignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexStatus> {
+        let attempts = self
+            .inner
+            .state_db
+            .get_indexed_file(source_path, plugin_id)?
+            .map(|row| row.attempts)
+            .unwrap_or(0)
+            .max(1);
+        if source_path.exists() {
+            self.inner
+                .state_db
+                .mark_stale(source_path, plugin_id, attempts, Some("Re-enabled"))?;
+            self.request_scan(source_path)?;
+        } else {
+            self.inner
+                .state_db
+                .mark_missing(source_path, plugin_id, attempts)?;
+        }
+        Ok(self.status())
+    }
+
     pub fn default_plugin_folder(&self) -> Option<PathBuf> {
         self.inner.plugin_roots.first().cloned()
     }
@@ -315,6 +370,42 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
         state.scanner_running = !state.pending_roots.is_empty();
         inner.wake.notify_all();
     });
+}
+
+fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
+    let Ok(discovery) = PluginRegistry::discover(&inner.plugin_roots) else {
+        return;
+    };
+    let registered_plugin_ids = discovery
+        .registry
+        .by_id
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let Ok(rows) = inner
+        .state_db
+        .list_recoverable_jobs(ACTIVE_QUEUE_TARGET.saturating_mul(64))
+    else {
+        return;
+    };
+
+    let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+    for row in rows {
+        if !registered_plugin_ids.contains(&row.plugin_id) {
+            continue;
+        }
+        enqueue_pending_job(
+            &inner,
+            &mut state,
+            PluginJob {
+                source_path: PathBuf::from(row.source_path),
+                plugin_id: row.plugin_id,
+                attempts: row.attempts.max(1),
+                run_id: next_run_id(&inner),
+            },
+        );
+    }
+    inner.wake.notify_all();
 }
 
 fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
@@ -474,18 +565,37 @@ fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job:
         return;
     }
     state.pending_job_keys.insert(key);
-    let _ = inner.state_db.upsert_discovered_file(
-        &job.source_path,
-        &job.plugin_id,
-        &registered_plugin(&inner.plugin_roots, &job.plugin_id).version,
-        fs::metadata(&job.source_path).map(|value| value.len() as i64).unwrap_or(0),
-        &fs::metadata(&job.source_path)
-            .and_then(|value| value.modified())
-            .map(system_time_rfc3339)
-            .unwrap_or_else(|_| now_rfc3339()),
-        queued_status(),
-        job.attempts.saturating_sub(1),
-    );
+    let plugin_version = registered_plugin(&inner.plugin_roots, &job.plugin_id).version;
+    let source_size = fs::metadata(&job.source_path).map(|value| value.len() as i64).unwrap_or(0);
+    let source_mtime = fs::metadata(&job.source_path)
+        .and_then(|value| value.modified())
+        .map(system_time_rfc3339)
+        .unwrap_or_else(|_| now_rfc3339());
+    let existing = inner
+        .state_db
+        .get_indexed_file(&job.source_path, &job.plugin_id)
+        .ok()
+        .flatten();
+    let _ = if existing.is_some() {
+        inner.state_db.mark_queued(
+            &job.source_path,
+            &job.plugin_id,
+            &plugin_version,
+            source_size,
+            &source_mtime,
+            job.attempts.saturating_sub(1),
+        )
+    } else {
+        inner.state_db.upsert_discovered_file(
+            &job.source_path,
+            &job.plugin_id,
+            &plugin_version,
+            source_size,
+            &source_mtime,
+            queued_status(),
+            job.attempts.saturating_sub(1),
+        )
+    };
     state.pending_jobs.push_back(job);
 }
 
@@ -597,6 +707,17 @@ fn scan_file(
             enqueue_job(inner, path, &plugin.id, 1);
         }
         Some(row) => {
+            if row.status == "ignored" {
+                let _ = inner.state_db.sync_ignored_metadata(
+                    path,
+                    &plugin.id,
+                    &plugin.version,
+                    source_size,
+                    &source_mtime,
+                );
+                return Some(key);
+            }
+
             let changed = row.source_size != source_size
                 || row.source_mtime != source_mtime
                 || row.plugin_version != plugin.version;
@@ -750,6 +871,7 @@ fn map_issue_row(row: PluginIssueRow) -> PluginIssue {
         details,
         attempts: row.attempts,
         retry_after: row.retry_after,
+        last_reported_at: row.updated_at,
     }
 }
 
@@ -762,6 +884,7 @@ fn issue_message(row: &PluginIssueRow) -> String {
                 .error_message
                 .clone()
                 .unwrap_or_else(|| "Skipped".to_string()),
+            "ignored" => return "Ignored".to_string(),
             _ => {}
         }
     }

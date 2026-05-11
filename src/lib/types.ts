@@ -202,6 +202,7 @@ export type PluginIssue = {
   details: string;
   attempts: number;
   retry_after?: string | null;
+  last_reported_at: string;
 };
 
 export type PluginIndexFailure = {

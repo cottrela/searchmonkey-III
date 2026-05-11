@@ -89,3 +89,11 @@ export async function pluginFolderPath(): Promise<string> {
 export async function queuePluginScan(path: string): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('queue_plugin_scan', { path });
 }
+
+export async function ignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('ignore_plugin_issue', { path, pluginId });
+}
+
+export async function unignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('unignore_plugin_issue', { path, pluginId });
+}

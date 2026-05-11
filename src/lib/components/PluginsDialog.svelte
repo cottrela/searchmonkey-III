@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { filename } from '$lib/paths';
   import type {
     InstalledPluginInfo,
     PluginHealthSummary,
@@ -15,7 +16,9 @@
     onTogglePaused,
     onRebuild,
     onRetryFailure,
-    onRevealFailure
+    onRevealFailure,
+    onIgnoreFailure,
+    onUnignoreFailure
   }: {
     status: PluginIndexStatus | null;
     selectedPluginId?: string | null;
@@ -24,17 +27,47 @@
     onOpenFolder?: () => void;
     onTogglePaused?: () => void;
     onRebuild?: () => void;
-    onRetryFailure?: (path: string) => void;
-    onRevealFailure?: (path: string) => void;
+    onRetryFailure?: (path: string) => void | Promise<void>;
+    onRevealFailure?: (path: string) => void | Promise<void>;
+    onIgnoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
+    onUnignoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
   } = $props();
 
   let internalSelectedPluginId = $state<string | null>(null);
   let selectedIssueCode = $state<string | null>(null);
+  let openIssueDetails = $state<Record<string, boolean>>({});
+  let showIgnoredIssues = $state(false);
+  let pluginsDialogElement = $state<HTMLElement>();
+  let pendingRetryPaths = $state<Record<string, boolean>>({});
+  let pendingRevealPaths = $state<Record<string, boolean>>({});
+  let pendingUnignorePaths = $state<Record<string, boolean>>({});
+  let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
+  let hiddenRetriedPaths = $state<Record<string, string>>({});
 
   $effect(() => {
     if (selectedPluginId) {
       internalSelectedPluginId = selectedPluginId;
     }
+  });
+
+  $effect(() => {
+    if (!status) return;
+
+    const nextHiddenRetriedPaths: Record<string, string> = {};
+    for (const issue of status.issues) {
+      const hiddenTimestamp = hiddenRetriedPaths[issue.source_path];
+      if (!hiddenTimestamp) continue;
+      if (issue.last_reported_at === hiddenTimestamp) nextHiddenRetriedPaths[issue.source_path] = hiddenTimestamp;
+    }
+    const currentKeys = Object.keys(hiddenRetriedPaths);
+    const nextKeys = Object.keys(nextHiddenRetriedPaths);
+    if (
+      currentKeys.length === nextKeys.length &&
+      currentKeys.every((key) => nextHiddenRetriedPaths[key] === hiddenRetriedPaths[key])
+    ) {
+      return;
+    }
+    hiddenRetriedPaths = nextHiddenRetriedPaths;
   });
 
   const installedPlugins = $derived(status?.installed_plugins ?? []);
@@ -52,6 +85,11 @@
   const selectedIssues = $derived.by<PluginIssue[]>(() => {
     if (!status || !selectedPlugin) return [];
     let issues = status.issues.filter((issue) => issue.plugin_id === selectedPlugin.id);
+    issues = issues.filter((issue) => !hiddenIgnoredPaths[issue.source_path]);
+    issues = issues.filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
+    if (!showIgnoredIssues) {
+      issues = issues.filter((issue) => issue.status !== 'ignored');
+    }
     if (selectedIssueCode) {
       issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
     }
@@ -62,6 +100,7 @@
     const counts = new Map<string, { code: string; label: string; count: number }>();
     for (const issue of status.issues) {
       if (issue.plugin_id !== selectedPlugin.id) continue;
+      if (!showIgnoredIssues && issue.status === 'ignored') continue;
       const existing = counts.get(issue.error_code);
       if (existing) {
         existing.count += 1;
@@ -78,7 +117,16 @@
   const indexingLabel = $derived.by(() => {
     if (!status) return 'Idle';
     if (status.paused) return 'Processing paused';
-    if (status.plugin_state === 'working') return 'Working';
+    if (status.search_active && (selectedSummary?.queued_count ?? 0) > 0) {
+      return `Waiting for search to finish (${selectedSummary?.queued_count ?? 0} queued)`;
+    }
+    if (status.plugin_state === 'working') {
+      const queued = selectedSummary?.queued_count ?? 0;
+      const processing = selectedSummary?.processing_count ?? 0;
+      if (processing > 0) return `Working on ${processing} file${processing === 1 ? '' : 's'}`;
+      if (queued > 0) return `${queued} queued`;
+      return 'Working';
+    }
     return 'Idle';
   });
 
@@ -86,6 +134,13 @@
     internalSelectedPluginId = plugin.id;
     selectedIssueCode = null;
   }
+
+  const ignoredIssueCount = $derived.by(() => {
+    if (!status || !selectedPlugin) return 0;
+    return status.issues.filter(
+      (issue) => issue.plugin_id === selectedPlugin.id && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
+    ).length;
+  });
 
   function labelForIssue(issue: PluginIssue): string {
     switch (issue.error_code) {
@@ -111,24 +166,166 @@
   function retryMessage(retryAfter?: string | null): string | null {
     if (!retryAfter) return null;
     const retryTime = new Date(retryAfter).getTime();
-    if (!Number.isFinite(retryTime)) return 'Will retry later';
+    if (!Number.isFinite(retryTime)) return 'Automatic retry later';
     const deltaMs = retryTime - Date.now();
-    if (deltaMs <= 0) return 'Retry available now';
+    if (deltaMs <= 0) return 'Automatic retry due';
     const minutes = Math.ceil(deltaMs / 60000);
-    if (minutes < 60) return `Retry available in ${minutes} minute${minutes === 1 ? '' : 's'}`;
+    if (minutes < 60) return `Automatic retry in ${minutes} minute${minutes === 1 ? '' : 's'}`;
     const hours = Math.ceil(minutes / 60);
-    if (hours < 24) return `Retry available in ${hours} hour${hours === 1 ? '' : 's'}`;
+    if (hours < 24) return `Automatic retry in ${hours} hour${hours === 1 ? '' : 's'}`;
     const days = Math.ceil(hours / 24);
-    return `Retry available in ${days} day${days === 1 ? '' : 's'}`;
+    return `Automatic retry in ${days} day${days === 1 ? '' : 's'}`;
   }
+
+  function detailKey(issue: PluginIssue) {
+    return `${issue.plugin_id}:${issue.source_path}:${issue.error_code}`;
+  }
+
+  function isIssueExpanded(issue: PluginIssue) {
+    return openIssueDetails[detailKey(issue)] ?? false;
+  }
+
+  function setIssueExpanded(issue: PluginIssue, expanded: boolean) {
+    openIssueDetails = {
+      ...openIssueDetails,
+      [detailKey(issue)]: expanded
+    };
+  }
+
+  function closePluginMenus(except?: HTMLDetailsElement) {
+    pluginsDialogElement?.querySelectorAll<HTMLDetailsElement>('.menu[open]').forEach((menu) => {
+      if (menu !== except) {
+        menu.open = false;
+      }
+    });
+  }
+
+  function handlePluginMenuToggle(event: Event) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+    closePluginMenus(menu);
+  }
+
+  function handlePluginMenuFocusOut(event: FocusEvent) {
+    const menu = event.currentTarget;
+    if (!(menu instanceof HTMLDetailsElement)) return;
+
+    setTimeout(() => {
+      if (menu.contains(document.activeElement)) return;
+      menu.open = false;
+    }, 120);
+  }
+
+  function truncateMiddle(value: string, maxLength = 56) {
+    if (value.length <= maxLength) return value;
+    if (maxLength <= 3) return value.slice(0, maxLength);
+    const visibleChars = maxLength - 1;
+    const head = Math.ceil(visibleChars / 2);
+    const tail = Math.floor(visibleChars / 2);
+    return `${value.slice(0, head)}…${value.slice(-tail)}`;
+  }
+
+  function truncateFilenameMiddle(filePath: string, maxLength = 84) {
+    const name = filename(filePath);
+    const dotIndex = name.lastIndexOf('.');
+    if (name.length <= maxLength) return name;
+    if (dotIndex <= 0 || dotIndex === name.length - 1) return truncateMiddle(name, maxLength);
+
+    const extension = name.slice(dotIndex);
+    const stem = name.slice(0, dotIndex);
+    const reserved = extension.length + 1;
+    if (reserved >= maxLength) return truncateMiddle(name, maxLength);
+    return `${truncateMiddle(stem, maxLength - extension.length)}${extension}`;
+  }
+
+  function markPending(record: Record<string, boolean>, path: string, pending: boolean) {
+    return {
+      ...record,
+      [path]: pending
+    };
+  }
+
+  function markHiddenRetry(record: Record<string, string>, path: string, timestamp: string) {
+    return {
+      ...record,
+      [path]: timestamp
+    };
+  }
+
+  async function queueRetry(path: string, lastReportedAt: string) {
+    if (!onRetryFailure || pendingRetryPaths[path]) return;
+    pendingRetryPaths = markPending(pendingRetryPaths, path, true);
+    hiddenRetriedPaths = markHiddenRetry(hiddenRetriedPaths, path, lastReportedAt);
+    try {
+      await onRetryFailure(path);
+    } finally {
+      pendingRetryPaths = markPending(pendingRetryPaths, path, false);
+    }
+  }
+
+  async function revealIssue(path: string) {
+    if (!onRevealFailure || pendingRevealPaths[path]) return;
+    pendingRevealPaths = markPending(pendingRevealPaths, path, true);
+    try {
+      await onRevealFailure(path);
+    } finally {
+      pendingRevealPaths = markPending(pendingRevealPaths, path, false);
+    }
+  }
+
+  async function ignoreIssue(path: string, pluginId: string) {
+    if (!onIgnoreFailure) return;
+    hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, true);
+    try {
+      await onIgnoreFailure(path, pluginId);
+      hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, false);
+    } catch (error) {
+      hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, false);
+      throw error;
+    }
+  }
+
+  async function unignoreIssue(path: string, pluginId: string) {
+    if (!onUnignoreFailure || pendingUnignorePaths[path]) return;
+    pendingUnignorePaths = markPending(pendingUnignorePaths, path, true);
+    try {
+      await onUnignoreFailure(path, pluginId);
+    } finally {
+      pendingUnignorePaths = markPending(pendingUnignorePaths, path, false);
+    }
+  }
+
+  function issueStatusText(issue: PluginIssue) {
+    return retryMessage(issue.retry_after);
+  }
+
+  $effect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!pluginsDialogElement) return;
+      if (!(event.target instanceof Node)) return;
+
+      const menu = (event.target instanceof Element ? event.target : event.target.parentElement)?.closest('.menu');
+      if (menu && pluginsDialogElement.contains(menu)) return;
+
+      closePluginMenus();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  });
 </script>
 
 <div class="modal-layer" role="presentation">
   <button class="modal-backdrop" type="button" aria-label="Close plugin manager" onclick={onClose}></button>
 
-  <div class="plugins-dialog" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
+  <div bind:this={pluginsDialogElement} class="plugins-dialog" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
     <aside class="sidebar">
-      <h2 id="plugins-title">Plugins</h2>
+      <div class="sidebar-header">
+        <h2 id="plugins-title">Plugins</h2>
+        <button class="close-dialog" type="button" aria-label="Close plugin manager" onclick={onClose}>×</button>
+      </div>
 
       {#if installedPlugins.length}
         <div class="plugin-list">
@@ -139,7 +336,7 @@
               onclick={() => selectPlugin(plugin)}
             >
               <span>{plugin.name}</span>
-              <span class:enabled={plugin.enabled}>{plugin.enabled ? 'Enabled' : 'Disabled'}</span>
+              <span>v{plugin.version}</span>
             </button>
           {/each}
         </div>
@@ -151,15 +348,18 @@
         <header class="detail-header">
           <div>
             <h3>{selectedPlugin.name}</h3>
-            <p>{selectedPlugin.enabled ? 'Enabled' : 'Disabled'}</p>
+            <p>v{selectedPlugin.version}</p>
           </div>
 
-          <details class="menu">
+          <details class="menu" onfocusout={handlePluginMenuFocusOut} ontoggle={handlePluginMenuToggle}>
             <summary>More...</summary>
             <div class="menu-panel">
               <button type="button" class="secondary" disabled>{selectedPlugin.enabled ? 'Disable' : 'Enable'}</button>
               <button type="button" class="secondary" disabled>Uninstall</button>
               <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugin Folder</button>
+              <button type="button" class="secondary" onclick={() => (showIgnoredIssues = !showIgnoredIssues)}>
+                {showIgnoredIssues ? 'Hide Ignored Files' : 'Show Ignored Files'}
+              </button>
               <button type="button" class="secondary" onclick={onTogglePaused}>
                 {status?.paused ? 'Resume Background Processing' : 'Pause Background Processing'}
               </button>
@@ -199,7 +399,11 @@
           <div class="panel-header">
             <div>
               <h4>Issues</h4>
-              <p class="muted">{selectedSummary?.attention_count ?? 0} files need attention</p>
+              <p class="muted">
+                {selectedSummary?.attention_count ?? 0} files need attention{#if ignoredIssueCount}
+                  · {ignoredIssueCount} ignored
+                {/if}
+              </p>
             </div>
           </div>
 
@@ -219,28 +423,79 @@
 
             <div class="issues-list">
               {#each selectedIssues as issue}
-                <article class="issue-card">
+                <article class:ignored-card={issue.status === 'ignored'} class="issue-card">
                   <div class="issue-copy">
-                    <strong>{issue.file_name}</strong>
-                    <p>{labelForIssue(issue)}</p>
-                    {#if retryMessage(issue.retry_after)}
-                      <p class="muted">{retryMessage(issue.retry_after)}</p>
+                    <strong title={issue.file_name}>{truncateFilenameMiddle(issue.file_name)}</strong>
+                    <p>
+                      {labelForIssue(issue)}
+                      {#if issue.status === 'ignored'}
+                        <span class="ignored-badge">Ignored</span>
+                      {/if}
+                    </p>
+                    {#if issueStatusText(issue)}
+                      <p class="muted">{issueStatusText(issue)}</p>
                     {/if}
                   </div>
                   <div class="issue-actions">
-                    <button type="button" class="secondary" onclick={() => onRetryFailure?.(issue.source_path)}>
-                      Retry
+                    {#if issue.status !== 'queued' && issue.status !== 'processing'}
+                      <button
+                        type="button"
+                        class="secondary"
+                        disabled={pendingRetryPaths[issue.source_path]}
+                        onclick={() => queueRetry(issue.source_path, issue.last_reported_at)}
+                      >
+                        {pendingRetryPaths[issue.source_path] ? 'Queued' : 'Retry now'}
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="secondary"
+                      disabled={pendingRevealPaths[issue.source_path]}
+                      onclick={() => revealIssue(issue.source_path)}
+                    >
+                      {pendingRevealPaths[issue.source_path] ? 'Revealing…' : 'Reveal'}
                     </button>
-                    <button type="button" class="secondary" onclick={() => onRevealFailure?.(issue.source_path)}>
-                      Reveal
-                    </button>
-                    <details class="details">
-                      <summary>Details</summary>
+                    {#if issue.status === 'ignored'}
+                      <button
+                        type="button"
+                        class="secondary"
+                        disabled={pendingUnignorePaths[issue.source_path]}
+                        onclick={() => unignoreIssue(issue.source_path, issue.plugin_id)}
+                      >
+                        {pendingUnignorePaths[issue.source_path] ? 'Re-enabling…' : 'Re-enable issue'}
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="secondary"
+                        onclick={() => ignoreIssue(issue.source_path, issue.plugin_id)}
+                      >
+                        Ignore
+                      </button>
+                    {/if}
+                    <details
+                      class="details"
+                      open={isIssueExpanded(issue)}
+                      ontoggle={(event) => setIssueExpanded(issue, (event.currentTarget as HTMLDetailsElement).open)}
+                    >
+                      <summary>{isIssueExpanded(issue) ? 'Hide details ▴' : 'Details ▾'}</summary>
                       <div class="details-copy">
-                        <p><strong>Full path</strong><br />{issue.source_path}</p>
-                        <p><strong>Error code</strong><br />{issue.error_code}</p>
-                        <p><strong>Attempts</strong><br />{issue.attempts}</p>
-                        <p><strong>Raw plugin output</strong><br />{issue.details}</p>
+                        <div class="detail-row">
+                          <span class="detail-label">Full path</span>
+                          <code>{issue.source_path}</code>
+                        </div>
+                        <div class="detail-row">
+                          <span class="detail-label">Error code</span>
+                          <code>{issue.error_code}</code>
+                        </div>
+                        <div class="detail-row">
+                          <span class="detail-label">Attempts</span>
+                          <code>{issue.attempts}</code>
+                        </div>
+                        <div class="detail-row raw-output">
+                          <span class="detail-label">Raw plugin output</span>
+                          <pre>{issue.details}</pre>
+                        </div>
                       </div>
                     </details>
                   </div>
@@ -311,11 +566,43 @@
     margin: 0;
   }
 
-  .sidebar h2 {
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     padding: 0 10px;
+  }
+
+  .sidebar h2 {
     color: #1c232b;
     font-size: 18px;
     font-weight: 760;
+  }
+
+  .close-dialog {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid #d8dfd8;
+    border-radius: 999px;
+    color: #4d5965;
+    background: #fff;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .close-dialog:hover {
+    border-color: #bdd3c1;
+    color: #0f6b3b;
+    background: #f4faf6;
   }
 
   .plugin-list {
@@ -339,7 +626,15 @@
     padding: 0 10px;
     color: #2e3842;
     background: transparent;
+    cursor: pointer;
     text-align: left;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .plugin-list button:hover {
+    background: #eef3ee;
   }
 
   .plugin-list button.selected {
@@ -354,10 +649,6 @@
     font-size: 13px;
   }
 
-  .plugin-list span:last-child.enabled {
-    color: #16834a;
-  }
-
   .detail {
     display: grid;
     align-content: start;
@@ -368,8 +659,7 @@
   }
 
   .detail-header,
-  .panel-header,
-  .issue-card {
+  .panel-header {
     display: flex;
     align-items: start;
     justify-content: space-between;
@@ -442,17 +732,48 @@
     padding: 0;
     color: #0f6b3b;
     background: transparent;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: rgba(15, 107, 59, 0.35);
+    text-underline-offset: 0.14em;
   }
 
   .secondary {
     min-height: 36px;
     padding: 0 14px;
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease,
+      box-shadow 120ms ease;
   }
 
   .secondary {
     border: 1px solid #d8dfd8;
     color: #24313d;
     background: #fff;
+  }
+
+  .linkish:hover,
+  .secondary:hover,
+  .menu summary:hover,
+  .details summary:hover {
+    color: #0f6b3b;
+  }
+
+  .secondary:hover,
+  .menu summary:hover {
+    border-color: #bdd3c1;
+    background: #f4faf6;
+  }
+
+  .secondary:disabled {
+    cursor: default;
+    color: #7b8792;
+    border-color: #e3e8e3;
+    background: #f7f8f7;
+    box-shadow: none;
   }
 
   .reset-action {
@@ -477,6 +798,16 @@
     align-items: center;
     padding: 8px 12px;
     color: #24313d;
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .issue-categories button:hover {
+    border-color: #bdd3c1;
+    background: #f4faf6;
   }
 
   .issue-categories button.selected {
@@ -491,6 +822,8 @@
   }
 
   .issue-card {
+    display: grid;
+    gap: 10px;
     padding: 14px;
     border: 1px solid #e2e7e2;
     border-radius: 12px;
@@ -499,15 +832,54 @@
 
   .issue-copy {
     display: grid;
-    gap: 6px;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .issue-copy strong {
+    display: block;
+    overflow: hidden;
+    color: #1c232b;
+    font-size: 14px;
+    font-weight: 680;
+    line-height: 1.35;
+    white-space: nowrap;
+    text-overflow: clip;
   }
 
   .issue-actions {
     display: flex;
-    align-items: start;
+    align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    justify-content: end;
+  }
+
+  .ignored-card {
+    opacity: 0.62;
+    background: #fbfcfb;
+  }
+
+  .ignored-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 2px 7px;
+    border: 1px solid #d6ddd6;
+    border-radius: 999px;
+    color: #5d6873;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    background: #f4f6f4;
+  }
+
+  .details {
+    width: 100%;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid #edf1ed;
   }
 
   .details summary,
@@ -516,11 +888,61 @@
     list-style: none;
   }
 
-  .details-copy {
-    margin-top: 10px;
+  .details summary {
+    width: fit-content;
     color: #45515d;
     font-size: 13px;
+    user-select: none;
+  }
+
+  .details-copy {
+    margin-top: 10px;
+    display: grid;
+    gap: 10px;
+    color: #53606c;
+    font-size: 12px;
     line-height: 1.5;
+  }
+
+  .detail-row {
+    display: grid;
+    gap: 4px;
+  }
+
+  .detail-label {
+    color: #65707a;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .detail-row code,
+  .detail-row pre {
+    margin: 0;
+    font-family:
+      'SFMono-Regular',
+      'SF Mono',
+      'Cascadia Code',
+      'JetBrains Mono',
+      'Menlo',
+      monospace;
+    font-size: 12px;
+  }
+
+  .detail-row code {
+    overflow-wrap: anywhere;
+    color: #2d3a46;
+  }
+
+  .raw-output pre {
+    padding: 10px 12px;
+    border: 1px solid #e8ece8;
+    border-radius: 10px;
+    background: #f7f9f7;
+    color: #5b6773;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .menu {
@@ -534,6 +956,10 @@
     padding: 8px 12px;
     color: #24313d;
     background: #fff;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
   }
 
   .menu-panel {
@@ -576,6 +1002,10 @@
     .detail-header,
     .panel-header {
       display: grid;
+    }
+
+    .issue-actions {
+      align-items: start;
     }
   }
 </style>

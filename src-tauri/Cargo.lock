@@ -3372,6 +3372,7 @@ dependencies = [
  "ignore",
  "libc",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

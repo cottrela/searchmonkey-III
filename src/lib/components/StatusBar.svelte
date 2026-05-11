@@ -7,7 +7,8 @@
     filesWithMatches,
     elapsedMs = 0,
     errorMessage = '',
-    pluginStatus = null
+    pluginStatus = null,
+    onManagePlugins
   }: {
     state: SearchState;
     totalMatches: number;
@@ -15,6 +16,7 @@
     elapsedMs?: number;
     errorMessage?: string;
     pluginStatus?: PluginIndexStatus | null;
+    onManagePlugins?: () => void;
   } = $props();
 
   const labels: Record<SearchState, string> = {
@@ -80,8 +82,8 @@
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
     {#if pluginSummary}
-      <span class="plugin-summary">
-        {pluginSummary.label}
+      <button type="button" class="plugin-summary" onclick={onManagePlugins}>
+        <span>{pluginSummary.label}</span>
         {#if pluginSummary.tone !== 'none'}
           <span
             class:warning={pluginSummary.tone === 'warning'}
@@ -92,7 +94,7 @@
             ▲
           </span>
         {/if}
-      </span>
+      </button>
     {/if}
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
@@ -133,6 +135,11 @@
     padding-left: 8px;
   }
 
+  .metrics > * + * {
+    border-left: 1px solid var(--border);
+    padding-left: 8px;
+  }
+
   .metrics span {
     color: #7d8790;
     font-weight: 550;
@@ -142,6 +149,19 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    padding: 0 0 0 8px;
+    color: #7d8790;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 550;
+    transition: color 120ms ease;
+  }
+
+  .plugin-summary:hover {
+    color: var(--accent-strong);
   }
 
   .plugin-triangle {

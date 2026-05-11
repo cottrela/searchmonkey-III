@@ -15,6 +15,7 @@ const STATUS_FAILED: &str = "failed";
 const STATUS_STALE: &str = "stale";
 const STATUS_MISSING: &str = "missing";
 const STATUS_SKIPPED: &str = "skipped";
+const STATUS_IGNORED: &str = "ignored";
 
 #[derive(Debug, Clone, Default)]
 pub struct PluginCounts {
@@ -54,10 +55,18 @@ pub struct PluginIssueRow {
     pub error_hint: Option<String>,
     pub attempts: u32,
     pub retry_after: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct RetryReadyRow {
+    pub source_path: String,
+    pub plugin_id: String,
+    pub attempts: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecoverableJobRow {
     pub source_path: String,
     pub plugin_id: String,
     pub attempts: u32,
@@ -189,6 +198,52 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn mark_queued(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+        plugin_version: &str,
+        source_size: i64,
+        source_mtime: &str,
+        attempts: u32,
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        let text_path = mirror_text_path(&self.index_root, source_path)
+            .display()
+            .to_string();
+        let meta_path = mirror_meta_path(&self.index_root, source_path)
+            .display()
+            .to_string();
+        let conn = self.open()?;
+        conn.execute(
+            "UPDATE indexed_files
+             SET source_size = ?3,
+                 source_mtime = ?4,
+                 cache_text_path = ?5,
+                 cache_meta_path = ?6,
+                 status = ?7,
+                 attempts = ?8,
+                 retry_after = NULL,
+                 plugin_version = ?9,
+                 checked_at = ?10,
+                 updated_at = ?10
+             WHERE source_path = ?1 AND plugin_id = ?2",
+            params![
+                source_path.display().to_string(),
+                plugin_id,
+                source_size,
+                source_mtime,
+                text_path,
+                meta_path,
+                STATUS_QUEUED,
+                attempts,
+                plugin_version,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn touch_checked_at(&self, source_path: &Path, plugin_id: &str) -> Result<()> {
         let conn = self.open()?;
         conn.execute(
@@ -253,16 +308,24 @@ impl StateDb {
     }
 
     pub fn mark_processing(&self, source_path: &Path, plugin_id: &str, attempts: u32) -> Result<()> {
-        self.update_status(
-            source_path,
-            plugin_id,
-            STATUS_PROCESSING,
-            None,
-            None,
-            None,
-            attempts,
-            None,
-        )
+        let conn = self.open()?;
+        conn.execute(
+            "UPDATE indexed_files
+             SET status = ?3,
+                 attempts = ?4,
+                 retry_after = NULL,
+                 checked_at = ?5,
+                 updated_at = ?5
+             WHERE source_path = ?1 AND plugin_id = ?2",
+            params![
+                source_path.display().to_string(),
+                plugin_id,
+                STATUS_PROCESSING,
+                attempts,
+                now_rfc3339(),
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn mark_failed(
@@ -319,6 +382,71 @@ impl StateDb {
         )
     }
 
+    pub fn mark_ignored(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+        attempts: u32,
+    ) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "UPDATE indexed_files
+             SET status = ?3,
+                 attempts = ?4,
+                 retry_after = NULL,
+                 checked_at = ?5,
+                 updated_at = ?5
+             WHERE source_path = ?1 AND plugin_id = ?2",
+            params![
+                source_path.display().to_string(),
+                plugin_id,
+                STATUS_IGNORED,
+                attempts,
+                now_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn sync_ignored_metadata(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+        plugin_version: &str,
+        source_size: i64,
+        source_mtime: &str,
+    ) -> Result<()> {
+        let text_path = mirror_text_path(&self.index_root, source_path)
+            .display()
+            .to_string();
+        let meta_path = mirror_meta_path(&self.index_root, source_path)
+            .display()
+            .to_string();
+        let conn = self.open()?;
+        conn.execute(
+            "UPDATE indexed_files
+             SET source_size = ?3,
+                 source_mtime = ?4,
+                 cache_text_path = ?5,
+                 cache_meta_path = ?6,
+                 plugin_version = ?7,
+                 checked_at = ?8
+             WHERE source_path = ?1 AND plugin_id = ?2 AND status = ?9",
+            params![
+                source_path.display().to_string(),
+                plugin_id,
+                source_size,
+                source_mtime,
+                text_path,
+                meta_path,
+                plugin_version,
+                now_rfc3339(),
+                STATUS_IGNORED,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn mark_stale(
         &self,
         source_path: &Path,
@@ -369,19 +497,10 @@ impl StateDb {
     pub fn list_plugin_issues(&self, plugin_id: &str) -> Result<Vec<PluginIssueRow>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
-            "SELECT source_path, plugin_id, status, error_code, error_message, error_hint, attempts, retry_after
+            "SELECT source_path, plugin_id, status, error_code, error_message, error_hint, attempts, retry_after, updated_at
              FROM indexed_files
-             WHERE plugin_id = ?1 AND status IN ('failed', 'stale', 'missing', 'skipped')
-             ORDER BY
-                CASE status
-                    WHEN 'failed' THEN 0
-                    WHEN 'stale' THEN 1
-                    WHEN 'missing' THEN 2
-                    WHEN 'skipped' THEN 3
-                    ELSE 4
-                END,
-                COALESCE(error_code, ''),
-                source_path",
+             WHERE plugin_id = ?1 AND status IN ('failed', 'stale', 'missing', 'skipped', 'ignored')
+             ORDER BY updated_at ASC, source_path ASC",
         )?;
         let rows = stmt.query_map(params![plugin_id], |row| {
             Ok(PluginIssueRow {
@@ -393,6 +512,7 @@ impl StateDb {
                 error_hint: row.get(5)?,
                 attempts: row.get::<_, i64>(6)? as u32,
                 retry_after: row.get(7)?,
+                updated_at: row.get(8)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -412,6 +532,25 @@ impl StateDb {
         )?;
         let rows = stmt.query_map(params![now_rfc3339(), limit as i64], |row| {
             Ok(RetryReadyRow {
+                source_path: row.get(0)?,
+                plugin_id: row.get(1)?,
+                attempts: row.get::<_, i64>(2)? as u32,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_recoverable_jobs(&self, limit: usize) -> Result<Vec<RecoverableJobRow>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT source_path, plugin_id, attempts
+             FROM indexed_files
+             WHERE status IN ('queued', 'processing')
+             ORDER BY updated_at ASC, source_path ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(RecoverableJobRow {
                 source_path: row.get(0)?,
                 plugin_id: row.get(1)?,
                 attempts: row.get::<_, i64>(2)? as u32,
@@ -636,6 +775,10 @@ pub fn is_retry_ready(retry_after: Option<&str>) -> bool {
 
 pub fn is_attention_status(status: &str) -> bool {
     matches!(status, STATUS_FAILED | STATUS_STALE | STATUS_MISSING | STATUS_SKIPPED)
+}
+
+pub fn ignored_status() -> &'static str {
+    STATUS_IGNORED
 }
 
 pub fn ready_status() -> &'static str {

@@ -299,11 +299,41 @@ fn queue_plugin_scan(
 ) -> Result<plugins::runtime::PluginIndexStatus, String> {
     let path = expand_home_path(path.trim())?;
     if path.exists() {
-        plugin_index
-            .request_scan(&path)
-            .map_err(|err| err.to_string())?;
+        if path.is_file() {
+            plugin_index
+                .request_retry(&path)
+                .map_err(|err| err.to_string())?;
+        } else {
+            plugin_index
+                .request_scan(&path)
+                .map_err(|err| err.to_string())?;
+        }
     }
     Ok(plugin_index.status())
+}
+
+#[tauri::command]
+fn ignore_plugin_issue(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    path: String,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    let path = expand_home_path(path.trim())?;
+    plugin_index
+        .ignore_issue(&path, plugin_id.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn unignore_plugin_issue(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    path: String,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    let path = expand_home_path(path.trim())?;
+    plugin_index
+        .unignore_issue(&path, plugin_id.trim())
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -786,6 +816,7 @@ pub fn run() {
             get_plugin_index_status,
             get_search_status,
             home_dir,
+            ignore_plugin_issue,
             index_file_with_plugin,
             list_directory,
             open_file_path,
@@ -796,7 +827,8 @@ pub fn run() {
             reveal_file_path,
             search_files,
             set_plugin_index_paused,
-            start_search
+            start_search,
+            unignore_plugin_issue
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
