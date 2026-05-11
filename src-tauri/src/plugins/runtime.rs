@@ -3,8 +3,10 @@ use crate::plugins::classifier::{FileClassifier, FileKind};
 use crate::plugins::failure_state::{classify_failure, FailureDisplay};
 use crate::plugins::index_paths::default_index_roots;
 use crate::plugins::indexer::{self, IndexFailure};
+use crate::plugins::installer::install_plugin_archive;
 use crate::plugins::registry::{
-    default_plugin_roots, plugin_version_cmp, plugin_version_satisfies_selected, PluginDiscoveryReport, PluginRegistry,
+    default_plugin_roots, plugin_version_cmp, plugin_version_satisfies_selected,
+    PluginDiscoveryReport, PluginRegistry,
 };
 use crate::plugins::state_db::{
     is_attention_status, is_retry_ready, now_rfc3339, queued_status, ready_status,
@@ -154,7 +156,11 @@ impl PluginIndexRuntime {
         let root = root.canonicalize()?;
         self.inner.state_db.upsert_scan_root(&root)?;
         {
-            let mut state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("plugin runtime lock poisoned");
             if state.queued_roots.contains(&root) || state.active_roots.contains(&root) {
                 return Ok(());
             }
@@ -180,7 +186,7 @@ impl PluginIndexRuntime {
             .get_indexed_file(&path, &plugin_id)?
             .map(|row| row.attempts.max(1))
             .unwrap_or(1);
-        enqueue_job(&self.inner, &path, &plugin_id, attempts);
+        enqueue_job(&self.inner, &path, &plugin_id, attempts, true);
         Ok(())
     }
 
@@ -207,11 +213,20 @@ impl PluginIndexRuntime {
             .unwrap_or_default();
         let issues = plugin_ids
             .iter()
-            .flat_map(|plugin_id| self.inner.state_db.list_plugin_issues(plugin_id).unwrap_or_default())
+            .flat_map(|plugin_id| {
+                self.inner
+                    .state_db
+                    .list_plugin_issues(plugin_id)
+                    .unwrap_or_default()
+            })
             .map(map_issue_row)
             .collect::<Vec<_>>();
 
-        let state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("plugin runtime lock poisoned");
         let indexing_state = if state.paused {
             "paused"
         } else if state.worker_running || state.scanner_running {
@@ -233,7 +248,10 @@ impl PluginIndexRuntime {
         };
 
         PluginIndexStatus {
-            enabled_plugins: installed_plugins.iter().map(|plugin| plugin.id.clone()).collect(),
+            enabled_plugins: installed_plugins
+                .iter()
+                .map(|plugin| plugin.id.clone())
+                .collect(),
             installed_plugins: installed_plugins.clone(),
             indexing_state: indexing_state.to_string(),
             plugin_state: plugin_state.to_string(),
@@ -250,7 +268,11 @@ impl PluginIndexRuntime {
     }
 
     pub fn set_paused(&self, paused: bool) -> PluginIndexStatus {
-        let mut state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("plugin runtime lock poisoned");
         state.paused = paused;
         self.inner.wake.notify_all();
         drop(state);
@@ -258,7 +280,11 @@ impl PluginIndexRuntime {
     }
 
     pub fn rebuild(&self) -> PluginIndexStatus {
-        let mut state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("plugin runtime lock poisoned");
         state.pending_jobs.clear();
         state.pending_job_keys.clear();
         state.jobs.clear();
@@ -270,6 +296,58 @@ impl PluginIndexRuntime {
         self.inner.wake.notify_all();
         drop(state);
         self.status()
+    }
+
+    pub fn refresh_plugin_supported_files(&self, plugin_id: &str) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+
+        let scan_roots = self.inner.state_db.list_scan_roots()?;
+        for root in scan_roots {
+            if root.exists() {
+                let _ = scan_root_for_plugin(&self.inner, &root, plugin_id)?;
+            }
+        }
+        self.inner.wake.notify_all();
+        Ok(self.status())
+    }
+
+    pub fn reset_plugin_cache(&self, plugin_id: &str) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+
+        let rows = self.inner.state_db.list_plugin_rows(plugin_id)?;
+        {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("plugin runtime lock poisoned");
+            state.pending_jobs.retain(|job| job.plugin_id != plugin_id);
+            state
+                .pending_job_keys
+                .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
+            state.jobs.retain(|job| job.plugin_id != plugin_id);
+            state
+                .queued_jobs
+                .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
+        }
+
+        for row in &rows {
+            if let Some(text_path) = &row.cache_text_path {
+                let _ = fs::remove_file(text_path);
+            }
+            if let Some(meta_path) = &row.cache_meta_path {
+                let _ = fs::remove_file(meta_path);
+            }
+        }
+        self.inner.state_db.clear_plugin(plugin_id)?;
+        self.inner.wake.notify_all();
+        Ok(self.status())
     }
 
     pub fn ignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexStatus> {
@@ -310,7 +388,25 @@ impl PluginIndexRuntime {
         self.inner.plugin_roots.first().cloned()
     }
 
-    pub fn set_active_plugin_version(&self, plugin_id: &str, version: &str) -> Result<PluginIndexStatus> {
+    pub fn install_plugin_archive(
+        &self,
+        archive_path: &Path,
+    ) -> Result<(String, String, PluginIndexStatus)> {
+        let plugin_root = self
+            .default_plugin_folder()
+            .ok_or_else(|| anyhow::anyhow!("Could not resolve the plugin folder."))?;
+        let installed = install_plugin_archive(archive_path, &plugin_root)?;
+        self.inner
+            .state_db
+            .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
+        Ok((installed.plugin_id, installed.version, self.status()))
+    }
+
+    pub fn set_active_plugin_version(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<PluginIndexStatus> {
         let discovery = discovery_report(&self.inner)?;
         let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
             anyhow::bail!("plugin {plugin_id} is not installed");
@@ -324,7 +420,11 @@ impl PluginIndexRuntime {
         Ok(self.status())
     }
 
-    pub fn uninstall_plugin_version(&self, plugin_id: &str, version: &str) -> Result<PluginIndexStatus> {
+    pub fn uninstall_plugin_version(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<PluginIndexStatus> {
         let discovery = discovery_report(&self.inner)?;
         let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
             anyhow::bail!("plugin {plugin_id} is not installed");
@@ -332,8 +432,11 @@ impl PluginIndexRuntime {
         let plugin = versions
             .iter()
             .find(|plugin| plugin.version == version)
-            .ok_or_else(|| anyhow::anyhow!("plugin {plugin_id} version {version} is not installed"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("plugin {plugin_id} version {version} is not installed")
+            })?;
         fs::remove_dir_all(&plugin.root_dir)?;
+        drop_runtime_jobs_for_plugin(&self.inner, plugin_id);
 
         let remaining = discovery_report(&self.inner)?;
         if let Some(active) = remaining.registry.by_id.get(plugin_id) {
@@ -341,7 +444,10 @@ impl PluginIndexRuntime {
                 .state_db
                 .set_preferred_plugin_version(plugin_id, &active.version)?;
         } else {
-            self.inner.state_db.clear_preferred_plugin_version(plugin_id)?;
+            self.inner
+                .state_db
+                .clear_preferred_plugin_version(plugin_id)?;
+            self.inner.state_db.clear_plugin(plugin_id)?;
         }
         Ok(self.status())
     }
@@ -349,7 +455,11 @@ impl PluginIndexRuntime {
     #[cfg(test)]
     pub fn wait_for_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        let mut state = self.inner.state.lock().expect("plugin runtime lock poisoned");
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("plugin runtime lock poisoned");
 
         loop {
             let search_active = self.inner.search_active.load(Ordering::SeqCst) > 0;
@@ -393,7 +503,10 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
                     .expect("plugin runtime condvar poisoned");
             }
 
-            let root = state.pending_roots.pop_front().expect("pending root disappeared");
+            let root = state
+                .pending_roots
+                .pop_front()
+                .expect("pending root disappeared");
             state.queued_roots.remove(&root);
             state.active_roots.insert(root.clone());
             state.scanner_running = true;
@@ -402,7 +515,9 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
 
         let _ = inner.state_db.mark_scan_root_started(&root);
         let scanned_count = scan_root(&inner, &root).unwrap_or(0);
-        let _ = inner.state_db.mark_scan_root_completed(&root, scanned_count);
+        let _ = inner
+            .state_db
+            .mark_scan_root_completed(&root, scanned_count);
 
         let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
         state.active_roots.remove(&root);
@@ -442,6 +557,7 @@ fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
                 attempts: row.attempts.max(1),
                 run_id: next_run_id(&inner),
             },
+            false,
         );
     }
     inner.wake.notify_all();
@@ -476,6 +592,30 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             job
         };
 
+        let job_key_value = job_key(&job.source_path, &job.plugin_id);
+        let Some(plugin) = registered_plugin(&inner, &job.plugin_id) else {
+            let _ = inner.state_db.mark_skipped(
+                &job.source_path,
+                &job.plugin_id,
+                job.attempts.max(1),
+                "Plugin is no longer installed",
+            );
+            let _ = inner.state_db.finish_plugin_run(
+                &job.run_id,
+                "skipped",
+                Some("plugin_removed"),
+                Some("Plugin is no longer installed"),
+            );
+
+            let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+            state.processing_jobs.remove(&job_key_value);
+            state.worker_running = false;
+            inner.wake.notify_all();
+            drop(state);
+            thread::sleep(WORKER_DELAY);
+            continue;
+        };
+
         let _ = inner
             .state_db
             .mark_processing(&job.source_path, &job.plugin_id, job.attempts);
@@ -490,8 +630,6 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             error_message: None,
         });
 
-        let job_key_value = job_key(&job.source_path, &job.plugin_id);
-        let plugin = registered_plugin(&inner, &job.plugin_id);
         let result = indexer::index_file_with_plugin_paths(
             &job.source_path,
             &inner.plugin_roots,
@@ -505,7 +643,9 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             Ok(_) => {
                 if let Ok(metadata) = fs::metadata(&job.source_path) {
                     let source_mtime = system_time_rfc3339(
-                        metadata.modified().unwrap_or_else(|_| std::time::SystemTime::now()),
+                        metadata
+                            .modified()
+                            .unwrap_or_else(|_| std::time::SystemTime::now()),
                     );
                     let _ = inner.state_db.mark_ready(
                         &job.source_path,
@@ -522,9 +662,10 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             }
             Err(err) => {
                 if !job.source_path.exists() {
-                    let _ = inner
-                        .state_db
-                        .mark_missing(&job.source_path, &job.plugin_id, job.attempts);
+                    let _ =
+                        inner
+                            .state_db
+                            .mark_missing(&job.source_path, &job.plugin_id, job.attempts);
                     let _ = inner.state_db.finish_plugin_run(
                         &job.run_id,
                         "missing",
@@ -579,6 +720,7 @@ fn enqueue_due_retries(inner: &Arc<RuntimeInner>, state: &mut RuntimeState) {
                 attempts: row.attempts + 1,
                 run_id: next_run_id(inner),
             },
+            false,
         );
     }
 }
@@ -595,7 +737,12 @@ fn promote_pending_jobs(state: &mut RuntimeState) {
     }
 }
 
-fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job: PluginJob) {
+fn enqueue_pending_job(
+    inner: &Arc<RuntimeInner>,
+    state: &mut RuntimeState,
+    job: PluginJob,
+    priority_front: bool,
+) {
     let key = job_key(&job.source_path, &job.plugin_id);
     if state.pending_job_keys.contains(&key)
         || state.queued_jobs.contains(&key)
@@ -604,8 +751,22 @@ fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job:
         return;
     }
     state.pending_job_keys.insert(key);
-    let plugin_version = registered_plugin(inner, &job.plugin_id).version;
-    let source_size = fs::metadata(&job.source_path).map(|value| value.len() as i64).unwrap_or(0);
+    let Some(plugin) = registered_plugin(inner, &job.plugin_id) else {
+        state
+            .pending_job_keys
+            .remove(&job_key(&job.source_path, &job.plugin_id));
+        let _ = inner.state_db.mark_skipped(
+            &job.source_path,
+            &job.plugin_id,
+            job.attempts.max(1),
+            "Plugin is no longer installed",
+        );
+        return;
+    };
+    let plugin_version = plugin.version;
+    let source_size = fs::metadata(&job.source_path)
+        .map(|value| value.len() as i64)
+        .unwrap_or(0);
     let source_mtime = fs::metadata(&job.source_path)
         .and_then(|value| value.modified())
         .map(system_time_rfc3339)
@@ -635,21 +796,46 @@ fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job:
             job.attempts.saturating_sub(1),
         )
     };
-    state.pending_jobs.push_back(job);
+    if priority_front {
+        state.pending_jobs.push_front(job);
+    } else {
+        state.pending_jobs.push_back(job);
+    }
 }
 
 fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<usize> {
+    scan_root_internal(inner, root, None)
+}
+
+fn scan_root_for_plugin(inner: &Arc<RuntimeInner>, root: &Path, plugin_id: &str) -> Result<usize> {
+    scan_root_internal(inner, root, Some(plugin_id))
+}
+
+fn scan_root_internal(
+    inner: &Arc<RuntimeInner>,
+    root: &Path,
+    plugin_filter: Option<&str>,
+) -> Result<usize> {
     let discovery = discovery_report(inner)?;
     let classifier = FileClassifier::new(&discovery.registry);
     let mut seen = HashSet::new();
     let mut supported_file_count = 0usize;
 
     if root.is_file() {
-        if let Some(key) = scan_file(inner, root, &classifier, &discovery.registry) {
+        if let Some(key) = scan_file(
+            inner,
+            root,
+            &classifier,
+            &discovery.registry,
+            plugin_filter,
+            true,
+        ) {
             seen.insert(key);
             supported_file_count += 1;
         }
-        mark_missing_for_root(inner, root, &seen);
+        if plugin_filter.is_none() {
+            mark_missing_for_root(inner, root, &seen);
+        }
         return Ok(supported_file_count);
     }
 
@@ -672,16 +858,28 @@ fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<usize> {
         let Ok(entry) = entry else {
             continue;
         };
-        if !entry.file_type().is_some_and(|file_type| file_type.is_file()) {
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
             continue;
         }
-        if let Some(key) = scan_file(inner, entry.path(), &classifier, &discovery.registry) {
+        if let Some(key) = scan_file(
+            inner,
+            entry.path(),
+            &classifier,
+            &discovery.registry,
+            plugin_filter,
+            true,
+        ) {
             seen.insert(key);
             supported_file_count += 1;
         }
     }
 
-    mark_missing_for_root(inner, root, &seen);
+    if plugin_filter.is_none() {
+        mark_missing_for_root(inner, root, &seen);
+    }
     Ok(supported_file_count)
 }
 
@@ -729,21 +927,30 @@ fn scan_file(
     path: &Path,
     classifier: &FileClassifier,
     registry: &PluginRegistry,
+    plugin_filter: Option<&str>,
+    priority_front: bool,
 ) -> Option<String> {
     let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(path) else {
         return None;
     };
+    if plugin_filter.is_some_and(|value| value != plugin_id) {
+        return None;
+    }
     let plugin = registry.by_id.get(&plugin_id)?;
     let metadata = fs::metadata(path).ok()?;
     let source_size = metadata.len() as i64;
     let source_mtime = system_time_rfc3339(metadata.modified().ok()?);
     let key = job_key(path, &plugin.id);
-    let existing = inner.state_db.get_indexed_file(path, &plugin.id).ok().flatten();
+    let existing = inner
+        .state_db
+        .get_indexed_file(path, &plugin.id)
+        .ok()
+        .flatten();
     let validation = cache::validate_cache(path, plugin);
 
     match existing {
         None => {
-            enqueue_job(inner, path, &plugin.id, 1);
+            enqueue_job(inner, path, &plugin.id, 1, priority_front);
         }
         Some(row) => {
             if row.status == "ignored" {
@@ -767,7 +974,7 @@ fn scan_file(
                     row.attempts,
                     Some("Source file or plugin version changed"),
                 );
-                enqueue_job(inner, path, &plugin.id, 1);
+                enqueue_job(inner, path, &plugin.id, 1, priority_front);
                 return Some(key);
             }
 
@@ -788,12 +995,15 @@ fn scan_file(
                     let _ = inner.state_db.touch_checked_at(path, &plugin.id);
                     return Some(key);
                 }
-                enqueue_job(inner, path, &plugin.id, row.attempts + 1);
+                enqueue_job(inner, path, &plugin.id, row.attempts + 1, priority_front);
                 return Some(key);
             }
 
-            if matches!(row.status.as_str(), "stale" | "missing" | "queued" | "processing") {
-                enqueue_job(inner, path, &plugin.id, row.attempts.max(1));
+            if matches!(
+                row.status.as_str(),
+                "stale" | "missing" | "queued" | "processing"
+            ) {
+                enqueue_job(inner, path, &plugin.id, row.attempts.max(1), priority_front);
                 return Some(key);
             }
 
@@ -802,15 +1012,24 @@ fn scan_file(
                 return Some(key);
             }
 
-            let _ = inner.state_db.mark_stale(path, &plugin.id, row.attempts, Some("Cache missing"));
-            enqueue_job(inner, path, &plugin.id, row.attempts.max(1));
+            let _ =
+                inner
+                    .state_db
+                    .mark_stale(path, &plugin.id, row.attempts, Some("Cache missing"));
+            enqueue_job(inner, path, &plugin.id, row.attempts.max(1), priority_front);
         }
     }
 
     Some(key)
 }
 
-fn enqueue_job(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id: &str, attempts: u32) {
+fn enqueue_job(
+    inner: &Arc<RuntimeInner>,
+    source_path: &Path,
+    plugin_id: &str,
+    attempts: u32,
+    priority_front: bool,
+) {
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
     enqueue_pending_job(
         inner,
@@ -821,6 +1040,7 @@ fn enqueue_job(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id: &str, a
             attempts,
             run_id: next_run_id(inner),
         },
+        priority_front,
     );
     inner.wake.notify_all();
 }
@@ -840,15 +1060,33 @@ fn classify_index_error(err: &anyhow::Error) -> FailureDisplay {
         .unwrap_or_else(|| classify_failure(&err.to_string()))
 }
 
-fn registered_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) -> crate::plugins::registry::RegisteredPlugin {
+fn registered_plugin(
+    inner: &Arc<RuntimeInner>,
+    plugin_id: &str,
+) -> Option<crate::plugins::registry::RegisteredPlugin> {
     discovery_report(inner)
         .ok()
         .and_then(|report| report.registry.by_id.get(plugin_id).cloned())
-        .unwrap_or_else(|| panic!("plugin {plugin_id} should be registered"))
+}
+
+fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
+    let suffix = format!("\0{plugin_id}");
+    let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+    state.pending_jobs.retain(|job| job.plugin_id != plugin_id);
+    state
+        .pending_job_keys
+        .retain(|key| !key.ends_with(&suffix));
+    state.jobs.retain(|job| job.plugin_id != plugin_id);
+    state.queued_jobs.retain(|key| !key.ends_with(&suffix));
+    state.processing_jobs.retain(|key| !key.ends_with(&suffix));
+    inner.wake.notify_all();
 }
 
 fn discovery_report(inner: &Arc<RuntimeInner>) -> Result<PluginDiscoveryReport> {
-    let preferences = inner.state_db.preferred_plugin_versions().unwrap_or_default();
+    let preferences = inner
+        .state_db
+        .preferred_plugin_versions()
+        .unwrap_or_default();
     PluginRegistry::discover_for_platform_with_preferences(
         &inner.plugin_roots,
         crate::plugins::manifest::current_platform()?,
@@ -908,10 +1146,7 @@ fn plugin_health_summary(plugin_id: &str, counts: Option<&PluginCounts>) -> Plug
 }
 
 fn map_issue_row(row: PluginIssueRow) -> PluginIssue {
-    let error_code = row
-        .error_code
-        .clone()
-        .unwrap_or_else(|| row.status.clone());
+    let error_code = row.error_code.clone().unwrap_or_else(|| row.status.clone());
     let message = issue_message(&row);
     let details = row
         .error_hint
@@ -940,10 +1175,12 @@ fn issue_message(row: &PluginIssueRow) -> String {
         match row.status.as_str() {
             "stale" => return "Needs reprocessing".to_string(),
             "missing" => return "Source file missing".to_string(),
-            "skipped" => return row
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "Skipped".to_string()),
+            "skipped" => {
+                return row
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "Skipped".to_string())
+            }
             "ignored" => return "Ignored".to_string(),
             _ => {}
         }

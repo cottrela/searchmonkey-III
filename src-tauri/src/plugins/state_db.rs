@@ -96,11 +96,13 @@ impl StateDb {
             .first()
             .cloned()
             .context("no plugin index root configured")?;
-        let path = default_state_db_path().unwrap_or_else(|| index_root.join("searchmonkey.sqlite"));
+        let path =
+            default_state_db_path().unwrap_or_else(|| index_root.join("searchmonkey.sqlite"));
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed creating sqlite directory {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed creating sqlite directory {}", parent.display())
+            })?;
         }
 
         let db = Self { path, index_root };
@@ -116,13 +118,27 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn clear_plugin(&self, plugin_id: &str) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "DELETE FROM indexed_files WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        conn.execute(
+            "DELETE FROM plugin_runs WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        Ok(())
+    }
+
     pub fn preferred_plugin_versions(&self) -> Result<HashMap<String, String>> {
         let conn = self.open()?;
-        let mut stmt = conn.prepare(
-            "SELECT plugin_id, active_version FROM plugin_preferences",
-        )?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
-        rows.collect::<std::result::Result<HashMap<_, _>, _>>().map_err(Into::into)
+        let mut stmt = conn.prepare("SELECT plugin_id, active_version FROM plugin_preferences")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<HashMap<_, _>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn set_preferred_plugin_version(&self, plugin_id: &str, version: &str) -> Result<()> {
@@ -145,7 +161,11 @@ impl StateDb {
         Ok(())
     }
 
-    pub fn get_indexed_file(&self, source_path: &Path, plugin_id: &str) -> Result<Option<IndexedFileRow>> {
+    pub fn get_indexed_file(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+    ) -> Result<Option<IndexedFileRow>> {
         let conn = self.open()?;
         conn.query_row(
             "SELECT source_path, plugin_id, source_size, source_mtime, cache_text_path, cache_meta_path, \
@@ -168,8 +188,25 @@ impl StateDb {
                     indexed_at, checked_at, updated_at \
              FROM indexed_files WHERE source_path = ?1 OR source_path LIKE ?2",
         )?;
-        let rows = stmt.query_map(params![root_string, format!("{}/%", root_path.display())], map_indexed_file_row)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        let rows = stmt.query_map(
+            params![root_string, format!("{}/%", root_path.display())],
+            map_indexed_file_row,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_plugin_rows(&self, plugin_id: &str) -> Result<Vec<IndexedFileRow>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT source_path, plugin_id, source_size, source_mtime, cache_text_path, cache_meta_path, \
+                    status, error_code, error_message, error_hint, attempts, retry_after, plugin_version, \
+                    indexed_at, checked_at, updated_at \
+             FROM indexed_files WHERE plugin_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![plugin_id], map_indexed_file_row)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn upsert_discovered_file(
@@ -336,7 +373,12 @@ impl StateDb {
         Ok(())
     }
 
-    pub fn mark_processing(&self, source_path: &Path, plugin_id: &str, attempts: u32) -> Result<()> {
+    pub fn mark_processing(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+        attempts: u32,
+    ) -> Result<()> {
         let conn = self.open()?;
         conn.execute(
             "UPDATE indexed_files
@@ -411,12 +453,7 @@ impl StateDb {
         )
     }
 
-    pub fn mark_ignored(
-        &self,
-        source_path: &Path,
-        plugin_id: &str,
-        attempts: u32,
-    ) -> Result<()> {
+    pub fn mark_ignored(&self, source_path: &Path, plugin_id: &str, attempts: u32) -> Result<()> {
         let conn = self.open()?;
         conn.execute(
             "UPDATE indexed_files
@@ -495,7 +532,10 @@ impl StateDb {
         )
     }
 
-    pub fn list_plugin_counts(&self, plugin_ids: &[String]) -> Result<HashMap<String, PluginCounts>> {
+    pub fn list_plugin_counts(
+        &self,
+        plugin_ids: &[String],
+    ) -> Result<HashMap<String, PluginCounts>> {
         let conn = self.open()?;
         let mut map = HashMap::new();
 
@@ -544,7 +584,8 @@ impl StateDb {
                 updated_at: row.get(8)?,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn list_retry_ready(&self, limit: usize) -> Result<Vec<RetryReadyRow>> {
@@ -566,7 +607,8 @@ impl StateDb {
                 attempts: row.get::<_, i64>(2)? as u32,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn list_recoverable_jobs(&self, limit: usize) -> Result<Vec<RecoverableJobRow>> {
@@ -585,7 +627,8 @@ impl StateDb {
                 attempts: row.get::<_, i64>(2)? as u32,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn upsert_scan_root(&self, root_path: &Path) -> Result<()> {
@@ -616,9 +659,22 @@ impl StateDb {
             "UPDATE scan_roots
              SET last_scan_completed_at = ?2, last_seen_file_count = ?3
              WHERE root_path = ?1",
-            params![root_path.display().to_string(), now_rfc3339(), file_count as i64],
+            params![
+                root_path.display().to_string(),
+                now_rfc3339(),
+                file_count as i64
+            ],
         )?;
         Ok(())
+    }
+
+    pub fn list_scan_roots(&self) -> Result<Vec<PathBuf>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare("SELECT root_path FROM scan_roots ORDER BY root_path ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map(PathBuf::from))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn start_plugin_run(&self, run: &PluginRunRecord) -> Result<()> {
@@ -708,8 +764,12 @@ impl StateDb {
     }
 
     fn open(&self) -> Result<Connection> {
-        Connection::open(&self.path)
-            .with_context(|| format!("failed opening plugin sqlite database {}", self.path.display()))
+        Connection::open(&self.path).with_context(|| {
+            format!(
+                "failed opening plugin sqlite database {}",
+                self.path.display()
+            )
+        })
     }
 
     fn update_status(
@@ -807,7 +867,10 @@ pub fn is_retry_ready(retry_after: Option<&str>) -> bool {
 }
 
 pub fn is_attention_status(status: &str) -> bool {
-    matches!(status, STATUS_FAILED | STATUS_STALE | STATUS_MISSING | STATUS_SKIPPED)
+    matches!(
+        status,
+        STATUS_FAILED | STATUS_STALE | STATUS_MISSING | STATUS_SKIPPED
+    )
 }
 
 pub fn ignored_status() -> &'static str {

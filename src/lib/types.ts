@@ -228,3 +228,9 @@ export type PluginIndexStatus = {
   plugin_summaries: PluginHealthSummary[];
   issues: PluginIssue[];
 };
+
+export type InstallPluginResult = {
+  plugin_id: string;
+  version: string;
+  status: PluginIndexStatus;
+};

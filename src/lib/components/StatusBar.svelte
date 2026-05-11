@@ -58,7 +58,7 @@
     );
     const tone = totals.blocked > 0 ? 'blocked' : totals.attention > 0 ? 'warning' : 'none';
     return {
-      label: `Plugins: ${pluginStatus.plugin_state}`,
+      label: pluginStatus.paused ? 'Plugins: paused' : `Plugins: ${pluginStatus.plugin_state}`,
       tone
     };
   });

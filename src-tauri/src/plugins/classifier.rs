@@ -163,6 +163,7 @@ mod tests {
     fn classifies_generated_files_and_plugin_supported_sources() {
         let registry = PluginRegistry {
             by_id: HashMap::new(),
+            versions_by_id: HashMap::new(),
             by_extension: HashMap::from([(".pdf".to_string(), vec!["sm.plugin.pdf".to_string()])]),
             ignored_paths: HashSet::from([PathBuf::from("/plugins/sm.plugin.pdf")]),
         };
@@ -192,6 +193,7 @@ mod tests {
     fn classifies_plugin_internal_files() {
         let registry = PluginRegistry {
             by_id: HashMap::new(),
+            versions_by_id: HashMap::new(),
             by_extension: HashMap::new(),
             ignored_paths: HashSet::from([PathBuf::from("/plugins/sm.plugin.pdf")]),
         };

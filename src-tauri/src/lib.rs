@@ -11,9 +11,9 @@ use std::thread;
 use plugins::{
     classifier::meta_for_sm_text,
     indexer,
+    meta::{SmMeta, SmRangeType},
     registry::PluginRegistry,
     runtime::PluginIndexRuntime,
-    meta::{SmMeta, SmRangeType},
 };
 use search::{
     ripgrep::RipgrepSidecarProvider,
@@ -21,6 +21,7 @@ use search::{
     FilePreview, FilePreviewLine, FilePreviewPageBreak, SearchMatch, SearchProvider, SearchRequest,
     SearchState, SearchStatus,
 };
+use serde::Serialize;
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     Emitter, State,
@@ -42,6 +43,13 @@ const PAUSE_BACKGROUND_INDEXING_MENU_ID: &str = "pause-background-indexing";
 const REBUILD_PLUGIN_CACHE_MENU_ID: &str = "rebuild-plugin-cache";
 const OPEN_PLUGIN_FOLDER_MENU_ID: &str = "open-plugin-folder";
 const PLUGIN_MENU_ITEM_PREFIX: &str = "plugin-entry:";
+
+#[derive(Debug, Clone, Serialize)]
+struct InstallPluginResult {
+    plugin_id: String,
+    version: String,
+    status: plugins::runtime::PluginIndexStatus,
+}
 
 #[derive(Default)]
 struct SearchSessions {
@@ -352,11 +360,47 @@ fn rebuild_plugin_index(
 }
 
 #[tauri::command]
+fn refresh_plugin_supported_files(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .refresh_plugin_supported_files(plugin_id.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn reset_plugin_cache(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .reset_plugin_cache(plugin_id.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn plugin_folder_path(plugin_index: State<'_, PluginIndexRuntime>) -> Result<String, String> {
     plugin_index
         .default_plugin_folder()
         .map(|path| path.display().to_string())
         .ok_or_else(|| "Could not resolve the plugin folder.".to_string())
+}
+
+#[tauri::command]
+fn install_plugin_package(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    archive_path: String,
+) -> Result<InstallPluginResult, String> {
+    let archive_path = expand_home_path(archive_path.trim())?;
+    let (plugin_id, version, status) = plugin_index
+        .install_plugin_archive(&archive_path)
+        .map_err(|err| err.to_string())?;
+    Ok(InstallPluginResult {
+        plugin_id,
+        version,
+        status,
+    })
 }
 
 #[tauri::command]
@@ -718,7 +762,7 @@ pub fn run() {
         .map(|plugin| {
             (
                 format!("{PLUGIN_MENU_ITEM_PREFIX}{}", plugin.id),
-                format!("{}        ✓ Enabled", plugin.name),
+                format!("{}…", plugin.name),
             )
         })
         .collect::<Vec<_>>();
@@ -760,9 +804,12 @@ pub fn run() {
             }
             let plugins_menu = plugins_menu
                 .separator()
-                .text(PAUSE_BACKGROUND_INDEXING_MENU_ID, "Pause Background Processing")
-                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Reset Processing Cache")
-                .text(OPEN_PLUGIN_FOLDER_MENU_ID, "Open Plugin Folder")
+                .text(
+                    PAUSE_BACKGROUND_INDEXING_MENU_ID,
+                    "Pause Background Processing",
+                )
+                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Reset All Processing Cache")
+                .text(OPEN_PLUGIN_FOLDER_MENU_ID, "Open Plugins Folder")
                 .build()?;
 
             MenuBuilder::new(app)
@@ -839,6 +886,7 @@ pub fn run() {
             get_search_status,
             home_dir,
             ignore_plugin_issue,
+            install_plugin_package,
             index_file_with_plugin,
             list_directory,
             open_file_path,
@@ -846,7 +894,9 @@ pub fn run() {
             queue_plugin_scan,
             read_file_preview,
             rebuild_plugin_index,
+            refresh_plugin_supported_files,
             reveal_file_path,
+            reset_plugin_cache,
             search_files,
             set_active_plugin_version,
             set_plugin_index_paused,

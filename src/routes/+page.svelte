@@ -19,9 +19,11 @@
     getResults,
     getPluginIndexStatus,
     ignorePluginIssue,
+    installPluginPackage,
     pluginFolderPath,
     queuePluginScan,
     rebuildPluginIndex,
+    refreshPluginSupportedFiles,
     getSearchStatus,
     homeDir,
     listenSearchBufferUpdated,
@@ -29,6 +31,7 @@
     openFilePath,
     readFilePreview,
     revealFilePath,
+    resetPluginCache,
     setActivePluginVersion,
     setPluginIndexPaused,
     startSearch as startSearchCommand,
@@ -125,6 +128,7 @@
   let scopePanelVisible = true;
   let pluginDialogOpen = $state(false);
   let pluginDialogSelection = $state<string | null>(null);
+  let pluginDialogPage = $state<'installed' | 'available' | 'updates' | 'install'>('installed');
   let pluginStatus = $state<PluginIndexStatus | null>(null);
   let pluginStatusError = $state('');
   let pluginStatusPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -419,6 +423,7 @@
     });
     void listen<string | null>('open-manage-plugins', (event) => {
       pluginDialogSelection = event.payload ?? null;
+      pluginDialogPage = 'installed';
       pluginDialogOpen = true;
       void refreshPluginStatus();
     }).then((unlisten) => {
@@ -426,6 +431,7 @@
     });
     void listen('open-install-plugin', () => {
       pluginDialogSelection = null;
+      pluginDialogPage = 'install';
       pluginDialogOpen = true;
       void refreshPluginStatus();
     }).then((unlisten) => {
@@ -580,6 +586,49 @@
       pluginStatusError = '';
     } catch (error) {
       pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function openSpecificPluginFolder(targetPath: string) {
+    try {
+      await openFilePath(targetPath);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function refreshSupportedPluginFiles(pluginId: string) {
+    try {
+      pluginStatus = await refreshPluginSupportedFiles(pluginId);
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function resetSelectedPluginCache(pluginId: string) {
+    try {
+      pluginStatus = await resetPluginCache(pluginId);
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function installPluginArchive(archivePath: string) {
+    try {
+      const result = await installPluginPackage(archivePath);
+      pluginStatus = result.status;
+      pluginDialogSelection = result.plugin_id;
+      pluginDialogPage = 'installed';
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+      throw error;
     }
   }
 
@@ -1857,14 +1906,19 @@
     <PluginsDialog
       status={pluginStatus}
       selectedPluginId={pluginDialogSelection}
+      initialPage={pluginDialogPage}
       onClose={() => {
         pluginDialogOpen = false;
         pluginDialogSelection = null;
+        pluginDialogPage = 'installed';
       }}
       onRefresh={refreshPluginStatus}
       onOpenFolder={handleOpenPluginFolder}
-      onTogglePaused={togglePluginIndexing}
       onRebuild={handleRebuildPluginIndex}
+      onOpenPluginFolder={openSpecificPluginFolder}
+      onRefreshPlugin={refreshSupportedPluginFiles}
+      onResetPlugin={resetSelectedPluginCache}
+      onInstallPlugin={installPluginArchive}
       onRetryFailure={retryPluginFailure}
       onRevealFailure={revealPluginFailure}
       onIgnoreFailure={ignorePluginFailure}
@@ -1883,6 +1937,7 @@
     pluginStatus={pluginStatus}
     onManagePlugins={() => {
       pluginDialogSelection = null;
+      pluginDialogPage = 'installed';
       pluginDialogOpen = true;
       void refreshPluginStatus();
     }}

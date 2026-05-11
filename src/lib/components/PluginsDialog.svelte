@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { open } from '@tauri-apps/plugin-dialog';
   import { filename } from '$lib/paths';
   import type {
     InstalledPluginInfo,
@@ -7,14 +8,20 @@
     PluginIssue
   } from '$lib/types';
 
+  type PluginDialogPage = 'installed' | 'available' | 'updates' | 'install';
+
   let {
     status,
     selectedPluginId = null,
+    initialPage = 'installed',
     onClose,
     onRefresh,
     onOpenFolder,
-    onTogglePaused,
     onRebuild,
+    onOpenPluginFolder,
+    onRefreshPlugin,
+    onResetPlugin,
+    onInstallPlugin,
     onRetryFailure,
     onRevealFailure,
     onIgnoreFailure,
@@ -24,11 +31,15 @@
   }: {
     status: PluginIndexStatus | null;
     selectedPluginId?: string | null;
+    initialPage?: PluginDialogPage;
     onClose?: () => void;
     onRefresh?: () => void;
     onOpenFolder?: () => void;
-    onTogglePaused?: () => void;
     onRebuild?: () => void;
+    onOpenPluginFolder?: (path: string) => void | Promise<void>;
+    onRefreshPlugin?: (pluginId: string) => void | Promise<void>;
+    onResetPlugin?: (pluginId: string) => void | Promise<void>;
+    onInstallPlugin?: (archivePath: string) => void | Promise<void>;
     onRetryFailure?: (path: string) => void | Promise<void>;
     onRevealFailure?: (path: string) => void | Promise<void>;
     onIgnoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
@@ -37,6 +48,7 @@
     onUninstallVersion?: (pluginId: string, version: string) => void | Promise<void>;
   } = $props();
 
+  let currentPage = $state<PluginDialogPage>('installed');
   let internalSelectedPluginId = $state<string | null>(null);
   let selectedIssueCode = $state<string | null>(null);
   let openIssueDetails = $state<Record<string, boolean>>({});
@@ -49,10 +61,18 @@
   let pendingVersionUninstalls = $state<Record<string, boolean>>({});
   let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
   let hiddenRetriedPaths = $state<Record<string, string>>({});
+  let installStatus = $state<'ready' | 'installing' | 'success' | 'failed'>('ready');
+  let installMessage = $state('');
+  let installDropActive = $state(false);
+
+  $effect(() => {
+    currentPage = initialPage;
+  });
 
   $effect(() => {
     if (selectedPluginId) {
       internalSelectedPluginId = selectedPluginId;
+      currentPage = 'installed';
     }
   });
 
@@ -81,9 +101,7 @@
     const groups = new Map<string, InstalledPluginInfo>();
     for (const plugin of installedPlugins) {
       const existing = groups.get(plugin.id);
-      if (!existing || plugin.is_active) {
-        groups.set(plugin.id, plugin);
-      }
+      if (!existing || plugin.is_active) groups.set(plugin.id, plugin);
     }
     return [...groups.values()];
   });
@@ -115,12 +133,8 @@
     let issues = status.issues.filter((issue) => issue.plugin_id === selectedPluginIdValue);
     issues = issues.filter((issue) => !hiddenIgnoredPaths[issue.source_path]);
     issues = issues.filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
-    if (!showIgnoredIssues) {
-      issues = issues.filter((issue) => issue.status !== 'ignored');
-    }
-    if (selectedIssueCode) {
-      issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
-    }
+    if (!showIgnoredIssues) issues = issues.filter((issue) => issue.status !== 'ignored');
+    if (selectedIssueCode) issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
     return issues;
   });
   const issueCategories = $derived.by(() => {
@@ -134,13 +148,19 @@
         existing.count += 1;
         continue;
       }
-      counts.set(issue.error_code, {
-        code: issue.error_code,
-        label: labelForIssue(issue),
-        count: 1
-      });
+      counts.set(issue.error_code, { code: issue.error_code, label: labelForIssue(issue), count: 1 });
     }
-    return [...counts.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+    return [...counts.values()].sort(
+      (left, right) =>
+        left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+        || left.code.localeCompare(right.code, undefined, { sensitivity: 'base' })
+    );
+  });
+  const ignoredIssueCount = $derived.by(() => {
+    if (!status || !selectedPluginIdValue) return 0;
+    return status.issues.filter(
+      (issue) => issue.plugin_id === selectedPluginIdValue && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
+    ).length;
   });
   const indexingLabel = $derived.by(() => {
     if (!status) return 'Idle';
@@ -161,14 +181,8 @@
   function selectPlugin(plugin: InstalledPluginInfo) {
     internalSelectedPluginId = plugin.id;
     selectedIssueCode = null;
+    currentPage = 'installed';
   }
-
-  const ignoredIssueCount = $derived.by(() => {
-    if (!status || !selectedPluginIdValue) return 0;
-    return status.issues.filter(
-      (issue) => issue.plugin_id === selectedPluginIdValue && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
-    ).length;
-  });
 
   function labelForIssue(issue: PluginIssue): string {
     switch (issue.error_code) {
@@ -214,17 +228,12 @@
   }
 
   function setIssueExpanded(issue: PluginIssue, expanded: boolean) {
-    openIssueDetails = {
-      ...openIssueDetails,
-      [detailKey(issue)]: expanded
-    };
+    openIssueDetails = { ...openIssueDetails, [detailKey(issue)]: expanded };
   }
 
   function closePluginMenus(except?: HTMLDetailsElement) {
     pluginsDialogElement?.querySelectorAll<HTMLDetailsElement>('.menu[open]').forEach((menu) => {
-      if (menu !== except) {
-        menu.open = false;
-      }
+      if (menu !== except) menu.open = false;
     });
   }
 
@@ -258,26 +267,15 @@
     const dotIndex = name.lastIndexOf('.');
     if (name.length <= maxLength) return name;
     if (dotIndex <= 0 || dotIndex === name.length - 1) return truncateMiddle(name, maxLength);
-
-    const extension = name.slice(dotIndex);
-    const stem = name.slice(0, dotIndex);
-    const reserved = extension.length + 1;
-    if (reserved >= maxLength) return truncateMiddle(name, maxLength);
-    return `${truncateMiddle(stem, maxLength - extension.length)}${extension}`;
+    return `${truncateMiddle(name.slice(0, dotIndex), maxLength - name.slice(dotIndex).length)}${name.slice(dotIndex)}`;
   }
 
   function markPending(record: Record<string, boolean>, path: string, pending: boolean) {
-    return {
-      ...record,
-      [path]: pending
-    };
+    return { ...record, [path]: pending };
   }
 
   function markHiddenRetry(record: Record<string, string>, path: string, timestamp: string) {
-    return {
-      ...record,
-      [path]: timestamp
-    };
+    return { ...record, [path]: timestamp };
   }
 
   async function queueRetry(path: string, lastReportedAt: string) {
@@ -356,14 +354,78 @@
     return retryMessage(issue.retry_after);
   }
 
+  async function browseForPluginPackage() {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: 'Searchmonkey Plugin', extensions: ['smplugin'] }]
+    });
+    if (typeof selected !== 'string') return;
+    await installArchive(selected);
+  }
+
+  async function installArchive(archivePath: string) {
+    if (!onInstallPlugin) return;
+    installStatus = 'installing';
+    installMessage = 'Installing';
+    try {
+      await onInstallPlugin(archivePath);
+      installStatus = 'success';
+      installMessage = 'Success';
+    } catch (error) {
+      installStatus = 'failed';
+      installMessage = error instanceof Error ? error.message : 'Install failed';
+    }
+  }
+
+  function setPage(page: PluginDialogPage) {
+    currentPage = page;
+  }
+
+  async function refreshSelectedPlugin() {
+    if (!selectedPlugin || !onRefreshPlugin) return;
+    await onRefreshPlugin(selectedPlugin.id);
+  }
+
+  async function resetSelectedPlugin() {
+    if (!selectedPlugin || !onResetPlugin) return;
+    if (!window.confirm(`Reset cached output for ${selectedPlugin.name}?`)) return;
+    await onResetPlugin(selectedPlugin.id);
+  }
+
+  async function uninstallSelectedPlugin() {
+    if (!selectedPlugin) return;
+    await uninstallVersion(selectedPlugin.id, selectedPlugin.version);
+  }
+
+  function handleDropHover(event: DragEvent) {
+    event.preventDefault();
+    installDropActive = true;
+  }
+
+  function handleDropLeave(event: DragEvent) {
+    event.preventDefault();
+    installDropActive = false;
+  }
+
+  async function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    installDropActive = false;
+    const dropped = event.dataTransfer?.files?.[0] as (File & { path?: string }) | undefined;
+    const filePath = dropped?.path;
+    if (filePath) {
+      await installArchive(filePath);
+      return;
+    }
+    installStatus = 'failed';
+    installMessage = 'Use Browse to pick a local .smplugin file';
+  }
+
   $effect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       if (!pluginsDialogElement) return;
       if (!(event.target instanceof Node)) return;
-
       const menu = (event.target instanceof Element ? event.target : event.target.parentElement)?.closest('.menu');
       if (menu && pluginsDialogElement.contains(menu)) return;
-
       closePluginMenus();
     };
 
@@ -384,14 +446,17 @@
         <button class="close-dialog" type="button" aria-label="Close plugin manager" onclick={onClose}>×</button>
       </div>
 
-      {#if pluginGroups.length}
+      <nav class="nav-groups" aria-label="Plugin pages">
+        <button type="button" class:active={currentPage === 'installed'} onclick={() => setPage('installed')}>Installed</button>
+        <button type="button" class:active={currentPage === 'available'} onclick={() => setPage('available')}>Available</button>
+        <button type="button" class:active={currentPage === 'updates'} onclick={() => setPage('updates')}>Updates</button>
+        <button type="button" class:active={currentPage === 'install'} onclick={() => setPage('install')}>Install New Plugin</button>
+      </nav>
+
+      {#if currentPage === 'installed' && pluginGroups.length}
         <div class="plugin-list">
           {#each pluginGroups as plugin}
-            <button
-              type="button"
-              class:selected={selectedPluginIdValue === plugin.id}
-              onclick={() => selectPlugin(plugin)}
-            >
+            <button type="button" class:selected={selectedPluginIdValue === plugin.id} onclick={() => selectPlugin(plugin)}>
               <span>{plugin.name}</span>
               <span>v{plugin.version}</span>
             </button>
@@ -400,8 +465,53 @@
       {/if}
     </aside>
 
-    <section class="detail">
-      {#if selectedPlugin}
+    <section class="detail plugin-panel">
+      {#if currentPage === 'install'}
+        <div class="plugin-content">
+        <header class="detail-header">
+          <div>
+            <h3>Install New Plugin</h3>
+            <p class="muted">Install a local `.smplugin` package.</p>
+          </div>
+        </header>
+
+        <section class="panel install-panel">
+          <button
+            type="button"
+            class:drag-active={installDropActive}
+            class="drop-zone"
+            ondragenter={handleDropHover}
+            ondragover={handleDropHover}
+            ondragleave={handleDropLeave}
+            ondrop={handleDrop}
+            onclick={browseForPluginPackage}
+          >
+            <strong>Drop `.smplugin` here</strong>
+            <span>or Browse…</span>
+          </button>
+
+          <div class="install-status">
+            <span class="detail-label">Status</span>
+            <strong>{installStatus === 'ready' ? 'Ready' : installStatus === 'installing' ? 'Installing' : installStatus === 'success' ? 'Success' : 'Failed'}</strong>
+          </div>
+          {#if installMessage}
+            <p class="muted">{installMessage}</p>
+          {/if}
+        </section>
+        </div>
+      {:else if currentPage === 'available'}
+        <div class="empty-state plugin-content">
+          <h3>Available</h3>
+          <p>Remote plugin catalog wiring is not in place yet.</p>
+          <button type="button" class="secondary" onclick={() => setPage('install')}>Install New Plugin</button>
+        </div>
+      {:else if currentPage === 'updates'}
+        <div class="empty-state plugin-content">
+          <h3>Updates</h3>
+          <p>Installed version switching exists. Update discovery is not wired yet.</p>
+        </div>
+      {:else if selectedPlugin}
+        <div class="plugin-content">
         <header class="detail-header">
           <div>
             <h3>{selectedPlugin.name}</h3>
@@ -409,19 +519,17 @@
           </div>
 
           <details class="menu" onfocusout={handlePluginMenuFocusOut} ontoggle={handlePluginMenuToggle}>
-            <summary>More...</summary>
-            <div class="menu-panel">
-              <button type="button" class="secondary" disabled>{selectedPlugin.enabled ? 'Disable' : 'Enable'}</button>
-              <button type="button" class="secondary" disabled>Uninstall</button>
-              <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugin Folder</button>
-              <button type="button" class="secondary" onclick={() => (showIgnoredIssues = !showIgnoredIssues)}>
+            <summary>More…</summary>
+            <div class="menu-panel compact">
+              <button type="button" disabled>{selectedPlugin.enabled ? 'Disable Plugin' : 'Enable Plugin'}</button>
+              <button type="button" onclick={() => onOpenPluginFolder?.(selectedPlugin.root_path)}>Open Plugin Folder</button>
+              <button type="button" onclick={() => (showIgnoredIssues = !showIgnoredIssues)}>
                 {showIgnoredIssues ? 'Hide Ignored Files' : 'Show Ignored Files'}
               </button>
-              <button type="button" class="secondary" onclick={onTogglePaused}>
-                {status?.paused ? 'Resume Background Processing' : 'Pause Background Processing'}
-              </button>
-              <button type="button" class="secondary" onclick={onRefresh}>Refresh</button>
-              <button type="button" class="secondary reset-action" onclick={onRebuild}>Reset Processing Cache</button>
+              <button type="button" onclick={refreshSelectedPlugin}>Refresh Supported Files</button>
+              <div class="menu-separator" aria-hidden="true"></div>
+              <button type="button" onclick={uninstallSelectedPlugin}>Uninstall…</button>
+              <button type="button" onclick={resetSelectedPlugin}>Reset This Plugin Cache…</button>
             </div>
           </details>
         </header>
@@ -449,7 +557,7 @@
 
         <section class="panel">
           <h4>Storage</h4>
-          <button type="button" class="linkish" onclick={onOpenFolder}>Open plugin folder</button>
+          <button type="button" class="linkish" onclick={() => onOpenPluginFolder?.(selectedPlugin.root_path)}>Open plugin folder</button>
         </section>
 
         <section class="panel">
@@ -493,9 +601,7 @@
             <div>
               <h4>Issues</h4>
               <p class="muted">
-                {selectedSummary?.attention_count ?? 0} files need attention{#if ignoredIssueCount}
-                  · {ignoredIssueCount} ignored
-                {/if}
+                {selectedSummary?.attention_count ?? 0} files need attention{#if ignoredIssueCount} · {ignoredIssueCount} ignored{/if}
               </p>
             </div>
           </div>
@@ -558,11 +664,7 @@
                         {pendingUnignorePaths[issue.source_path] ? 'Re-enabling…' : 'Re-enable issue'}
                       </button>
                     {:else}
-                      <button
-                        type="button"
-                        class="secondary"
-                        onclick={() => ignoreIssue(issue.source_path, issue.plugin_id)}
-                      >
+                      <button type="button" class="secondary" onclick={() => ignoreIssue(issue.source_path, issue.plugin_id)}>
                         Ignore
                       </button>
                     {/if}
@@ -599,13 +701,18 @@
             <p class="muted">No issues.</p>
           {/if}
         </section>
+        </div>
       {:else}
-        <div class="empty-state">
+        <div class="empty-state plugin-content">
           <h3>No Plugins Installed</h3>
-          <p>Open the plugin folder to install plugin packages.</p>
-          <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugin Folder</button>
+          <p>Open the plugins folder or install a local package.</p>
+          <div class="empty-actions">
+            <button type="button" class="secondary" onclick={onOpenFolder}>Open Plugins Folder</button>
+            <button type="button" class="secondary" onclick={() => setPage('install')}>Install New Plugin</button>
+          </div>
         </div>
       {/if}
+
     </section>
   </div>
 </div>
@@ -631,9 +738,9 @@
     position: relative;
     z-index: 1;
     display: grid;
-    grid-template-columns: 220px minmax(540px, 1fr);
-    width: min(980px, calc(100vw - 36px));
-    height: min(680px, calc(100vh - 48px));
+    grid-template-columns: 250px minmax(560px, 1fr);
+    width: min(1020px, calc(100vw - 36px));
+    height: min(720px, calc(100vh - 48px));
     max-height: calc(100vh - 48px);
     border: 1px solid #d9e0d9;
     border-radius: 14px;
@@ -645,7 +752,7 @@
   .sidebar {
     display: grid;
     grid-auto-rows: min-content;
-    gap: 10px;
+    gap: 14px;
     min-height: 0;
     padding: 20px 14px;
     border-right: 1px solid #e2e7e2;
@@ -686,29 +793,25 @@
     cursor: pointer;
     font-size: 18px;
     line-height: 1;
-    transition:
-      border-color 120ms ease,
-      background-color 120ms ease,
-      color 120ms ease;
   }
 
-  .close-dialog:hover {
-    border-color: #bdd3c1;
-    color: #0f6b3b;
-    background: #f4faf6;
-  }
-
-  .plugin-list {
+  .nav-groups,
+  .plugin-list,
+  .issue-categories,
+  .menu-panel {
     display: grid;
-    gap: 4px;
+    gap: 6px;
   }
 
+  .nav-groups button,
   .plugin-list button,
   .issue-categories button,
-  .menu-panel button {
+  .menu-panel button,
+  .drop-zone {
     font: inherit;
   }
 
+  .nav-groups button,
   .plugin-list button {
     display: flex;
     align-items: center;
@@ -721,15 +824,14 @@
     background: transparent;
     cursor: pointer;
     text-align: left;
-    transition:
-      background-color 120ms ease,
-      color 120ms ease;
   }
 
+  .nav-groups button:hover,
   .plugin-list button:hover {
     background: #eef3ee;
   }
 
+  .nav-groups button.active,
   .plugin-list button.selected {
     background: #e7efe7;
     color: #0f6b3b;
@@ -744,11 +846,22 @@
 
   .detail {
     display: grid;
-    align-content: start;
-    gap: 18px;
     min-height: 0;
-    padding: 24px 28px;
     overflow: auto;
+  }
+
+  .plugin-panel {
+    align-items: stretch;
+  }
+
+  .plugin-content {
+    display: grid;
+    gap: 18px;
+    padding: 28px 36px;
+    justify-content: flex-start;
+    align-items: stretch;
+    align-content: start;
+    min-height: 100%;
   }
 
   .detail-header,
@@ -759,23 +872,9 @@
     gap: 16px;
   }
 
-  .detail-header p,
-  .description,
-  .summary-line,
-  .muted,
-  .issue-copy p {
-    margin: 0;
-  }
-
-  .detail-header h3 {
-    color: #1c232b;
-    font-size: 22px;
-    font-weight: 780;
-  }
-
   .description {
-    color: #45515d;
-    line-height: 1.5;
+    margin: -8px 0 0;
+    color: #49545e;
   }
 
   .panel {
@@ -787,183 +886,121 @@
     background: #fbfcfb;
   }
 
-  .summary-line {
+  .summary-line,
+  .chips,
+  .empty-actions {
     display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+  }
+
+  .summary-line {
     gap: 10px;
     color: #1c232b;
     font-size: 18px;
   }
 
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
   .chips span,
-  .issue-categories button {
-    border: 1px solid #d8dfd8;
+  .active-pill,
+  .ignored-badge {
+    display: inline-flex;
+    align-items: center;
     border-radius: 999px;
-    background: #fff;
-  }
-
-  .chips span {
-    padding: 7px 11px;
-    color: #31404d;
     font-size: 13px;
   }
 
-  .plugin-versions {
-    display: grid;
-    gap: 8px;
-  }
-
-  .version-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-height: 38px;
-  }
-
-  .version-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .version-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .version-label strong {
-    font-size: 14px;
+  .chips span {
+    border: 1px solid #d8dfd8;
+    padding: 7px 11px;
+    background: #fff;
+    color: #31404d;
   }
 
   .active-pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: #edf7f1;
+    background: #e7efe7;
     color: #0f6b3b;
+    padding: 2px 8px;
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
 
+  .ignored-badge {
+    margin-left: 8px;
+    padding: 2px 7px;
+    border: 1px solid #d6ddd6;
+    background: #f4f6f4;
+    color: #5d6873;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+  }
+
   .linkish,
   .secondary {
-    border-radius: 10px;
-    font: inherit;
+    border: 1px solid #d2dcd2;
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: #2c3740;
+    background: #fff;
+    cursor: pointer;
   }
 
   .linkish {
     width: fit-content;
     border: 0;
     padding: 0;
-    color: #0f6b3b;
     background: transparent;
-    cursor: pointer;
+    color: #0f6b3b;
     text-decoration: underline;
     text-decoration-color: rgba(15, 107, 59, 0.35);
     text-underline-offset: 0.14em;
   }
 
-  .secondary {
-    min-height: 36px;
-    padding: 0 14px;
-    cursor: pointer;
-    transition:
-      border-color 120ms ease,
-      background-color 120ms ease,
-      color 120ms ease,
-      box-shadow 120ms ease;
-  }
-
-  .secondary {
-    border: 1px solid #d8dfd8;
-    color: #24313d;
-    background: #fff;
-  }
-
-  .linkish:hover,
-  .secondary:hover,
-  .menu summary:hover,
-  .details summary:hover {
-    color: #0f6b3b;
-  }
-
-  .secondary:hover,
-  .menu summary:hover {
-    border-color: #bdd3c1;
-    background: #f4faf6;
-  }
-
-  .secondary:disabled {
-    cursor: default;
-    color: #7b8792;
-    border-color: #e3e8e3;
-    background: #f7f8f7;
-    box-shadow: none;
-  }
-
-  .reset-action {
-    color: #6c5252;
-    border-color: #e5d9d9;
-    background: #fcf8f8;
-  }
-
-  .issues-panel {
-    gap: 14px;
-  }
-
-  .issue-categories {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .issue-categories button {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    padding: 8px 12px;
-    color: #24313d;
-    cursor: pointer;
-    transition:
-      border-color 120ms ease,
-      background-color 120ms ease,
-      color 120ms ease;
-  }
-
-  .issue-categories button:hover {
-    border-color: #bdd3c1;
-    background: #f4faf6;
-  }
-
-  .issue-categories button.selected {
-    border-color: #0f6b3b;
-    color: #0f6b3b;
-    background: #edf7f1;
-  }
-
+  .plugin-versions,
   .issues-list {
     display: grid;
     gap: 12px;
   }
 
+  .version-row,
+  .issue-card,
+  .install-status {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .version-actions,
+  .version-label,
+  .issue-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
   .issue-card {
     display: grid;
     gap: 10px;
-    padding: 14px;
     border: 1px solid #e2e7e2;
     border-radius: 12px;
+    padding: 14px;
     background: #fff;
+  }
+
+  .ignored-card {
+    opacity: 0.62;
+    background: #fbfcfb;
+  }
+
+  .issue-copy p {
+    margin: 0;
   }
 
   .issue-copy {
@@ -983,48 +1020,8 @@
     text-overflow: clip;
   }
 
-  .issue-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .ignored-card {
-    opacity: 0.62;
-    background: #fbfcfb;
-  }
-
-  .ignored-badge {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 6px;
-    padding: 2px 7px;
-    border: 1px solid #d6ddd6;
-    border-radius: 999px;
-    color: #5d6873;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    vertical-align: middle;
-    background: #f4f6f4;
-  }
-
-  .details {
-    width: 100%;
-    margin-top: 2px;
-    padding-top: 10px;
-    border-top: 1px solid #edf1ed;
-  }
-
-  .details summary,
-  .menu summary {
-    cursor: pointer;
-    list-style: none;
-  }
-
   .details summary {
+    cursor: pointer;
     width: fit-content;
     color: #45515d;
     font-size: 13px;
@@ -1049,24 +1046,17 @@
     color: #65707a;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.03em;
     text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
 
-  .detail-row code,
-  .detail-row pre {
+  code,
+  pre {
     margin: 0;
-    font-family:
-      'SFMono-Regular',
-      'SF Mono',
-      'Cascadia Code',
-      'JetBrains Mono',
-      'Menlo',
-      monospace;
     font-size: 12px;
   }
 
-  .detail-row code {
+  code {
     overflow-wrap: anywhere;
     color: #2d3a46;
   }
@@ -1086,47 +1076,149 @@
   }
 
   .menu summary {
-    min-height: 36px;
-    border: 1px solid #d8dfd8;
-    border-radius: 10px;
-    padding: 8px 12px;
-    color: #24313d;
+    list-style: none;
+    cursor: pointer;
+    border: 1px solid #d2dcd2;
+    border-radius: 7px;
+    padding: 5px 10px;
     background: #fff;
-    transition:
-      border-color 120ms ease,
-      background-color 120ms ease,
-      color 120ms ease;
+    color: #2c3740;
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  .menu summary::-webkit-details-marker {
+    display: none;
   }
 
   .menu-panel {
     position: absolute;
+    top: calc(100% + 6px);
     right: 0;
-    top: calc(100% + 8px);
-    z-index: 4;
-    display: grid;
-    gap: 8px;
-    min-width: 220px;
-    padding: 10px;
-    border: 1px solid #d8dfd8;
-    border-radius: 12px;
+    min-width: 190px;
+    border: 1px solid #d9e0d9;
+    border-radius: 9px;
+    padding: 5px;
     background: #fff;
-    box-shadow: 0 12px 24px rgba(27, 35, 42, 0.14);
+    box-shadow: 0 16px 30px rgba(27, 35, 42, 0.12);
+  }
+
+  .menu-panel.compact button {
+    justify-content: start;
+    min-height: 0;
+    border: 0;
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: transparent;
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.25;
+  }
+
+  .menu-panel.compact button:hover {
+    background: #f3f6f3;
+  }
+
+  .menu-panel.compact button:disabled {
+    color: #8a949d;
+    cursor: not-allowed;
+  }
+
+  .menu-separator {
+    height: 1px;
+    margin: 4px 2px;
+    background: #e2e7e2;
+  }
+
+  .issues-panel {
+    gap: 14px;
+  }
+
+  .issue-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .issue-categories button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 10px;
+    align-items: center;
+    border: 1px solid #d8dfd8;
+    border-radius: 999px;
+    padding: 8px 12px;
+    background: #fff;
+    color: #24313d;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .issue-categories button:hover {
+    border-color: #bdd3c1;
+    background: #f4faf6;
+  }
+
+  .issue-categories button.selected {
+    border-color: #0f6b3b;
+    background: #edf7f1;
+    color: #0f6b3b;
+  }
+
+  .issue-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .details {
+    width: 100%;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid #edf1ed;
   }
 
   .empty-state {
     display: grid;
-    align-content: center;
-    justify-items: start;
     gap: 12px;
-    min-height: 320px;
+    min-height: 0;
+    align-content: start;
+    justify-content: flex-start;
+    align-items: stretch;
   }
 
-  @media (max-width: 860px) {
+  .empty-state h3,
+  .empty-state p {
+    margin: 0;
+  }
+
+  .install-panel {
+    gap: 16px;
+  }
+
+  .drop-zone {
+    display: grid;
+    align-items: center;
+    justify-items: center;
+    gap: 8px;
+    min-height: 180px;
+    border: 2px dashed #c7d4c7;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #fbfcfb 0%, #f4f7f4 100%);
+    color: #355049;
+    cursor: pointer;
+  }
+
+  .drop-zone.drag-active {
+    border-color: #0f6b3b;
+    background: linear-gradient(180deg, #f3faf5 0%, #eaf5ee 100%);
+  }
+
+  @media (max-width: 900px) {
     .plugins-dialog {
       grid-template-columns: 1fr;
-      width: min(720px, calc(100vw - 24px));
-      height: min(720px, calc(100vh - 24px));
-      max-height: calc(100vh - 24px);
+      height: min(760px, calc(100vh - 36px));
     }
 
     .sidebar {

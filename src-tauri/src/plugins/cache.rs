@@ -89,7 +89,12 @@ pub fn validate_cache_paths(
     meta_path: &Path,
     plugin: Option<&RegisteredPlugin>,
 ) -> CacheValidationResult {
-    validate_cache_at_paths(source_path, text_path.to_path_buf(), meta_path.to_path_buf(), plugin)
+    validate_cache_at_paths(
+        source_path,
+        text_path.to_path_buf(),
+        meta_path.to_path_buf(),
+        plugin,
+    )
 }
 
 pub fn validate_generated_text_standalone(text_path: &Path) -> CacheValidationResult {
@@ -282,8 +287,7 @@ fn validate_cache_at_paths(
             meta: Some(meta),
             problem: Some(format!(
                 "text.path mismatch: recorded={} expected={}",
-                recorded_text_path,
-                expected_text_path
+                recorded_text_path, expected_text_path
             )),
         };
     }

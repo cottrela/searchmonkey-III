@@ -9,8 +9,8 @@ use crate::plugins::registry::{default_plugin_roots, PluginRegistry, RegisteredP
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::json;
-use std::io::Read;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -226,10 +226,7 @@ fn run_plugin_process(plugin: &RegisteredPlugin, job_path: &Path, job_id: &str) 
             let _ = child.wait();
             let stderr = read_child_stderr(&mut child);
             if stderr.is_empty() {
-                bail!(
-                    "plugin timed out after {} seconds",
-                    plugin.timeout_seconds
-                );
+                bail!("plugin timed out after {} seconds", plugin.timeout_seconds);
             } else {
                 bail!(
                     "plugin timed out after {} seconds: {stderr}",
@@ -287,7 +284,11 @@ fn promote_output(tmp_path: &Path, final_path: &Path) -> Result<()> {
     }
 }
 
-fn rewrite_promoted_meta_paths(meta_tmp_path: &Path, text_tmp_path: &Path, text_final_path: &Path) -> Result<()> {
+fn rewrite_promoted_meta_paths(
+    meta_tmp_path: &Path,
+    text_tmp_path: &Path,
+    text_final_path: &Path,
+) -> Result<()> {
     normalize_generated_meta_text_path(meta_tmp_path, text_final_path, Some(text_tmp_path))
 }
 
@@ -310,9 +311,11 @@ fn normalize_generated_meta_text_path(
         .and_then(|value| value.as_str())
         .context("plugin meta output is missing text.path")?;
 
-    let resolved_current = normalize_lexical_path(resolve_recorded_meta_path(meta_path, current_path));
+    let resolved_current =
+        normalize_lexical_path(resolve_recorded_meta_path(meta_path, current_path));
     let desired_normalized = normalize_lexical_path(desired_text_path.to_path_buf());
-    let alternate_normalized = alternate_text_path.map(|path| normalize_lexical_path(path.to_path_buf()));
+    let alternate_normalized =
+        alternate_text_path.map(|path| normalize_lexical_path(path.to_path_buf()));
 
     if resolved_current == desired_normalized
         || alternate_normalized
@@ -410,14 +413,12 @@ fn cache_status_name(status: &CacheStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        index_file_with_plugin_paths, normalize_generated_meta_text_path, IndexOutcome,
-    };
+    use super::{index_file_with_plugin_paths, normalize_generated_meta_text_path, IndexOutcome};
     use crate::plugins::index_paths::mirror_text_path;
     use std::fs;
-    use std::path::Path;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[cfg(unix)]

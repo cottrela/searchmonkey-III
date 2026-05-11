@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   FilePreview,
+  InstallPluginResult,
   PluginIndexStatus,
   SearchBufferUpdatedEvent,
   SearchMatch,
@@ -82,12 +83,24 @@ export async function rebuildPluginIndex(): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('rebuild_plugin_index');
 }
 
+export async function refreshPluginSupportedFiles(pluginId: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('refresh_plugin_supported_files', { pluginId });
+}
+
 export async function pluginFolderPath(): Promise<string> {
   return invoke<string>('plugin_folder_path');
 }
 
+export async function installPluginPackage(archivePath: string): Promise<InstallPluginResult> {
+  return invoke<InstallPluginResult>('install_plugin_package', { archivePath });
+}
+
 export async function queuePluginScan(path: string): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('queue_plugin_scan', { path });
+}
+
+export async function resetPluginCache(pluginId: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('reset_plugin_cache', { pluginId });
 }
 
 export async function ignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {

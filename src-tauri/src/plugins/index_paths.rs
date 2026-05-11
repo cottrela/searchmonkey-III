@@ -37,7 +37,11 @@ pub fn default_state_db_path() -> Option<PathBuf> {
     default_index_roots()
         .into_iter()
         .next()
-        .and_then(|index_root| index_root.parent().map(|parent| parent.join("searchmonkey.sqlite")))
+        .and_then(|index_root| {
+            index_root
+                .parent()
+                .map(|parent| parent.join("searchmonkey.sqlite"))
+        })
 }
 
 pub fn mirror_relative_path(source_path: &Path) -> PathBuf {
@@ -165,8 +169,7 @@ pub fn source_path_from_mirror_text_path_with_root(
 mod tests {
     use super::{
         mirror_failure_state_path, mirror_meta_path, mirror_meta_tmp_path, mirror_search_path,
-        mirror_text_path, mirror_text_tmp_path,
-        source_path_from_mirror_text_path_with_root,
+        mirror_text_path, mirror_text_tmp_path, source_path_from_mirror_text_path_with_root,
     };
     use std::path::PathBuf;
 

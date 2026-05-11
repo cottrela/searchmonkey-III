@@ -3,6 +3,7 @@ pub mod classifier;
 pub mod failure_state;
 pub mod index_paths;
 pub mod indexer;
+pub mod installer;
 pub mod manifest;
 pub mod meta;
 pub mod registry;

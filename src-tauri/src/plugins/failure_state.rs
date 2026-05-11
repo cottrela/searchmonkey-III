@@ -100,8 +100,12 @@ pub fn save_failure_state(
 
     let path = failure_state_path(index_root, source_path);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed creating failure state directory {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating failure state directory {}",
+                parent.display()
+            )
+        })?;
     }
     fs::write(&path, serde_json::to_vec_pretty(&state)?)
         .with_context(|| format!("failed writing failure state {}", path.display()))?;
@@ -139,7 +143,10 @@ pub fn classify_failure(raw_error: &str) -> FailureDisplay {
     }
 
     let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("cloud") || lower.contains("onedrive") || lower.contains("always keep on this device") {
+    if lower.contains("cloud")
+        || lower.contains("onedrive")
+        || lower.contains("always keep on this device")
+    {
         return FailureDisplay {
             code: "cloud_file_unavailable".to_string(),
             message: "Cloud file unavailable".to_string(),
@@ -189,7 +196,10 @@ fn parse_structured_failure(raw_error: &str) -> Option<FailureDisplay> {
     if value.get("status")?.as_str()? != "failed" {
         return None;
     }
-    let code = value.get("code").and_then(Value::as_str).unwrap_or("plugin_failed");
+    let code = value
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("plugin_failed");
     let message = value
         .get("message")
         .and_then(Value::as_str)
@@ -220,7 +230,9 @@ fn rfc3339_seconds(value: SystemTime) -> String {
         .to_offset(time::UtcOffset::UTC)
         .replace_nanosecond(0)
         .expect("zero nanoseconds should be valid");
-    datetime.format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    datetime
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 fn parse_rfc3339(value: &str) -> Result<OffsetDateTime> {
@@ -259,7 +271,9 @@ mod tests {
 
     #[test]
     fn classifies_cloud_file_failures() {
-        let failure = classify_failure("plugin failed: Error: failed to open PDF /Users/a/CloudStorage/foo.pdf");
+        let failure = classify_failure(
+            "plugin failed: Error: failed to open PDF /Users/a/CloudStorage/foo.pdf",
+        );
         assert_eq!(failure.code, "cloud_file_unavailable");
         assert_eq!(failure.message, "Cloud file unavailable");
     }
@@ -286,6 +300,11 @@ mod tests {
             details: "detail".to_string(),
             retry_after_seconds: 3600,
         };
-        assert!(!retry_allowed(&state, &source, &plugin(), SystemTime::now()));
+        assert!(!retry_allowed(
+            &state,
+            &source,
+            &plugin(),
+            SystemTime::now()
+        ));
     }
 }

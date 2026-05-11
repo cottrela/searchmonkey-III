@@ -182,6 +182,7 @@ mod tests {
         };
         let registry = PluginRegistry {
             by_id: HashMap::from([(plugin.id.clone(), plugin.clone())]),
+            versions_by_id: HashMap::new(),
             by_extension: HashMap::from([(".pdf".to_string(), vec![plugin.id.clone()])]),
             ignored_paths: HashSet::new(),
         };

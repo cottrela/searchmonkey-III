@@ -98,8 +98,12 @@ impl PluginRegistry {
 
         for (plugin_id, versions) in &mut report.registry.versions_by_id {
             versions.sort_by(|left, right| plugin_version_cmp(&right.version, &left.version));
-            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id)) {
-                report.registry.by_id.insert(plugin_id.clone(), active.clone());
+            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id))
+            {
+                report
+                    .registry
+                    .by_id
+                    .insert(plugin_id.clone(), active.clone());
             }
         }
 
@@ -137,15 +141,21 @@ fn select_active_plugin<'a>(
     preferred_version: Option<&String>,
 ) -> Option<&'a RegisteredPlugin> {
     if let Some(preferred_version) = preferred_version {
-      if let Some(plugin) = versions.iter().find(|plugin| plugin.version == *preferred_version) {
-          return Some(plugin);
-      }
+        if let Some(plugin) = versions
+            .iter()
+            .find(|plugin| plugin.version == *preferred_version)
+        {
+            return Some(plugin);
+        }
     }
     versions.first()
 }
 
 pub fn plugin_version_satisfies_selected(selected_version: &str, cached_version: &str) -> bool {
-    match (Version::parse(selected_version), Version::parse(cached_version)) {
+    match (
+        Version::parse(selected_version),
+        Version::parse(cached_version),
+    ) {
         (Ok(selected), Ok(cached)) => cached >= selected,
         _ => selected_version == cached_version,
     }
@@ -158,15 +168,23 @@ pub fn default_plugin_roots() -> Vec<PathBuf> {
     {
         if let Ok(home) = std::env::var("HOME") {
             roots.push(PathBuf::from(&home).join(".local/share/searchmonkey-3/plugins"));
-            roots.push(PathBuf::from(&home).join("Library/Application Support/searchmonkey-3/plugins"));
-            roots.push(PathBuf::from(home).join("Library/Application Support/Searchmonkey-3/plugins"));
+            roots.push(
+                PathBuf::from(&home).join("Library/Application Support/searchmonkey-3/plugins"),
+            );
+            roots.push(
+                PathBuf::from(home).join("Library/Application Support/Searchmonkey-3/plugins"),
+            );
         }
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            roots.push(PathBuf::from(appdata).join("Searchmonkey-3").join("plugins"));
+            roots.push(
+                PathBuf::from(appdata)
+                    .join("Searchmonkey-3")
+                    .join("plugins"),
+            );
         }
     }
 

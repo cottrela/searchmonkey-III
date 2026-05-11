@@ -72,6 +72,7 @@ mod tests {
     fn builds_expected_excludes() {
         let registry = PluginRegistry {
             by_id: HashMap::new(),
+            versions_by_id: HashMap::new(),
             by_extension: HashMap::from([(".pdf".to_string(), vec!["sm.plugin.pdf".to_string()])]),
             ignored_paths: HashSet::from([PathBuf::from(
                 "/home/user/.config/searchmonkey-3/plugins/sm.plugin.pdf",
