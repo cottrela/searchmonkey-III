@@ -177,6 +177,7 @@ export type InstalledPluginInfo = {
   id: string;
   name: string;
   version: string;
+  is_active: boolean;
   enabled: boolean;
   requires_entitlement: boolean;
   handles: string[];

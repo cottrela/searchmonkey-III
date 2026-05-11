@@ -3,7 +3,9 @@ use crate::plugins::classifier::{FileClassifier, FileKind};
 use crate::plugins::failure_state::{classify_failure, FailureDisplay};
 use crate::plugins::index_paths::default_index_roots;
 use crate::plugins::indexer::{self, IndexFailure};
-use crate::plugins::registry::{default_plugin_roots, PluginRegistry};
+use crate::plugins::registry::{
+    default_plugin_roots, plugin_version_cmp, plugin_version_satisfies_selected, PluginDiscoveryReport, PluginRegistry,
+};
 use crate::plugins::state_db::{
     is_attention_status, is_retry_ready, now_rfc3339, queued_status, ready_status,
     retry_after_for_attempt, PluginCounts, PluginIssueRow, PluginRunRecord, StateDb,
@@ -45,6 +47,7 @@ pub struct InstalledPluginInfo {
     pub id: String,
     pub name: String,
     pub version: String,
+    pub is_active: bool,
     pub enabled: bool,
     pub requires_entitlement: bool,
     pub handles: Vec<String>,
@@ -164,7 +167,7 @@ impl PluginIndexRuntime {
 
     pub fn request_retry(&self, path: &Path) -> Result<()> {
         let path = path.canonicalize()?;
-        let discovery = PluginRegistry::discover(&self.inner.plugin_roots)?;
+        let discovery = discovery_report(&self.inner)?;
         let classifier = FileClassifier::new(&discovery.registry);
         let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(&path) else {
             self.request_scan(&path)?;
@@ -192,7 +195,7 @@ impl PluginIndexRuntime {
     }
 
     pub fn status(&self) -> PluginIndexStatus {
-        let installed_plugins = discovered_plugins(&self.inner.plugin_roots);
+        let installed_plugins = discovered_plugins(self);
         let plugin_ids = installed_plugins
             .iter()
             .map(|plugin| plugin.id.clone())
@@ -307,6 +310,42 @@ impl PluginIndexRuntime {
         self.inner.plugin_roots.first().cloned()
     }
 
+    pub fn set_active_plugin_version(&self, plugin_id: &str, version: &str) -> Result<PluginIndexStatus> {
+        let discovery = discovery_report(&self.inner)?;
+        let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
+            anyhow::bail!("plugin {plugin_id} is not installed");
+        };
+        if !versions.iter().any(|plugin| plugin.version == version) {
+            anyhow::bail!("plugin {plugin_id} version {version} is not installed");
+        }
+        self.inner
+            .state_db
+            .set_preferred_plugin_version(plugin_id, version)?;
+        Ok(self.status())
+    }
+
+    pub fn uninstall_plugin_version(&self, plugin_id: &str, version: &str) -> Result<PluginIndexStatus> {
+        let discovery = discovery_report(&self.inner)?;
+        let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
+            anyhow::bail!("plugin {plugin_id} is not installed");
+        };
+        let plugin = versions
+            .iter()
+            .find(|plugin| plugin.version == version)
+            .ok_or_else(|| anyhow::anyhow!("plugin {plugin_id} version {version} is not installed"))?;
+        fs::remove_dir_all(&plugin.root_dir)?;
+
+        let remaining = discovery_report(&self.inner)?;
+        if let Some(active) = remaining.registry.by_id.get(plugin_id) {
+            self.inner
+                .state_db
+                .set_preferred_plugin_version(plugin_id, &active.version)?;
+        } else {
+            self.inner.state_db.clear_preferred_plugin_version(plugin_id)?;
+        }
+        Ok(self.status())
+    }
+
     #[cfg(test)]
     pub fn wait_for_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -373,7 +412,7 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
 }
 
 fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
-    let Ok(discovery) = PluginRegistry::discover(&inner.plugin_roots) else {
+    let Ok(discovery) = discovery_report(&inner) else {
         return;
     };
     let registered_plugin_ids = discovery
@@ -452,7 +491,7 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
         });
 
         let job_key_value = job_key(&job.source_path, &job.plugin_id);
-        let plugin = registered_plugin(&inner.plugin_roots, &job.plugin_id);
+        let plugin = registered_plugin(&inner, &job.plugin_id);
         let result = indexer::index_file_with_plugin_paths(
             &job.source_path,
             &inner.plugin_roots,
@@ -565,7 +604,7 @@ fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job:
         return;
     }
     state.pending_job_keys.insert(key);
-    let plugin_version = registered_plugin(&inner.plugin_roots, &job.plugin_id).version;
+    let plugin_version = registered_plugin(inner, &job.plugin_id).version;
     let source_size = fs::metadata(&job.source_path).map(|value| value.len() as i64).unwrap_or(0);
     let source_mtime = fs::metadata(&job.source_path)
         .and_then(|value| value.modified())
@@ -600,7 +639,7 @@ fn enqueue_pending_job(inner: &Arc<RuntimeInner>, state: &mut RuntimeState, job:
 }
 
 fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<usize> {
-    let discovery = PluginRegistry::discover(&inner.plugin_roots)?;
+    let discovery = discovery_report(inner)?;
     let classifier = FileClassifier::new(&discovery.registry);
     let mut seen = HashSet::new();
     let mut supported_file_count = 0usize;
@@ -720,7 +759,7 @@ fn scan_file(
 
             let changed = row.source_size != source_size
                 || row.source_mtime != source_mtime
-                || row.plugin_version != plugin.version;
+                || !plugin_version_satisfies_selected(&plugin.version, &row.plugin_version);
             if changed {
                 let _ = inner.state_db.mark_stale(
                     path,
@@ -801,26 +840,42 @@ fn classify_index_error(err: &anyhow::Error) -> FailureDisplay {
         .unwrap_or_else(|| classify_failure(&err.to_string()))
 }
 
-fn registered_plugin(plugin_roots: &[PathBuf], plugin_id: &str) -> crate::plugins::registry::RegisteredPlugin {
-    PluginRegistry::discover(plugin_roots)
+fn registered_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) -> crate::plugins::registry::RegisteredPlugin {
+    discovery_report(inner)
         .ok()
         .and_then(|report| report.registry.by_id.get(plugin_id).cloned())
         .unwrap_or_else(|| panic!("plugin {plugin_id} should be registered"))
 }
 
-fn discovered_plugins(plugin_roots: &[PathBuf]) -> Vec<InstalledPluginInfo> {
-    let Ok(discovery) = PluginRegistry::discover(plugin_roots) else {
+fn discovery_report(inner: &Arc<RuntimeInner>) -> Result<PluginDiscoveryReport> {
+    let preferences = inner.state_db.preferred_plugin_versions().unwrap_or_default();
+    PluginRegistry::discover_for_platform_with_preferences(
+        &inner.plugin_roots,
+        crate::plugins::manifest::current_platform()?,
+        &preferences,
+    )
+}
+
+fn discovered_plugins(runtime: &PluginIndexRuntime) -> Vec<InstalledPluginInfo> {
+    let Ok(discovery) = discovery_report(&runtime.inner) else {
         return Vec::new();
     };
 
     let mut plugins = discovery
         .registry
-        .by_id
+        .versions_by_id
         .values()
+        .flat_map(|versions| versions.iter())
         .map(|plugin| InstalledPluginInfo {
             id: plugin.id.clone(),
             name: plugin.name.clone(),
             version: plugin.version.clone(),
+            is_active: discovery
+                .registry
+                .by_id
+                .get(&plugin.id)
+                .map(|active| active.version == plugin.version)
+                .unwrap_or(false),
             enabled: true,
             requires_entitlement: plugin.requires_entitlement,
             handles: plugin.handles.clone(),
@@ -832,7 +887,12 @@ fn discovered_plugins(plugin_roots: &[PathBuf]) -> Vec<InstalledPluginInfo> {
             },
         })
         .collect::<Vec<_>>();
-    plugins.sort_by(|left, right| left.name.cmp(&right.name).then(left.version.cmp(&right.version)));
+    plugins.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then(right.is_active.cmp(&left.is_active))
+            .then_with(|| plugin_version_cmp(&right.version, &left.version))
+    });
     plugins
 }
 

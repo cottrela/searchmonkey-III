@@ -360,6 +360,28 @@ fn plugin_folder_path(plugin_index: State<'_, PluginIndexRuntime>) -> Result<Str
 }
 
 #[tauri::command]
+fn set_active_plugin_version(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    version: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .set_active_plugin_version(plugin_id.trim(), version.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn uninstall_plugin_version(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    version: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .uninstall_plugin_version(plugin_id.trim(), version.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 async fn reveal_file_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || reveal_path_native(path))
         .await
@@ -826,8 +848,10 @@ pub fn run() {
             rebuild_plugin_index,
             reveal_file_path,
             search_files,
+            set_active_plugin_version,
             set_plugin_index_paused,
             start_search,
+            uninstall_plugin_version,
             unignore_plugin_issue
         ])
         .run(tauri::generate_context!())

@@ -3,7 +3,7 @@ use crate::plugins::index_paths::{
     default_index_roots, mirror_meta_path, mirror_text_path, source_path_from_mirror_text_path,
 };
 use crate::plugins::meta::SmMeta;
-use crate::plugins::registry::RegisteredPlugin;
+use crate::plugins::registry::{plugin_version_satisfies_selected, RegisteredPlugin};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -257,7 +257,8 @@ fn validate_cache_at_paths(
     }
 
     if let Some(plugin) = plugin {
-        if meta.generator.plugin_id != plugin.id || meta.generator.plugin_version != plugin.version
+        if meta.generator.plugin_id != plugin.id
+            || !plugin_version_satisfies_selected(&plugin.version, &meta.generator.plugin_version)
         {
             return CacheValidationResult {
                 status: CacheStatus::StalePlugin,

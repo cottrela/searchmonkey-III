@@ -29,8 +29,10 @@
     openFilePath,
     readFilePreview,
     revealFilePath,
+    setActivePluginVersion,
     setPluginIndexPaused,
     startSearch as startSearchCommand,
+    uninstallPluginVersion,
     unignorePluginIssue
   } from '$lib/search';
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
@@ -612,6 +614,26 @@
     try {
       pluginStatus = await unignorePluginIssue(sourcePath, pluginId);
       pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function activatePluginVersion(pluginId: string, version: string) {
+    try {
+      pluginStatus = await setActivePluginVersion(pluginId, version);
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function removePluginVersion(pluginId: string, version: string) {
+    try {
+      pluginStatus = await uninstallPluginVersion(pluginId, version);
+      pluginStatusError = '';
+      pluginDialogOpen = true;
     } catch (error) {
       pluginStatusError = normalizeError(error);
     }
@@ -1847,6 +1869,8 @@
       onRevealFailure={revealPluginFailure}
       onIgnoreFailure={ignorePluginFailure}
       onUnignoreFailure={unignorePluginFailure}
+      onActivateVersion={activatePluginVersion}
+      onUninstallVersion={removePluginVersion}
     />
   {/if}
 

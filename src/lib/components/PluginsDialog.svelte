@@ -18,7 +18,9 @@
     onRetryFailure,
     onRevealFailure,
     onIgnoreFailure,
-    onUnignoreFailure
+    onUnignoreFailure,
+    onActivateVersion,
+    onUninstallVersion
   }: {
     status: PluginIndexStatus | null;
     selectedPluginId?: string | null;
@@ -31,6 +33,8 @@
     onRevealFailure?: (path: string) => void | Promise<void>;
     onIgnoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
     onUnignoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
+    onActivateVersion?: (pluginId: string, version: string) => void | Promise<void>;
+    onUninstallVersion?: (pluginId: string, version: string) => void | Promise<void>;
   } = $props();
 
   let internalSelectedPluginId = $state<string | null>(null);
@@ -41,6 +45,8 @@
   let pendingRetryPaths = $state<Record<string, boolean>>({});
   let pendingRevealPaths = $state<Record<string, boolean>>({});
   let pendingUnignorePaths = $state<Record<string, boolean>>({});
+  let pendingVersionActivations = $state<Record<string, boolean>>({});
+  let pendingVersionUninstalls = $state<Record<string, boolean>>({});
   let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
   let hiddenRetriedPaths = $state<Record<string, string>>({});
 
@@ -71,20 +77,42 @@
   });
 
   const installedPlugins = $derived(status?.installed_plugins ?? []);
-  const selectedPlugin = $derived.by(() => {
-    if (!installedPlugins.length) return null;
-    if (internalSelectedPluginId) {
-      return installedPlugins.find((plugin) => plugin.id === internalSelectedPluginId) ?? installedPlugins[0];
+  const pluginGroups = $derived.by(() => {
+    const groups = new Map<string, InstalledPluginInfo>();
+    for (const plugin of installedPlugins) {
+      const existing = groups.get(plugin.id);
+      if (!existing || plugin.is_active) {
+        groups.set(plugin.id, plugin);
+      }
     }
-    return installedPlugins[0];
+    return [...groups.values()];
+  });
+  const selectedPluginIdValue = $derived.by(() => {
+    if (!pluginGroups.length) return null;
+    if (internalSelectedPluginId) {
+      return pluginGroups.find((plugin) => plugin.id === internalSelectedPluginId)?.id ?? pluginGroups[0].id;
+    }
+    return pluginGroups[0].id;
+  });
+  const selectedPlugin = $derived.by(() => {
+    if (!selectedPluginIdValue) return null;
+    return installedPlugins.find((plugin) => plugin.id === selectedPluginIdValue && plugin.is_active)
+      ?? installedPlugins.find((plugin) => plugin.id === selectedPluginIdValue)
+      ?? null;
+  });
+  const selectedPluginVersions = $derived.by(() => {
+    if (!selectedPluginIdValue) return [];
+    return installedPlugins
+      .filter((plugin) => plugin.id === selectedPluginIdValue)
+      .sort((left, right) => right.version.localeCompare(left.version, undefined, { numeric: true }));
   });
   const selectedSummary = $derived.by<PluginHealthSummary | null>(() => {
-    if (!status || !selectedPlugin) return null;
-    return status.plugin_summaries.find((summary) => summary.plugin_id === selectedPlugin.id) ?? null;
+    if (!status || !selectedPluginIdValue) return null;
+    return status.plugin_summaries.find((summary) => summary.plugin_id === selectedPluginIdValue) ?? null;
   });
   const selectedIssues = $derived.by<PluginIssue[]>(() => {
-    if (!status || !selectedPlugin) return [];
-    let issues = status.issues.filter((issue) => issue.plugin_id === selectedPlugin.id);
+    if (!status || !selectedPluginIdValue) return [];
+    let issues = status.issues.filter((issue) => issue.plugin_id === selectedPluginIdValue);
     issues = issues.filter((issue) => !hiddenIgnoredPaths[issue.source_path]);
     issues = issues.filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
     if (!showIgnoredIssues) {
@@ -96,10 +124,10 @@
     return issues;
   });
   const issueCategories = $derived.by(() => {
-    if (!status || !selectedPlugin) return [];
+    if (!status || !selectedPluginIdValue) return [];
     const counts = new Map<string, { code: string; label: string; count: number }>();
     for (const issue of status.issues) {
-      if (issue.plugin_id !== selectedPlugin.id) continue;
+      if (issue.plugin_id !== selectedPluginIdValue) continue;
       if (!showIgnoredIssues && issue.status === 'ignored') continue;
       const existing = counts.get(issue.error_code);
       if (existing) {
@@ -136,9 +164,9 @@
   }
 
   const ignoredIssueCount = $derived.by(() => {
-    if (!status || !selectedPlugin) return 0;
+    if (!status || !selectedPluginIdValue) return 0;
     return status.issues.filter(
-      (issue) => issue.plugin_id === selectedPlugin.id && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
+      (issue) => issue.plugin_id === selectedPluginIdValue && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
     ).length;
   });
 
@@ -295,6 +323,35 @@
     }
   }
 
+  function versionKey(pluginId: string, version: string) {
+    return `${pluginId}@${version}`;
+  }
+
+  async function activateVersion(pluginId: string, version: string) {
+    if (!onActivateVersion) return;
+    const key = versionKey(pluginId, version);
+    if (pendingVersionActivations[key]) return;
+    pendingVersionActivations = markPending(pendingVersionActivations, key, true);
+    try {
+      await onActivateVersion(pluginId, version);
+    } finally {
+      pendingVersionActivations = markPending(pendingVersionActivations, key, false);
+    }
+  }
+
+  async function uninstallVersion(pluginId: string, version: string) {
+    if (!onUninstallVersion) return;
+    if (!window.confirm(`Uninstall plugin version ${version}?`)) return;
+    const key = versionKey(pluginId, version);
+    if (pendingVersionUninstalls[key]) return;
+    pendingVersionUninstalls = markPending(pendingVersionUninstalls, key, true);
+    try {
+      await onUninstallVersion(pluginId, version);
+    } finally {
+      pendingVersionUninstalls = markPending(pendingVersionUninstalls, key, false);
+    }
+  }
+
   function issueStatusText(issue: PluginIssue) {
     return retryMessage(issue.retry_after);
   }
@@ -327,12 +384,12 @@
         <button class="close-dialog" type="button" aria-label="Close plugin manager" onclick={onClose}>×</button>
       </div>
 
-      {#if installedPlugins.length}
+      {#if pluginGroups.length}
         <div class="plugin-list">
-          {#each installedPlugins as plugin}
+          {#each pluginGroups as plugin}
             <button
               type="button"
-              class:selected={selectedPlugin?.id === plugin.id}
+              class:selected={selectedPluginIdValue === plugin.id}
               onclick={() => selectPlugin(plugin)}
             >
               <span>{plugin.name}</span>
@@ -393,6 +450,42 @@
         <section class="panel">
           <h4>Storage</h4>
           <button type="button" class="linkish" onclick={onOpenFolder}>Open plugin folder</button>
+        </section>
+
+        <section class="panel">
+          <h4>Versions</h4>
+          <div class="plugin-versions">
+            {#each selectedPluginVersions as pluginVersion}
+              <div class="version-row">
+                <div class="version-label">
+                  <strong>v{pluginVersion.version}</strong>
+                  {#if pluginVersion.is_active}
+                    <span class="active-pill">Active</span>
+                  {/if}
+                </div>
+                <div class="version-actions">
+                  {#if !pluginVersion.is_active}
+                    <button
+                      type="button"
+                      class="secondary"
+                      disabled={pendingVersionActivations[versionKey(pluginVersion.id, pluginVersion.version)]}
+                      onclick={() => activateVersion(pluginVersion.id, pluginVersion.version)}
+                    >
+                      {pendingVersionActivations[versionKey(pluginVersion.id, pluginVersion.version)] ? 'Switching…' : 'Set active'}
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="secondary"
+                    disabled={pendingVersionUninstalls[versionKey(pluginVersion.id, pluginVersion.version)]}
+                    onclick={() => uninstallVersion(pluginVersion.id, pluginVersion.version)}
+                  >
+                    {pendingVersionUninstalls[versionKey(pluginVersion.id, pluginVersion.version)] ? 'Uninstalling…' : 'Uninstall'}
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
         </section>
 
         <section class="panel issues-panel">
@@ -718,6 +811,49 @@
     padding: 7px 11px;
     color: #31404d;
     font-size: 13px;
+  }
+
+  .plugin-versions {
+    display: grid;
+    gap: 8px;
+  }
+
+  .version-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 38px;
+  }
+
+  .version-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .version-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .version-label strong {
+    font-size: 14px;
+  }
+
+  .active-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #edf7f1;
+    color: #0f6b3b;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
 
   .linkish,

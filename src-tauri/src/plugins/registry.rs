@@ -27,6 +27,7 @@ pub struct RegisteredPlugin {
 #[derive(Debug, Clone, Default)]
 pub struct PluginRegistry {
     pub by_id: HashMap<String, RegisteredPlugin>,
+    pub versions_by_id: HashMap<String, Vec<RegisteredPlugin>>,
     pub by_extension: HashMap<String, Vec<String>>,
     pub ignored_paths: HashSet<PathBuf>,
 }
@@ -50,12 +51,20 @@ impl PluginRegistry {
 
     pub fn discover(plugin_roots: &[PathBuf]) -> Result<PluginDiscoveryReport> {
         let platform = current_platform()?;
-        Self::discover_for_platform(plugin_roots, platform)
+        Self::discover_for_platform_with_preferences(plugin_roots, platform, &HashMap::new())
     }
 
     pub fn discover_for_platform(
         plugin_roots: &[PathBuf],
         platform: PluginPlatform,
+    ) -> Result<PluginDiscoveryReport> {
+        Self::discover_for_platform_with_preferences(plugin_roots, platform, &HashMap::new())
+    }
+
+    pub fn discover_for_platform_with_preferences(
+        plugin_roots: &[PathBuf],
+        platform: PluginPlatform,
+        preferred_versions: &HashMap<String, String>,
     ) -> Result<PluginDiscoveryReport> {
         let mut report = PluginDiscoveryReport::default();
 
@@ -72,21 +81,25 @@ impl PluginRegistry {
 
                 match register_plugin(&manifest_path, plugin_dir, platform) {
                     Ok(plugin) => {
-                        let should_replace = report
+                        report
                             .registry
-                            .by_id
-                            .get(&plugin.id)
-                            .map(|existing| plugin_version_cmp(&plugin.version, &existing.version).is_gt())
-                            .unwrap_or(true);
-                        if should_replace {
-                            report.registry.by_id.insert(plugin.id.clone(), plugin);
-                        }
+                            .versions_by_id
+                            .entry(plugin.id.clone())
+                            .or_default()
+                            .push(plugin);
                     }
                     Err(err) => report.issues.push(PluginDiscoveryIssue {
                         manifest_path,
                         message: err.to_string(),
                     }),
                 }
+            }
+        }
+
+        for (plugin_id, versions) in &mut report.registry.versions_by_id {
+            versions.sort_by(|left, right| plugin_version_cmp(&right.version, &left.version));
+            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id)) {
+                report.registry.by_id.insert(plugin_id.clone(), active.clone());
             }
         }
 
@@ -112,10 +125,29 @@ impl PluginRegistry {
     }
 }
 
-fn plugin_version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+pub fn plugin_version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
     match (Version::parse(left), Version::parse(right)) {
         (Ok(left_version), Ok(right_version)) => left_version.cmp(&right_version),
         _ => left.cmp(right),
+    }
+}
+
+fn select_active_plugin<'a>(
+    versions: &'a [RegisteredPlugin],
+    preferred_version: Option<&String>,
+) -> Option<&'a RegisteredPlugin> {
+    if let Some(preferred_version) = preferred_version {
+      if let Some(plugin) = versions.iter().find(|plugin| plugin.version == *preferred_version) {
+          return Some(plugin);
+      }
+    }
+    versions.first()
+}
+
+pub fn plugin_version_satisfies_selected(selected_version: &str, cached_version: &str) -> bool {
+    match (Version::parse(selected_version), Version::parse(cached_version)) {
+        (Ok(selected), Ok(cached)) => cached >= selected,
+        _ => selected_version == cached_version,
     }
 }
 

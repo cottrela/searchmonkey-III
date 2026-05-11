@@ -97,3 +97,11 @@ export async function ignorePluginIssue(path: string, pluginId: string): Promise
 export async function unignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('unignore_plugin_issue', { path, pluginId });
 }
+
+export async function setActivePluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('set_active_plugin_version', { pluginId, version });
+}
+
+export async function uninstallPluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('uninstall_plugin_version', { pluginId, version });
+}

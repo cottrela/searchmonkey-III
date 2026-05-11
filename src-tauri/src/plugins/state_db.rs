@@ -116,6 +116,35 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn preferred_plugin_versions(&self) -> Result<HashMap<String, String>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT plugin_id, active_version FROM plugin_preferences",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        rows.collect::<std::result::Result<HashMap<_, _>, _>>().map_err(Into::into)
+    }
+
+    pub fn set_preferred_plugin_version(&self, plugin_id: &str, version: &str) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "INSERT INTO plugin_preferences (plugin_id, active_version)
+             VALUES (?1, ?2)
+             ON CONFLICT(plugin_id) DO UPDATE SET active_version = excluded.active_version",
+            params![plugin_id, version],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_preferred_plugin_version(&self, plugin_id: &str) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "DELETE FROM plugin_preferences WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_indexed_file(&self, source_path: &Path, plugin_id: &str) -> Result<Option<IndexedFileRow>> {
         let conn = self.open()?;
         conn.query_row(
@@ -666,6 +695,10 @@ impl StateDb {
                status TEXT NOT NULL,
                error_code TEXT,
                error_message TEXT
+             );
+             CREATE TABLE IF NOT EXISTS plugin_preferences (
+               plugin_id TEXT PRIMARY KEY,
+               active_version TEXT NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_indexed_files_plugin_status ON indexed_files(plugin_id, status);
              CREATE INDEX IF NOT EXISTS idx_indexed_files_root_path ON indexed_files(source_path);
