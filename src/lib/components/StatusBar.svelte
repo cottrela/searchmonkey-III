@@ -99,7 +99,7 @@
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
     {/if}
-    <span class="tagline">Fast grep with smarter files.</span>
+    <span class="tagline">Fast local search powered by rigrep.</span>
   </div>
 </footer>
 
