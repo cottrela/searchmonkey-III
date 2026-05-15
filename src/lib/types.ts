@@ -25,6 +25,7 @@ export type SearchMatch = {
   preview_path?: string | null;
   display_context?: string | null;
   plugin_id?: string | null;
+  meta_outdated?: boolean | null;
   line_number: number;
   line_text: string;
   submatches: SearchSubmatch[];

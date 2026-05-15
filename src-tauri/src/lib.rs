@@ -93,7 +93,10 @@ async fn search_files(
         .await
         .map_err(|err| err.to_string());
     plugin_index.search_finished();
-    result
+    result.map(|results| {
+        prioritize_outdated_search_results(&plugin_index, &results);
+        results
+    })
 }
 
 #[tauri::command]
@@ -590,6 +593,7 @@ async fn start_search(
                 plugin_registry: provider.plugin_registry(),
             },
             |result, total_matches| {
+                prioritize_outdated_search_result(&plugin_index, &result);
                 if let Ok(mut results) = session.results.lock() {
                     results.push(result);
                 }
@@ -750,6 +754,25 @@ fn queue_plugin_scan_for_path(plugin_index: &PluginIndexRuntime, path: &str) {
     if path.exists() {
         let _ = plugin_index.request_scan(&path);
     }
+}
+
+fn prioritize_outdated_search_results(plugin_index: &PluginIndexRuntime, results: &[SearchMatch]) {
+    for result in results {
+        prioritize_outdated_search_result(plugin_index, result);
+    }
+}
+
+fn prioritize_outdated_search_result(plugin_index: &PluginIndexRuntime, result: &SearchMatch) {
+    if result.meta_outdated != Some(true) {
+        return;
+    }
+
+    let path = Path::new(&result.path);
+    if !path.exists() {
+        return;
+    }
+
+    let _ = plugin_index.request_retry(path);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

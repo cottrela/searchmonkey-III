@@ -27,7 +27,8 @@ pub fn map_search_match(
         Some(plugin) => validate_generated_text_cache(path, plugin),
         None => validate_generated_text_standalone(path),
     };
-    if validation.status != CacheStatus::Ready {
+    let meta_outdated = validation.status == CacheStatus::StalePlugin;
+    if validation.status != CacheStatus::Ready && !meta_outdated {
         return None;
     }
 
@@ -51,6 +52,7 @@ pub fn map_search_match(
                 })
                 .unwrap_or_default(),
         ),
+        meta_outdated: meta_outdated.then_some(true),
         ..match_result
     })
 }
@@ -193,6 +195,7 @@ mod tests {
                 preview_path: None,
                 display_context: None,
                 plugin_id: None,
+                meta_outdated: None,
                 line_number: 1,
                 line_text: "hello world".to_string(),
                 submatches: vec![SearchSubmatch { start: 0, end: 5 }],
@@ -208,6 +211,7 @@ mod tests {
         assert_eq!(mapped.preview_path.unwrap(), text_path.to_string_lossy());
         assert_eq!(mapped.display_context.unwrap(), "Page 8 · Block 3");
         assert_eq!(mapped.plugin_id.unwrap(), "sm.plugin.pdf");
+        assert_eq!(mapped.meta_outdated, None);
     }
 
     #[test]
@@ -260,6 +264,7 @@ mod tests {
                 preview_path: None,
                 display_context: None,
                 plugin_id: None,
+                meta_outdated: None,
                 line_number: 1,
                 line_text: "hello world".to_string(),
                 submatches: vec![SearchSubmatch { start: 0, end: 5 }],
@@ -274,5 +279,96 @@ mod tests {
         assert_eq!(mapped.path, source_path.to_string_lossy());
         assert_eq!(mapped.preview_path.unwrap(), text_path.to_string_lossy());
         assert_eq!(mapped.plugin_id.unwrap(), "sm.plugin.pdf");
+        assert_eq!(mapped.meta_outdated, None);
+    }
+
+    #[test]
+    fn keeps_version_mismatched_generated_text_searchable() {
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("report.pdf");
+        let text_path = temp.path().join("report.pdf.sm.txt");
+        let meta_path = temp.path().join("report.pdf.sm.meta");
+
+        fs::write(&source_path, b"pdf").unwrap();
+        fs::write(&text_path, b"hello world").unwrap();
+        let source_mtime =
+            OffsetDateTime::from(fs::metadata(&source_path).unwrap().modified().unwrap())
+                .format(&Rfc3339)
+                .unwrap();
+        fs::write(
+            &meta_path,
+            format!(
+                r#"{{
+                  "schema": "sm.meta.v1",
+                  "source": {{
+                    "path": "{}",
+                    "size": 3,
+                    "mtime": "{}"
+                  }},
+                  "generator": {{
+                    "plugin_id": "sm.plugin.pdf",
+                    "plugin_version": "0.1.1"
+                  }},
+                  "text": {{
+                    "path": "{}",
+                    "encoding": "utf-8",
+                    "length_bytes": 11
+                  }},
+                  "ranges": [
+                    {{ "type": "page", "start": 0, "end": 11, "page": 8 }}
+                  ]
+                }}"#,
+                source_path.display(),
+                source_mtime,
+                text_path.display()
+            ),
+        )
+        .unwrap();
+
+        let plugin = RegisteredPlugin {
+            id: "sm.plugin.pdf".to_string(),
+            name: "PDF Plugin".to_string(),
+            version: "0.2.0".to_string(),
+            root_dir: PathBuf::from("/plugins/sm.plugin.pdf"),
+            command: PathBuf::from("/plugins/sm.plugin.pdf/bin/linux-x64/sm-plugin-pdf"),
+            args: vec![],
+            handles: vec![".pdf".to_string()],
+            requires_entitlement: false,
+            timeout_seconds: 60,
+            capabilities: PluginCapabilities::default(),
+            permissions: vec![
+                PluginPermission::ReadSourceFile,
+                PluginPermission::WriteSmOutputs,
+            ],
+        };
+        let registry = PluginRegistry {
+            by_id: HashMap::from([(plugin.id.clone(), plugin.clone())]),
+            versions_by_id: HashMap::new(),
+            by_extension: HashMap::from([(".pdf".to_string(), vec![plugin.id.clone()])]),
+            ignored_paths: HashSet::new(),
+        };
+
+        let mapped = map_search_match(
+            SearchMatch {
+                path: text_path.to_string_lossy().to_string(),
+                preview_path: None,
+                display_context: None,
+                plugin_id: None,
+                meta_outdated: None,
+                line_number: 1,
+                line_text: "hello world".to_string(),
+                submatches: vec![SearchSubmatch { start: 0, end: 5 }],
+                absolute_offset: Some(0),
+                file_size: None,
+                modified_secs: None,
+            },
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(mapped.path, source_path.to_string_lossy());
+        assert_eq!(mapped.preview_path.unwrap(), text_path.to_string_lossy());
+        assert_eq!(mapped.plugin_id.unwrap(), "sm.plugin.pdf");
+        assert_eq!(mapped.meta_outdated, Some(true));
     }
 }

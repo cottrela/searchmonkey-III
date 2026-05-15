@@ -49,6 +49,7 @@
     onSelect,
     onOpen,
     onReveal,
+    onReindex,
     onClose
   }: {
     preview: PreviewState;
@@ -64,6 +65,7 @@
     onSelect: (match: PreviewState['matches'][number]) => void;
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
+    onReindex: (match: PreviewState['matches'][number]) => void;
     onClose: () => void;
   } = $props();
 
@@ -389,6 +391,11 @@
       <div class="desktop-preview-file">
         <div class="desktop-preview-title">
           <h2 title={preview.filePath}>{filename(preview.filePath)}</h2>
+          {#if preview.activeMatch?.meta_outdated}
+            <button type="button" class="meta-hint" onclick={() => preview.activeMatch && onReindex(preview.activeMatch)} title="Re-index this file">
+              Re-index file?
+            </button>
+          {/if}
         </div>
         <div class="desktop-preview-path" title={parentPath(preview.filePath)}>
           {parentPath(preview.filePath)}
@@ -456,12 +463,12 @@
                 onclick={() => selectLineMatch(line.number)}
                 onkeydown={(event) => handleLineKeydown(event, line.number)}
               >
-                <span class="gutter">{line.number}</span>
+                <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
                 <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
               </div>
             {:else}
               <div class="line">
-                <span class="gutter">{line.number}</span>
+                <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
                 <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
               </div>
             {/if}
@@ -518,8 +525,32 @@
   .desktop-preview-title {
     display: flex;
     min-width: 0;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
+  }
+
+  .meta-hint {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    border: 0;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.18em;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .meta-hint:hover,
+  .meta-hint:focus-visible {
+    color: var(--text);
+    outline: none;
   }
 
   h2 {
@@ -795,6 +826,10 @@
     font-variant-numeric: tabular-nums;
     pointer-events: none;
     user-select: none;
+  }
+
+  .gutter::before {
+    content: attr(data-line-number);
   }
 
   .line[data-active-match='true'] {

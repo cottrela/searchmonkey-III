@@ -42,6 +42,8 @@ pub struct SearchMatch {
     pub display_context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_outdated: Option<bool>,
     pub line_number: u64,
     pub line_text: String,
     pub submatches: Vec<SearchSubmatch>,

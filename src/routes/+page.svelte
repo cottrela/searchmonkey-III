@@ -1373,6 +1373,17 @@
     }
   }
 
+  async function reindexMatchFile(match: SearchMatch) {
+    try {
+      pluginStatus = await queuePluginScan(match.path);
+      pluginStatusError = '';
+    } catch (error) {
+      const message = normalizeError(error);
+      pluginStatusError = message;
+      errorMessage = message;
+    }
+  }
+
   function selectOffset(offset: number) {
     if (!displayedMatches.length) return;
 
@@ -1777,6 +1788,7 @@
       onSelect={selectMatch}
       onOpen={openFile}
       onReveal={revealFile}
+      onReindex={reindexMatchFile}
     />
     {#if sidePanelVisibleInLayout}
       <button
@@ -1807,6 +1819,7 @@
           onSelect={selectMatch}
           onOpen={openFile}
           onReveal={revealFile}
+          onReindex={reindexMatchFile}
           onClose={closePreview}
         />
       {/if}

@@ -68,7 +68,8 @@
     hasSearched,
     onSelect,
     onOpen,
-    onReveal
+    onReveal,
+    onReindex
   }: {
     groups: FileResultGroup[];
     query: string;
@@ -81,6 +82,7 @@
     onSelect: (match: SearchMatch) => void;
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
+    onReindex: (match: SearchMatch) => void;
   } = $props();
 
   let resultsElement = $state<HTMLElement | undefined>();
@@ -116,6 +118,7 @@
     if (!options.group_by_file || !fileRows.length) return null;
     return lastFileRowAtOrBefore(scrollTop);
   });
+  const selectedMetaOutdated = $derived(Boolean(selected?.meta_outdated));
   const currentLandmark = $derived.by(() => landmarkForScrollPosition(scrollTop + Math.max(0, viewportHeight * 0.32)));
 
   onMount(() => {
@@ -605,6 +608,11 @@
     <div class="title-block">
       <h2>Results</h2>
       <span>{formatCount(groups.length)} files · {formatCount(matchTotal)} matches</span>
+      {#if selectedMetaOutdated && selected}
+        <button type="button" class="title-hint" onclick={() => onReindex(selected)} title="Re-index the selected file">
+          Re-index file?
+        </button>
+      {/if}
     </div>
     <div class="result-controls" aria-label="Result display settings">
       <label>
@@ -634,6 +642,9 @@
             <input type="checkbox" bind:checked={options.show_line_numbers} />
             <span>Show line numbers</span>
           </label>
+          {#if selectedMetaOutdated && selected}
+            <button type="button" class="menu-link" onclick={() => onReindex(selected)}>Re-index file?</button>
+          {/if}
         </div>
       </details>
     </div>
@@ -764,6 +775,7 @@
     display: flex;
     gap: 8px;
     align-items: baseline;
+    flex-wrap: wrap;
     min-width: 0;
   }
 
@@ -852,6 +864,28 @@
     padding: 4px;
     background: var(--panel);
     box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+  }
+
+  .title-hint {
+    border: 0;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+  }
+
+  .title-hint:hover,
+  .title-hint:focus-visible,
+  .menu-link:hover,
+  .menu-link:focus-visible {
+    color: var(--text);
+    outline: none;
   }
 
   .result-options-menu .toggle-control {
@@ -1150,6 +1184,18 @@
     line-height: 17px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .menu-link {
+    border: 0;
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: left;
   }
 
   mark {

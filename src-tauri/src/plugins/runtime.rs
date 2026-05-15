@@ -95,11 +95,20 @@ struct PluginJob {
     run_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct PluginRefresh {
+    root: PathBuf,
+    plugin_id: String,
+}
+
 #[derive(Default)]
 struct RuntimeState {
     pending_roots: VecDeque<PathBuf>,
     queued_roots: HashSet<PathBuf>,
     active_roots: HashSet<PathBuf>,
+    pending_refreshes: VecDeque<PluginRefresh>,
+    queued_refreshes: HashSet<String>,
+    active_refreshes: HashSet<String>,
     pending_jobs: VecDeque<PluginJob>,
     pending_job_keys: HashSet<String>,
     jobs: VecDeque<PluginJob>,
@@ -171,6 +180,38 @@ impl PluginIndexRuntime {
         Ok(())
     }
 
+    pub fn request_plugin_refresh(&self, plugin_id: &str) -> Result<()> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+
+        for root in self.inner.state_db.list_scan_roots()? {
+            if !root.exists() {
+                continue;
+            }
+
+            let key = refresh_key(&root, plugin_id);
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("plugin runtime lock poisoned");
+            if state.queued_refreshes.contains(&key) || state.active_refreshes.contains(&key) {
+                continue;
+            }
+
+            state.queued_refreshes.insert(key);
+            state.pending_refreshes.push_back(PluginRefresh {
+                root,
+                plugin_id: plugin_id.to_string(),
+            });
+        }
+
+        self.inner.wake.notify_all();
+        Ok(())
+    }
+
     pub fn request_retry(&self, path: &Path) -> Result<()> {
         let path = path.canonicalize()?;
         let discovery = discovery_report(&self.inner)?;
@@ -231,7 +272,10 @@ impl PluginIndexRuntime {
             "paused"
         } else if state.worker_running || state.scanner_running {
             "running"
-        } else if !state.jobs.is_empty() || !state.pending_jobs.is_empty() {
+        } else if !state.jobs.is_empty()
+            || !state.pending_jobs.is_empty()
+            || !state.pending_refreshes.is_empty()
+        {
             "queued"
         } else {
             "idle"
@@ -240,7 +284,8 @@ impl PluginIndexRuntime {
             || (!state.worker_running
                 && !state.scanner_running
                 && state.jobs.is_empty()
-                && state.pending_jobs.is_empty())
+                && state.pending_jobs.is_empty()
+                && state.pending_refreshes.is_empty())
         {
             "idle"
         } else {
@@ -292,6 +337,9 @@ impl PluginIndexRuntime {
         state.processing_jobs.clear();
         state.pending_roots.clear();
         state.queued_roots.clear();
+        state.pending_refreshes.clear();
+        state.queued_refreshes.clear();
+        state.active_refreshes.clear();
         let _ = self.inner.state_db.clear_all();
         self.inner.wake.notify_all();
         drop(state);
@@ -304,13 +352,7 @@ impl PluginIndexRuntime {
             anyhow::bail!("plugin id is required");
         }
 
-        let scan_roots = self.inner.state_db.list_scan_roots()?;
-        for root in scan_roots {
-            if root.exists() {
-                let _ = scan_root_for_plugin(&self.inner, &root, plugin_id)?;
-            }
-        }
-        self.inner.wake.notify_all();
+        self.request_plugin_refresh(plugin_id)?;
         Ok(self.status())
     }
 
@@ -399,6 +441,7 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
+        self.request_plugin_refresh(&installed.plugin_id)?;
         Ok((installed.plugin_id, installed.version, self.status()))
     }
 
@@ -465,6 +508,8 @@ impl PluginIndexRuntime {
             let search_active = self.inner.search_active.load(Ordering::SeqCst) > 0;
             let idle = state.pending_roots.is_empty()
                 && state.active_roots.is_empty()
+                && state.pending_refreshes.is_empty()
+                && state.active_refreshes.is_empty()
                 && state.pending_jobs.is_empty()
                 && state.jobs.is_empty()
                 && state.processing_jobs.is_empty()
@@ -493,9 +538,11 @@ impl PluginIndexRuntime {
 
 fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
     thread::spawn(move || loop {
-        let root = {
+        let task = {
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-            while state.pending_roots.is_empty() || state.paused {
+            while (state.pending_roots.is_empty() && state.pending_refreshes.is_empty())
+                || state.paused
+            {
                 state.scanner_running = false;
                 state = inner
                     .wake
@@ -503,27 +550,56 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
                     .expect("plugin runtime condvar poisoned");
             }
 
-            let root = state
-                .pending_roots
-                .pop_front()
-                .expect("pending root disappeared");
-            state.queued_roots.remove(&root);
-            state.active_roots.insert(root.clone());
+            let task = if let Some(refresh) = state.pending_refreshes.pop_front() {
+                let key = refresh_key(&refresh.root, &refresh.plugin_id);
+                state.queued_refreshes.remove(&key);
+                state.active_refreshes.insert(key);
+                ScanTask::PluginRefresh(refresh)
+            } else {
+                let root = state
+                    .pending_roots
+                    .pop_front()
+                    .expect("pending root disappeared");
+                state.queued_roots.remove(&root);
+                state.active_roots.insert(root.clone());
+                ScanTask::Root(root)
+            };
             state.scanner_running = true;
-            root
+            task
         };
 
-        let _ = inner.state_db.mark_scan_root_started(&root);
-        let scanned_count = scan_root(&inner, &root).unwrap_or(0);
-        let _ = inner
-            .state_db
-            .mark_scan_root_completed(&root, scanned_count);
+        match &task {
+            ScanTask::Root(root) => {
+                let _ = inner.state_db.mark_scan_root_started(root);
+                let scanned_count = scan_root(&inner, root).unwrap_or(0);
+                let _ = inner.state_db.mark_scan_root_completed(root, scanned_count);
+            }
+            ScanTask::PluginRefresh(refresh) => {
+                let _ =
+                    scan_root_for_plugin(&inner, &refresh.root, &refresh.plugin_id).unwrap_or(0);
+            }
+        }
 
         let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-        state.active_roots.remove(&root);
-        state.scanner_running = !state.pending_roots.is_empty();
+        match task {
+            ScanTask::Root(root) => {
+                state.active_roots.remove(&root);
+            }
+            ScanTask::PluginRefresh(refresh) => {
+                state
+                    .active_refreshes
+                    .remove(&refresh_key(&refresh.root, &refresh.plugin_id));
+            }
+        }
+        state.scanner_running =
+            !(state.pending_roots.is_empty() && state.pending_refreshes.is_empty());
         inner.wake.notify_all();
     });
+}
+
+enum ScanTask {
+    Root(PathBuf),
+    PluginRefresh(PluginRefresh),
 }
 
 fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
@@ -1054,6 +1130,10 @@ fn job_key(source_path: &Path, plugin_id: &str) -> String {
     format!("{}\0{plugin_id}", source_path.display())
 }
 
+fn refresh_key(root: &Path, plugin_id: &str) -> String {
+    format!("{}\0{plugin_id}", root.display())
+}
+
 fn classify_index_error(err: &anyhow::Error) -> FailureDisplay {
     err.downcast_ref::<IndexFailure>()
         .map(|failure| failure.display.clone())
@@ -1073,9 +1153,7 @@ fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
     let suffix = format!("\0{plugin_id}");
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
     state.pending_jobs.retain(|job| job.plugin_id != plugin_id);
-    state
-        .pending_job_keys
-        .retain(|key| !key.ends_with(&suffix));
+    state.pending_job_keys.retain(|key| !key.ends_with(&suffix));
     state.jobs.retain(|job| job.plugin_id != plugin_id);
     state.queued_jobs.retain(|key| !key.ends_with(&suffix));
     state.processing_jobs.retain(|key| !key.ends_with(&suffix));

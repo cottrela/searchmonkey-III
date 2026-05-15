@@ -238,6 +238,7 @@ impl RipgrepSidecarProvider {
             preview_path: None,
             display_context: None,
             plugin_id: None,
+            meta_outdated: None,
             line_number: data["line_number"].as_u64().unwrap_or(0),
             line_text,
             submatches,
