@@ -33,6 +33,7 @@
     revealFilePath,
     resetPluginCache,
     setActivePluginVersion,
+    setPluginEnabled,
     setPluginIndexPaused,
     startSearch as startSearchCommand,
     uninstallPluginVersion,
@@ -681,6 +682,16 @@
   async function removePluginVersion(pluginId: string, version: string) {
     try {
       pluginStatus = await uninstallPluginVersion(pluginId, version);
+      pluginStatusError = '';
+      pluginDialogOpen = true;
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function updatePluginEnabled(pluginId: string, enabled: boolean) {
+    try {
+      pluginStatus = await setPluginEnabled(pluginId, enabled);
       pluginStatusError = '';
       pluginDialogOpen = true;
     } catch (error) {
@@ -1931,6 +1942,7 @@
       onOpenPluginFolder={openSpecificPluginFolder}
       onRefreshPlugin={refreshSupportedPluginFiles}
       onResetPlugin={resetSelectedPluginCache}
+      onSetPluginEnabled={updatePluginEnabled}
       onInstallPlugin={installPluginArchive}
       onRetryFailure={retryPluginFailure}
       onRevealFailure={revealPluginFailure}

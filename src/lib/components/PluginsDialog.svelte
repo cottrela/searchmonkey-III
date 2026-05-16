@@ -21,6 +21,7 @@
     onOpenPluginFolder,
     onRefreshPlugin,
     onResetPlugin,
+    onSetPluginEnabled,
     onInstallPlugin,
     onRetryFailure,
     onRevealFailure,
@@ -39,6 +40,7 @@
     onOpenPluginFolder?: (path: string) => void | Promise<void>;
     onRefreshPlugin?: (pluginId: string) => void | Promise<void>;
     onResetPlugin?: (pluginId: string) => void | Promise<void>;
+    onSetPluginEnabled?: (pluginId: string, enabled: boolean) => void | Promise<void>;
     onInstallPlugin?: (archivePath: string) => void | Promise<void>;
     onRetryFailure?: (path: string) => void | Promise<void>;
     onRevealFailure?: (path: string) => void | Promise<void>;
@@ -59,6 +61,7 @@
   let pendingUnignorePaths = $state<Record<string, boolean>>({});
   let pendingVersionActivations = $state<Record<string, boolean>>({});
   let pendingVersionUninstalls = $state<Record<string, boolean>>({});
+  let pendingPluginToggles = $state<Record<string, boolean>>({});
   let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
   let hiddenRetriedPaths = $state<Record<string, string>>({});
   let installStatus = $state<'ready' | 'installing' | 'success' | 'failed'>('ready');
@@ -128,21 +131,28 @@
     if (!status || !selectedPluginIdValue) return null;
     return status.plugin_summaries.find((summary) => summary.plugin_id === selectedPluginIdValue) ?? null;
   });
-  const selectedIssues = $derived.by<PluginIssue[]>(() => {
+  const pluginIssues = $derived.by<PluginIssue[]>(() => {
     if (!status || !selectedPluginIdValue) return [];
     let issues = status.issues.filter((issue) => issue.plugin_id === selectedPluginIdValue);
     issues = issues.filter((issue) => !hiddenIgnoredPaths[issue.source_path]);
     issues = issues.filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
+    return issues;
+  });
+  const visibleIssues = $derived.by<PluginIssue[]>(() => {
+    let issues = pluginIssues;
     if (!showIgnoredIssues) issues = issues.filter((issue) => issue.status !== 'ignored');
+    return issues;
+  });
+  const activeIssues = $derived.by<PluginIssue[]>(() => visibleIssues.filter((issue) => issue.status !== 'ignored'));
+  const activeIssueCount = $derived(activeIssues.length);
+  const selectedIssues = $derived.by<PluginIssue[]>(() => {
+    let issues = visibleIssues;
     if (selectedIssueCode) issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
     return issues;
   });
   const issueCategories = $derived.by(() => {
-    if (!status || !selectedPluginIdValue) return [];
     const counts = new Map<string, { code: string; label: string; count: number }>();
-    for (const issue of status.issues) {
-      if (issue.plugin_id !== selectedPluginIdValue) continue;
-      if (!showIgnoredIssues && issue.status === 'ignored') continue;
+    for (const issue of activeIssues) {
       const existing = counts.get(issue.error_code);
       if (existing) {
         existing.count += 1;
@@ -164,6 +174,7 @@
   });
   const indexingLabel = $derived.by(() => {
     if (!status) return 'Idle';
+    if (selectedPlugin && !selectedPlugin.enabled) return 'Plugin is disabled';
     if (status.paused) return 'Processing paused';
     if (status.search_active && (selectedSummary?.queued_count ?? 0) > 0) {
       return `Waiting for search to finish (${selectedSummary?.queued_count ?? 0} queued)`;
@@ -171,8 +182,8 @@
     if (status.plugin_state === 'working') {
       const queued = selectedSummary?.queued_count ?? 0;
       const processing = selectedSummary?.processing_count ?? 0;
-      if (processing > 0) return `Working on ${processing} file${processing === 1 ? '' : 's'}`;
       if (queued > 0) return `${queued} queued`;
+      if (processing > 0) return 'Working';
       return 'Working';
     }
     return 'Idle';
@@ -392,6 +403,24 @@
     await onResetPlugin(selectedPlugin.id);
   }
 
+  async function toggleSelectedPluginEnabled() {
+    if (!selectedPlugin || !onSetPluginEnabled) return;
+    const nextEnabled = !selectedPlugin.enabled;
+    if (!nextEnabled) {
+      const confirmed = window.confirm(
+        `Disable ${selectedPlugin.name}? This also clears its cached output so it stops affecting search results.`
+      );
+      if (!confirmed) return;
+    }
+
+    pendingPluginToggles = { ...pendingPluginToggles, [selectedPlugin.id]: true };
+    try {
+      await onSetPluginEnabled(selectedPlugin.id, nextEnabled);
+    } finally {
+      pendingPluginToggles = { ...pendingPluginToggles, [selectedPlugin.id]: false };
+    }
+  }
+
   async function uninstallSelectedPlugin() {
     if (!selectedPlugin) return;
     await uninstallVersion(selectedPlugin.id, selectedPlugin.version);
@@ -521,7 +550,17 @@
           <details class="menu" onfocusout={handlePluginMenuFocusOut} ontoggle={handlePluginMenuToggle}>
             <summary>More…</summary>
             <div class="menu-panel compact">
-              <button type="button" disabled>{selectedPlugin.enabled ? 'Disable Plugin' : 'Enable Plugin'}</button>
+              <button
+                type="button"
+                disabled={pendingPluginToggles[selectedPlugin.id]}
+                onclick={toggleSelectedPluginEnabled}
+              >
+                {#if pendingPluginToggles[selectedPlugin.id]}
+                  {selectedPlugin.enabled ? 'Disabling…' : 'Enabling…'}
+                {:else}
+                  {selectedPlugin.enabled ? 'Disable Plugin' : 'Enable Plugin'}
+                {/if}
+              </button>
               <button type="button" onclick={() => onOpenPluginFolder?.(selectedPlugin.root_path)}>Open Plugin Folder</button>
               <button type="button" onclick={() => (showIgnoredIssues = !showIgnoredIssues)}>
                 {showIgnoredIssues ? 'Hide Ignored Files' : 'Show Ignored Files'}
@@ -541,9 +580,21 @@
           <p class="summary-line">
             <strong>{selectedSummary?.indexed_count ?? 0} processed</strong>
             <span>·</span>
-            <strong>{selectedSummary?.attention_count ?? 0} need attention</strong>
+            <strong>{activeIssueCount} need attention</strong>
           </p>
-          <p class="muted">{indexingLabel}</p>
+          <div class="status-line">
+            <p class="muted">{indexingLabel}</p>
+            {#if selectedPlugin && !selectedPlugin.enabled}
+              <button
+                type="button"
+                class="secondary status-action"
+                disabled={pendingPluginToggles[selectedPlugin.id]}
+                onclick={toggleSelectedPluginEnabled}
+              >
+                {pendingPluginToggles[selectedPlugin.id] ? 'Enabling…' : 'Re-enable'}
+              </button>
+            {/if}
+          </div>
         </section>
 
         <section class="panel">
@@ -601,7 +652,7 @@
             <div>
               <h4>Issues</h4>
               <p class="muted">
-                {selectedSummary?.attention_count ?? 0} files need attention{#if ignoredIssueCount} · {ignoredIssueCount} ignored{/if}
+                {activeIssueCount} files need attention{#if ignoredIssueCount} · {ignoredIssueCount} ignored{/if}
               </p>
             </div>
           </div>
@@ -1069,6 +1120,24 @@
     color: #5b6773;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .status-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .status-line .muted {
+    margin: 0;
+  }
+
+  .status-action {
+    flex: 0 0 auto;
+    min-height: 0;
+    padding: 6px 10px;
+    font-size: 13px;
   }
 
   .menu {

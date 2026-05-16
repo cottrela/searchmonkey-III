@@ -141,13 +141,33 @@ impl StateDb {
             .map_err(Into::into)
     }
 
+    pub fn disabled_plugin_ids(&self) -> Result<Vec<String>> {
+        let conn = self.open()?;
+        let mut stmt =
+            conn.prepare("SELECT plugin_id FROM plugin_preferences WHERE enabled = 0")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn set_preferred_plugin_version(&self, plugin_id: &str, version: &str) -> Result<()> {
         let conn = self.open()?;
         conn.execute(
-            "INSERT INTO plugin_preferences (plugin_id, active_version)
-             VALUES (?1, ?2)
+            "INSERT INTO plugin_preferences (plugin_id, active_version, enabled)
+             VALUES (?1, ?2, 1)
              ON CONFLICT(plugin_id) DO UPDATE SET active_version = excluded.active_version",
             params![plugin_id, version],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
+        let conn = self.open()?;
+        conn.execute(
+            "INSERT INTO plugin_preferences (plugin_id, active_version, enabled)
+             VALUES (?1, COALESCE((SELECT active_version FROM plugin_preferences WHERE plugin_id = ?1), ''), ?2)
+             ON CONFLICT(plugin_id) DO UPDATE SET enabled = excluded.enabled",
+            params![plugin_id, if enabled { 1 } else { 0 }],
         )?;
         Ok(())
     }
@@ -543,7 +563,7 @@ impl StateDb {
             let counts = conn.query_row(
                 "SELECT
                     SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status IN ('failed', 'stale', 'missing', 'skipped') THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status IN ('failed', 'missing', 'skipped') THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END)
                  FROM indexed_files WHERE plugin_id = ?1",
@@ -568,7 +588,7 @@ impl StateDb {
         let mut stmt = conn.prepare(
             "SELECT source_path, plugin_id, status, error_code, error_message, error_hint, attempts, retry_after, updated_at
              FROM indexed_files
-             WHERE plugin_id = ?1 AND status IN ('failed', 'stale', 'missing', 'skipped', 'ignored')
+             WHERE plugin_id = ?1 AND status IN ('failed', 'missing', 'skipped', 'ignored')
              ORDER BY updated_at ASC, source_path ASC",
         )?;
         let rows = stmt.query_map(params![plugin_id], |row| {
@@ -754,12 +774,17 @@ impl StateDb {
              );
              CREATE TABLE IF NOT EXISTS plugin_preferences (
                plugin_id TEXT PRIMARY KEY,
-               active_version TEXT NOT NULL
+               active_version TEXT NOT NULL,
+               enabled INTEGER NOT NULL DEFAULT 1
              );
              CREATE INDEX IF NOT EXISTS idx_indexed_files_plugin_status ON indexed_files(plugin_id, status);
              CREATE INDEX IF NOT EXISTS idx_indexed_files_root_path ON indexed_files(source_path);
              CREATE INDEX IF NOT EXISTS idx_plugin_runs_plugin ON plugin_runs(plugin_id, started_at);",
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE plugin_preferences ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
         Ok(())
     }
 

@@ -418,6 +418,17 @@ fn set_active_plugin_version(
 }
 
 #[tauri::command]
+fn set_plugin_enabled(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .set_plugin_enabled(plugin_id.trim(), enabled)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn uninstall_plugin_version(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
@@ -922,6 +933,7 @@ pub fn run() {
             reset_plugin_cache,
             search_files,
             set_active_plugin_version,
+            set_plugin_enabled,
             set_plugin_index_paused,
             start_search,
             uninstall_plugin_version,

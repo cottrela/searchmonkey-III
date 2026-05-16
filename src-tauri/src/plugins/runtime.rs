@@ -295,6 +295,7 @@ impl PluginIndexRuntime {
         PluginIndexStatus {
             enabled_plugins: installed_plugins
                 .iter()
+                .filter(|plugin| plugin.enabled)
                 .map(|plugin| plugin.id.clone())
                 .collect(),
             installed_plugins: installed_plugins.clone(),
@@ -443,6 +444,31 @@ impl PluginIndexRuntime {
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
         self.request_plugin_refresh(&installed.plugin_id)?;
         Ok((installed.plugin_id, installed.version, self.status()))
+    }
+
+    pub fn set_plugin_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+
+        let discovery = discovery_report(&self.inner)?;
+        if !discovery.registry.versions_by_id.contains_key(plugin_id) {
+            anyhow::bail!("plugin {plugin_id} is not installed");
+        }
+
+        self.inner.state_db.set_plugin_enabled(plugin_id, enabled)?;
+        if enabled {
+            self.request_plugin_refresh(plugin_id)?;
+        } else {
+            drop_runtime_jobs_for_plugin(&self.inner, plugin_id);
+            self.reset_plugin_cache(plugin_id)?;
+        }
+        Ok(self.status())
     }
 
     pub fn set_active_plugin_version(
@@ -1165,14 +1191,28 @@ fn discovery_report(inner: &Arc<RuntimeInner>) -> Result<PluginDiscoveryReport> 
         .state_db
         .preferred_plugin_versions()
         .unwrap_or_default();
+    let disabled_plugin_ids = inner
+        .state_db
+        .disabled_plugin_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashSet<_>>();
     PluginRegistry::discover_for_platform_with_preferences(
         &inner.plugin_roots,
         crate::plugins::manifest::current_platform()?,
         &preferences,
+        &disabled_plugin_ids,
     )
 }
 
 fn discovered_plugins(runtime: &PluginIndexRuntime) -> Vec<InstalledPluginInfo> {
+    let disabled_plugin_ids = runtime
+        .inner
+        .state_db
+        .disabled_plugin_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashSet<_>>();
     let Ok(discovery) = discovery_report(&runtime.inner) else {
         return Vec::new();
     };
@@ -1192,7 +1232,7 @@ fn discovered_plugins(runtime: &PluginIndexRuntime) -> Vec<InstalledPluginInfo> 
                 .get(&plugin.id)
                 .map(|active| active.version == plugin.version)
                 .unwrap_or(false),
-            enabled: true,
+            enabled: !disabled_plugin_ids.contains(&plugin.id),
             requires_entitlement: plugin.requires_entitlement,
             handles: plugin.handles.clone(),
             root_path: plugin.root_dir.display().to_string(),

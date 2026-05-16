@@ -115,6 +115,10 @@ export async function setActivePluginVersion(pluginId: string, version: string):
   return invoke<PluginIndexStatus>('set_active_plugin_version', { pluginId, version });
 }
 
+export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('set_plugin_enabled', { pluginId, enabled });
+}
+
 export async function uninstallPluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('uninstall_plugin_version', { pluginId, version });
 }

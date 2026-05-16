@@ -51,20 +51,31 @@ impl PluginRegistry {
 
     pub fn discover(plugin_roots: &[PathBuf]) -> Result<PluginDiscoveryReport> {
         let platform = current_platform()?;
-        Self::discover_for_platform_with_preferences(plugin_roots, platform, &HashMap::new())
+        Self::discover_for_platform_with_preferences(
+            plugin_roots,
+            platform,
+            &HashMap::new(),
+            &HashSet::new(),
+        )
     }
 
     pub fn discover_for_platform(
         plugin_roots: &[PathBuf],
         platform: PluginPlatform,
     ) -> Result<PluginDiscoveryReport> {
-        Self::discover_for_platform_with_preferences(plugin_roots, platform, &HashMap::new())
+        Self::discover_for_platform_with_preferences(
+            plugin_roots,
+            platform,
+            &HashMap::new(),
+            &HashSet::new(),
+        )
     }
 
     pub fn discover_for_platform_with_preferences(
         plugin_roots: &[PathBuf],
         platform: PluginPlatform,
         preferred_versions: &HashMap<String, String>,
+        disabled_plugin_ids: &HashSet<String>,
     ) -> Result<PluginDiscoveryReport> {
         let mut report = PluginDiscoveryReport::default();
 
@@ -98,8 +109,10 @@ impl PluginRegistry {
 
         for (plugin_id, versions) in &mut report.registry.versions_by_id {
             versions.sort_by(|left, right| plugin_version_cmp(&right.version, &left.version));
-            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id))
-            {
+            if disabled_plugin_ids.contains(plugin_id) {
+                continue;
+            }
+            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id)) {
                 report
                     .registry
                     .by_id
