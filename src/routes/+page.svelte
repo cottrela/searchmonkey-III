@@ -654,6 +654,15 @@
     }
   }
 
+  async function openPluginFailure(sourcePath: string) {
+    try {
+      await openFilePath(sourcePath);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+    }
+  }
+
   async function ignorePluginFailure(sourcePath: string, pluginId: string) {
     try {
       pluginStatus = await ignorePluginIssue(sourcePath, pluginId);
@@ -1978,6 +1987,7 @@
       onSetPluginEnabled={updatePluginEnabled}
       onInstallPlugin={installPluginArchive}
       onRetryFailure={retryPluginFailure}
+      onOpenFailure={openPluginFailure}
       onRevealFailure={revealPluginFailure}
       onIgnoreFailure={ignorePluginFailure}
       onUnignoreFailure={unignorePluginFailure}
