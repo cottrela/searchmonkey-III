@@ -995,9 +995,6 @@
               <p class="issues-empty-title">No files need attention</p>
               {#if ignoredIssueCount}
                 <p class="muted">{ignoredIssueCount} issues are auto-handled</p>
-                <button type="button" class="secondary manage-ignored-button" onclick={() => (showIgnoredIssues = true)}>
-                  Manage ignored issues
-                </button>
               {/if}
             </div>
           {/if}
@@ -1005,7 +1002,10 @@
           {#if ignoredIssueCount}
             <details class="ignored-issues-panel" bind:open={showIgnoredIssues}>
               <summary>
-                <span>Ignored &amp; Auto-handled</span>
+                <span class="ignored-summary-label">
+                  <span>Ignored &amp; Auto-handled</span>
+                  <span class="summary-chevron">{showIgnoredIssues ? '▴' : '▾'}</span>
+                </span>
                 <strong>{ignoredIssueCount}</strong>
               </summary>
 
@@ -1715,6 +1715,18 @@
     color: #33404b;
     font-weight: 600;
     list-style: none;
+  }
+
+  .ignored-summary-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .summary-chevron {
+    color: #6a7580;
+    font-size: 13px;
+    line-height: 1;
   }
 
   .ignored-issues-panel summary::-webkit-details-marker {

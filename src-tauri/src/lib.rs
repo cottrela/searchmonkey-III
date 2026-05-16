@@ -351,7 +351,7 @@ fn queue_plugin_scan(
                 .map_err(|err| err.to_string())?;
         } else {
             plugin_index
-                .request_scan(&path)
+                .request_user_scan(&path)
                 .map_err(|err| err.to_string())?;
         }
     }

@@ -64,6 +64,7 @@
     regex,
     options = $bindable<SearchOptions>(defaultSearchOptions()),
     selected,
+    reindexingPaths,
     state: searchState,
     hasSearched,
     onSelect,
@@ -77,6 +78,7 @@
     regex: boolean;
     options: SearchOptions;
     selected: SearchMatch | null;
+    reindexingPaths: Set<string>;
     state: SearchState;
     hasSearched: boolean;
     onSelect: (match: SearchMatch) => void;
@@ -119,6 +121,7 @@
     return lastFileRowAtOrBefore(scrollTop);
   });
   const selectedMetaOutdated = $derived(Boolean(selected?.meta_outdated));
+  const selectedReindexing = $derived(Boolean(selected && reindexingPaths.has(selected.path)));
   const currentLandmark = $derived.by(() => landmarkForScrollPosition(scrollTop + Math.max(0, viewportHeight * 0.32)));
 
   onMount(() => {
@@ -608,9 +611,15 @@
     <div class="title-block">
       <h2>Results</h2>
       <span>{formatCount(groups.length)} files · {formatCount(matchTotal)} matches</span>
-      {#if selectedMetaOutdated && selected}
-        <button type="button" class="title-hint" onclick={() => onReindex(selected)} title="Re-index the selected file">
-          Re-index file?
+      {#if (selectedMetaOutdated || selectedReindexing) && selected}
+        <button
+          type="button"
+          class="title-hint"
+          onclick={() => onReindex(selected)}
+          disabled={selectedReindexing}
+          title={selectedReindexing ? 'Re-index request queued' : 'Re-index the selected file'}
+        >
+          {selectedReindexing ? 'Queued for re-index' : 'Re-index file?'}
         </button>
       {/if}
     </div>
@@ -642,8 +651,10 @@
             <input type="checkbox" bind:checked={options.show_line_numbers} />
             <span>Show line numbers</span>
           </label>
-          {#if selectedMetaOutdated && selected}
-            <button type="button" class="menu-link" onclick={() => onReindex(selected)}>Re-index file?</button>
+          {#if (selectedMetaOutdated || selectedReindexing) && selected}
+            <button type="button" class="menu-link" onclick={() => onReindex(selected)} disabled={selectedReindexing}>
+              {selectedReindexing ? 'Queued for re-index' : 'Re-index file?'}
+            </button>
           {/if}
         </div>
       </details>
@@ -886,6 +897,13 @@
   .menu-link:focus-visible {
     color: var(--text);
     outline: none;
+  }
+
+  .title-hint:disabled,
+  .menu-link:disabled {
+    cursor: wait;
+    opacity: 0.72;
+    text-decoration: none;
   }
 
   .result-options-menu .toggle-control {

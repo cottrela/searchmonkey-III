@@ -138,7 +138,9 @@
   let pluginStatusPollTimer: ReturnType<typeof setTimeout> | null = null;
   let pluginStatusPollInFlight = false;
   let startupPluginScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let reindexingPaths = $state<Set<string>>(new Set());
   let appVisible = $state(true);
+  const reindexFeedbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
@@ -150,6 +152,7 @@
   const PLUGIN_STATUS_ACTIVE_POLL_MS = 1000;
   const PLUGIN_STATUS_HEAVY_POLL_MS = 500;
   const STARTUP_PLUGIN_SCAN_DELAY_MS = 1500;
+  const REINDEX_FEEDBACK_MS = 3000;
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
   const SAVED_SEARCHES_KEY = 'searchmonkey:saved-searches';
@@ -238,6 +241,26 @@
     if (fullModeAvailable) return ['focus', 'split', 'full'] as const;
     return ['focus', 'split'] as const;
   });
+
+  $effect(() => {
+    matchesVersion;
+    if (reindexingPaths.size === 0) return;
+
+    const outdatedPaths = new Set(matches.filter((match) => match.meta_outdated).map((match) => match.path));
+    const completedPaths = [...reindexingPaths].filter((filePath) => !outdatedPaths.has(filePath));
+    if (completedPaths.length === 0) return;
+
+    const nextPaths = new Set(reindexingPaths);
+    for (const filePath of completedPaths) {
+      const timer = reindexFeedbackTimers.get(filePath);
+      if (timer) {
+        clearTimeout(timer);
+        reindexFeedbackTimers.delete(filePath);
+      }
+      nextPaths.delete(filePath);
+    }
+    reindexingPaths = nextPaths;
+  });
   const scopePanelVisibleInLayout = $derived(activeLayoutMode === 'full');
   const sidePanelVisibleInLayout = $derived(activeLayoutMode !== 'focus' || compactView === 'preview' || regexTesterOpen);
   const workspaceGridTemplate = $derived.by(() => {
@@ -257,6 +280,36 @@
     pendingMatchesRender = false;
     clearResultFlushTimer();
     matchesVersion += 1;
+  }
+
+  function setReindexFeedback(filePath: string, active: boolean) {
+    const nextPaths = new Set(reindexingPaths);
+    if (active) {
+      nextPaths.add(filePath);
+    } else {
+      nextPaths.delete(filePath);
+    }
+    reindexingPaths = nextPaths;
+  }
+
+  function scheduleReindexFeedbackClear(filePath: string) {
+    const existingTimer = reindexFeedbackTimers.get(filePath);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      reindexFeedbackTimers.delete(filePath);
+      setReindexFeedback(filePath, false);
+    }, REINDEX_FEEDBACK_MS);
+    reindexFeedbackTimers.set(filePath, timer);
+  }
+
+  function clearReindexFeedbackTimers() {
+    for (const timer of reindexFeedbackTimers.values()) {
+      clearTimeout(timer);
+    }
+    reindexFeedbackTimers.clear();
   }
 
   function appendMatches(nextMatches: SearchMatch[], immediateRender = false) {
@@ -531,6 +584,7 @@
       rebuildPluginIndexMenuEventUnlisten = null;
       openPluginFolderMenuEventUnlisten?.();
       openPluginFolderMenuEventUnlisten = null;
+      clearReindexFeedbackTimers();
       void cleanupSearchListeners();
     };
   });
@@ -1483,10 +1537,19 @@
   }
 
   async function reindexMatchFile(match: SearchMatch) {
+    const targetPath = match.path;
+    setReindexFeedback(targetPath, true);
     try {
-      pluginStatus = await queuePluginScan(match.path);
+      pluginStatus = await queuePluginScan(targetPath);
       pluginStatusError = '';
+      scheduleReindexFeedbackClear(targetPath);
     } catch (error) {
+      const timer = reindexFeedbackTimers.get(targetPath);
+      if (timer) {
+        clearTimeout(timer);
+        reindexFeedbackTimers.delete(targetPath);
+      }
+      setReindexFeedback(targetPath, false);
       const message = normalizeError(error);
       pluginStatusError = message;
       errorMessage = message;
@@ -1892,6 +1955,7 @@
       regex={searchModeRegex()}
       bind:options
       {selected}
+      {reindexingPaths}
       state={searchState}
       {hasSearched}
       onSelect={selectMatch}
@@ -1920,6 +1984,7 @@
           activeFileMatchNumber={selectedFileMatchIndex + 1}
           activeFileMatchTotal={selectedFileMatchCount}
           canNavigateFiles={groups.length > 1}
+          {reindexingPaths}
           drilldown={activeLayoutMode === 'focus'}
           onPrevious={() => selectFileMatchOffset(-1)}
           onNext={() => selectFileMatchOffset(1)}

@@ -16,7 +16,7 @@ use crate::plugins::state_db::{
 use anyhow::Result;
 use ignore::{DirEntry, WalkBuilder};
 use serde::Serialize;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -118,18 +118,27 @@ struct PluginRefresh {
     plugin_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueLane {
+    UserImmediate,
+    User,
+    Default,
+}
+
 #[derive(Default)]
 struct RuntimeState {
-    pending_roots: VecDeque<PathBuf>,
-    queued_roots: HashSet<PathBuf>,
-    active_roots: HashSet<PathBuf>,
+    pending_user_roots: VecDeque<PathBuf>,
+    pending_default_roots: VecDeque<PathBuf>,
+    queued_user_roots: HashSet<PathBuf>,
+    queued_default_roots: HashSet<PathBuf>,
+    active_roots: HashMap<PathBuf, QueueLane>,
     pending_refreshes: VecDeque<PluginRefresh>,
     queued_refreshes: HashSet<String>,
     active_refreshes: HashSet<String>,
-    pending_jobs: VecDeque<PluginJob>,
-    pending_job_keys: HashSet<String>,
-    jobs: VecDeque<PluginJob>,
-    queued_jobs: HashSet<String>,
+    user_jobs: VecDeque<PluginJob>,
+    default_jobs: VecDeque<PluginJob>,
+    queued_user_jobs: HashSet<String>,
+    queued_default_jobs: HashSet<String>,
     processing_jobs: HashSet<String>,
     paused: bool,
     scanner_running: bool,
@@ -179,6 +188,14 @@ impl PluginIndexRuntime {
     }
 
     pub fn request_scan(&self, root: &Path) -> Result<()> {
+        self.request_scan_in_lane(root, QueueLane::Default)
+    }
+
+    pub fn request_user_scan(&self, root: &Path) -> Result<()> {
+        self.request_scan_in_lane(root, QueueLane::User)
+    }
+
+    fn request_scan_in_lane(&self, root: &Path, lane: QueueLane) -> Result<()> {
         let root = root.canonicalize()?;
         self.inner.state_db.upsert_scan_root(&root)?;
         {
@@ -187,11 +204,7 @@ impl PluginIndexRuntime {
                 .state
                 .lock()
                 .expect("plugin runtime lock poisoned");
-            if state.queued_roots.contains(&root) || state.active_roots.contains(&root) {
-                return Ok(());
-            }
-            state.queued_roots.insert(root.clone());
-            state.pending_roots.push_front(root);
+            enqueue_root(&mut state, root, lane);
         }
         self.inner.wake.notify_all();
         Ok(())
@@ -230,11 +243,15 @@ impl PluginIndexRuntime {
     }
 
     pub fn request_retry(&self, path: &Path) -> Result<()> {
+        self.request_retry_in_lane(path, QueueLane::UserImmediate)
+    }
+
+    fn request_retry_in_lane(&self, path: &Path, lane: QueueLane) -> Result<()> {
         let path = path.canonicalize()?;
         let discovery = discovery_report(&self.inner)?;
         let classifier = FileClassifier::new(&discovery.registry);
         let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(&path) else {
-            self.request_scan(&path)?;
+            self.request_scan_in_lane(&path, lane)?;
             return Ok(());
         };
 
@@ -244,7 +261,7 @@ impl PluginIndexRuntime {
             .get_indexed_file(&path, &plugin_id)?
             .map(|row| row.attempts.max(1))
             .unwrap_or(1);
-        enqueue_job(&self.inner, &path, &plugin_id, attempts, true);
+        enqueue_job(&self.inner, &path, &plugin_id, attempts, lane);
         Ok(())
     }
 
@@ -290,8 +307,10 @@ impl PluginIndexRuntime {
             "paused"
         } else if state.worker_running || state.scanner_running {
             "running"
-        } else if !state.jobs.is_empty()
-            || !state.pending_jobs.is_empty()
+        } else if !state.user_jobs.is_empty()
+            || !state.default_jobs.is_empty()
+            || !state.pending_user_roots.is_empty()
+            || !state.pending_default_roots.is_empty()
             || !state.pending_refreshes.is_empty()
         {
             "queued"
@@ -301,8 +320,10 @@ impl PluginIndexRuntime {
         let plugin_state = if state.paused
             || (!state.worker_running
                 && !state.scanner_running
-                && state.jobs.is_empty()
-                && state.pending_jobs.is_empty()
+                && state.user_jobs.is_empty()
+                && state.default_jobs.is_empty()
+                && state.pending_user_roots.is_empty()
+                && state.pending_default_roots.is_empty()
                 && state.pending_refreshes.is_empty())
         {
             "idle"
@@ -386,13 +407,15 @@ impl PluginIndexRuntime {
             .state
             .lock()
             .expect("plugin runtime lock poisoned");
-        state.pending_jobs.clear();
-        state.pending_job_keys.clear();
-        state.jobs.clear();
-        state.queued_jobs.clear();
+        state.user_jobs.clear();
+        state.default_jobs.clear();
+        state.queued_user_jobs.clear();
+        state.queued_default_jobs.clear();
         state.processing_jobs.clear();
-        state.pending_roots.clear();
-        state.queued_roots.clear();
+        state.pending_user_roots.clear();
+        state.pending_default_roots.clear();
+        state.queued_user_roots.clear();
+        state.queued_default_roots.clear();
         state.pending_refreshes.clear();
         state.queued_refreshes.clear();
         state.active_refreshes.clear();
@@ -425,13 +448,13 @@ impl PluginIndexRuntime {
                 .state
                 .lock()
                 .expect("plugin runtime lock poisoned");
-            state.pending_jobs.retain(|job| job.plugin_id != plugin_id);
+            state.user_jobs.retain(|job| job.plugin_id != plugin_id);
+            state.default_jobs.retain(|job| job.plugin_id != plugin_id);
             state
-                .pending_job_keys
+                .queued_user_jobs
                 .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
-            state.jobs.retain(|job| job.plugin_id != plugin_id);
             state
-                .queued_jobs
+                .queued_default_jobs
                 .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
         }
 
@@ -473,7 +496,7 @@ impl PluginIndexRuntime {
             self.inner
                 .state_db
                 .mark_stale(source_path, plugin_id, attempts, Some("Re-enabled"))?;
-            self.request_scan(source_path)?;
+            self.request_user_scan(source_path)?;
         } else {
             self.inner
                 .state_db
@@ -662,12 +685,13 @@ impl PluginIndexRuntime {
 
         loop {
             let search_active = self.inner.search_active.load(Ordering::SeqCst) > 0;
-            let idle = state.pending_roots.is_empty()
+            let idle = state.pending_user_roots.is_empty()
+                && state.pending_default_roots.is_empty()
                 && state.active_roots.is_empty()
                 && state.pending_refreshes.is_empty()
                 && state.active_refreshes.is_empty()
-                && state.pending_jobs.is_empty()
-                && state.jobs.is_empty()
+                && state.user_jobs.is_empty()
+                && state.default_jobs.is_empty()
                 && state.processing_jobs.is_empty()
                 && !state.scanner_running
                 && !state.worker_running
@@ -696,7 +720,10 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
     thread::spawn(move || loop {
         let task = {
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-            while (state.pending_roots.is_empty() && state.pending_refreshes.is_empty())
+
+            while (state.pending_user_roots.is_empty()
+                && state.pending_default_roots.is_empty()
+                && state.pending_refreshes.is_empty())
                 || state.paused
             {
                 state.scanner_running = false;
@@ -706,39 +733,60 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
                     .expect("plugin runtime condvar poisoned");
             }
 
-            let task = if let Some(refresh) = state.pending_refreshes.pop_front() {
+            let task = if let Some(root) = state.pending_user_roots.pop_front() {
+                state.queued_user_roots.remove(&root);
+                state.active_roots.insert(root.clone(), QueueLane::User);
+
+                ScanTask::Root {
+                    root,
+                    lane: QueueLane::User,
+                }
+            } else if let Some(refresh) = state.pending_refreshes.pop_front() {
                 let key = refresh_key(&refresh.root, &refresh.plugin_id);
                 state.queued_refreshes.remove(&key);
                 state.active_refreshes.insert(key);
+
                 ScanTask::PluginRefresh(refresh)
             } else {
                 let root = state
-                    .pending_roots
+                    .pending_default_roots
                     .pop_front()
                     .expect("pending root disappeared");
-                state.queued_roots.remove(&root);
-                state.active_roots.insert(root.clone());
-                ScanTask::Root(root)
+
+                state.queued_default_roots.remove(&root);
+                state.active_roots.insert(root.clone(), QueueLane::Default);
+
+                ScanTask::Root {
+                    root,
+                    lane: QueueLane::Default,
+                }
             };
+
             state.scanner_running = true;
             task
         };
 
         match &task {
-            ScanTask::Root(root) => {
+            ScanTask::Root { root, lane } => {
                 let _ = inner.state_db.mark_scan_root_started(root);
-                let scanned_count = scan_root(&inner, root).unwrap_or(0);
+                let scanned_count = scan_root(&inner, root, *lane).unwrap_or(0);
                 let _ = inner.state_db.mark_scan_root_completed(root, scanned_count);
             }
             ScanTask::PluginRefresh(refresh) => {
-                let _ =
-                    scan_root_for_plugin(&inner, &refresh.root, &refresh.plugin_id).unwrap_or(0);
+                let _ = scan_root_for_plugin(
+                    &inner,
+                    &refresh.root,
+                    &refresh.plugin_id,
+                    QueueLane::Default,
+                )
+                .unwrap_or(0);
             }
         }
 
         let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+
         match task {
-            ScanTask::Root(root) => {
+            ScanTask::Root { root, .. } => {
                 state.active_roots.remove(&root);
             }
             ScanTask::PluginRefresh(refresh) => {
@@ -747,14 +795,17 @@ fn spawn_scanner_thread(inner: Arc<RuntimeInner>) {
                     .remove(&refresh_key(&refresh.root, &refresh.plugin_id));
             }
         }
-        state.scanner_running =
-            !(state.pending_roots.is_empty() && state.pending_refreshes.is_empty());
+
+        state.scanner_running = !(state.pending_user_roots.is_empty()
+            && state.pending_default_roots.is_empty()
+            && state.pending_refreshes.is_empty());
+
         inner.wake.notify_all();
     });
 }
 
 enum ScanTask {
-    Root(PathBuf),
+    Root { root: PathBuf, lane: QueueLane },
     PluginRefresh(PluginRefresh),
 }
 
@@ -789,7 +840,7 @@ fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
                 attempts: row.attempts.max(1),
                 run_id: next_run_id(&inner),
             },
-            false,
+            QueueLane::Default,
         );
     }
     inner.wake.notify_all();
@@ -801,8 +852,7 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
             loop {
                 enqueue_due_retries(&inner, &mut state);
-                promote_pending_jobs(&mut state);
-                if !state.jobs.is_empty()
+                if (!state.user_jobs.is_empty() || !state.default_jobs.is_empty())
                     && !state.paused
                     && inner.search_active.load(Ordering::SeqCst) == 0
                 {
@@ -816,9 +866,19 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
                 state = next_state;
             }
 
-            let job = state.jobs.pop_front().expect("queued job disappeared");
-            let key = job_key(&job.source_path, &job.plugin_id);
-            state.queued_jobs.remove(&key);
+            let (job, key) = if let Some(job) = state.user_jobs.pop_front() {
+                let key = job_key(&job.source_path, &job.plugin_id);
+                state.queued_user_jobs.remove(&key);
+                (job, key)
+            } else {
+                let job = state
+                    .default_jobs
+                    .pop_front()
+                    .expect("queued job disappeared");
+                let key = job_key(&job.source_path, &job.plugin_id);
+                state.queued_default_jobs.remove(&key);
+                (job, key)
+            };
             state.processing_jobs.insert(key);
             state.worker_running = true;
             job
@@ -952,20 +1012,8 @@ fn enqueue_due_retries(inner: &Arc<RuntimeInner>, state: &mut RuntimeState) {
                 attempts: row.attempts + 1,
                 run_id: next_run_id(inner),
             },
-            false,
+            QueueLane::Default,
         );
-    }
-}
-
-fn promote_pending_jobs(state: &mut RuntimeState) {
-    while state.jobs.len() < ACTIVE_QUEUE_TARGET {
-        let Some(job) = state.pending_jobs.pop_front() else {
-            break;
-        };
-        let key = job_key(&job.source_path, &job.plugin_id);
-        state.pending_job_keys.remove(&key);
-        state.queued_jobs.insert(key);
-        state.jobs.push_back(job);
     }
 }
 
@@ -973,20 +1021,13 @@ fn enqueue_pending_job(
     inner: &Arc<RuntimeInner>,
     state: &mut RuntimeState,
     job: PluginJob,
-    priority_front: bool,
+    lane: QueueLane,
 ) {
     let key = job_key(&job.source_path, &job.plugin_id);
-    if state.pending_job_keys.contains(&key)
-        || state.queued_jobs.contains(&key)
-        || state.processing_jobs.contains(&key)
-    {
+    if state.processing_jobs.contains(&key) {
         return;
     }
-    state.pending_job_keys.insert(key);
     let Some(plugin) = registered_plugin(inner, &job.plugin_id) else {
-        state
-            .pending_job_keys
-            .remove(&job_key(&job.source_path, &job.plugin_id));
         let _ = inner.state_db.mark_skipped(
             &job.source_path,
             &job.plugin_id,
@@ -1028,25 +1069,27 @@ fn enqueue_pending_job(
             job.attempts.saturating_sub(1),
         )
     };
-    if priority_front {
-        state.pending_jobs.push_front(job);
-    } else {
-        state.pending_jobs.push_back(job);
-    }
+    enqueue_job_in_lane(state, job, key, lane);
 }
 
-fn scan_root(inner: &Arc<RuntimeInner>, root: &Path) -> Result<usize> {
-    scan_root_internal(inner, root, None)
+fn scan_root(inner: &Arc<RuntimeInner>, root: &Path, lane: QueueLane) -> Result<usize> {
+    scan_root_internal(inner, root, None, lane)
 }
 
-fn scan_root_for_plugin(inner: &Arc<RuntimeInner>, root: &Path, plugin_id: &str) -> Result<usize> {
-    scan_root_internal(inner, root, Some(plugin_id))
+fn scan_root_for_plugin(
+    inner: &Arc<RuntimeInner>,
+    root: &Path,
+    plugin_id: &str,
+    lane: QueueLane,
+) -> Result<usize> {
+    scan_root_internal(inner, root, Some(plugin_id), lane)
 }
 
 fn scan_root_internal(
     inner: &Arc<RuntimeInner>,
     root: &Path,
     plugin_filter: Option<&str>,
+    lane: QueueLane,
 ) -> Result<usize> {
     let discovery = discovery_report(inner)?;
     let classifier = FileClassifier::new(&discovery.registry);
@@ -1060,7 +1103,7 @@ fn scan_root_internal(
             &classifier,
             &discovery.registry,
             plugin_filter,
-            true,
+            lane,
         ) {
             seen.insert(key);
             supported_file_count += 1;
@@ -1087,6 +1130,9 @@ fn scan_root_internal(
         .build();
 
     for entry in walker {
+        if lane == QueueLane::Default && has_user_work(inner) {
+            break;
+        }
         let Ok(entry) = entry else {
             continue;
         };
@@ -1102,7 +1148,7 @@ fn scan_root_internal(
             &classifier,
             &discovery.registry,
             plugin_filter,
-            true,
+            lane,
         ) {
             seen.insert(key);
             supported_file_count += 1;
@@ -1160,7 +1206,7 @@ fn scan_file(
     classifier: &FileClassifier,
     registry: &PluginRegistry,
     plugin_filter: Option<&str>,
-    priority_front: bool,
+    lane: QueueLane,
 ) -> Option<String> {
     let FileKind::SupportedByPlugin { plugin_id } = classifier.classify(path) else {
         return None;
@@ -1182,7 +1228,7 @@ fn scan_file(
 
     match existing {
         None => {
-            enqueue_job(inner, path, &plugin.id, 1, priority_front);
+            enqueue_job(inner, path, &plugin.id, 1, lane);
         }
         Some(row) => {
             if row.status == "ignored" {
@@ -1206,7 +1252,7 @@ fn scan_file(
                     row.attempts,
                     Some("Source file or plugin version changed"),
                 );
-                enqueue_job(inner, path, &plugin.id, 1, priority_front);
+                enqueue_job(inner, path, &plugin.id, 1, lane);
                 return Some(key);
             }
 
@@ -1227,7 +1273,7 @@ fn scan_file(
                     let _ = inner.state_db.touch_checked_at(path, &plugin.id);
                     return Some(key);
                 }
-                enqueue_job(inner, path, &plugin.id, row.attempts + 1, priority_front);
+                enqueue_job(inner, path, &plugin.id, row.attempts + 1, lane);
                 return Some(key);
             }
 
@@ -1235,7 +1281,7 @@ fn scan_file(
                 row.status.as_str(),
                 "stale" | "missing" | "queued" | "processing"
             ) {
-                enqueue_job(inner, path, &plugin.id, row.attempts.max(1), priority_front);
+                enqueue_job(inner, path, &plugin.id, row.attempts.max(1), lane);
                 return Some(key);
             }
 
@@ -1248,7 +1294,7 @@ fn scan_file(
                 inner
                     .state_db
                     .mark_stale(path, &plugin.id, row.attempts, Some("Cache missing"));
-            enqueue_job(inner, path, &plugin.id, row.attempts.max(1), priority_front);
+            enqueue_job(inner, path, &plugin.id, row.attempts.max(1), lane);
         }
     }
 
@@ -1260,7 +1306,7 @@ fn enqueue_job(
     source_path: &Path,
     plugin_id: &str,
     attempts: u32,
-    priority_front: bool,
+    lane: QueueLane,
 ) {
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
     enqueue_pending_job(
@@ -1272,7 +1318,7 @@ fn enqueue_job(
             attempts,
             run_id: next_run_id(inner),
         },
-        priority_front,
+        lane,
     );
     inner.wake.notify_all();
 }
@@ -1308,12 +1354,108 @@ fn registered_plugin(
 fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
     let suffix = format!("\0{plugin_id}");
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-    state.pending_jobs.retain(|job| job.plugin_id != plugin_id);
-    state.pending_job_keys.retain(|key| !key.ends_with(&suffix));
-    state.jobs.retain(|job| job.plugin_id != plugin_id);
-    state.queued_jobs.retain(|key| !key.ends_with(&suffix));
+    state.user_jobs.retain(|job| job.plugin_id != plugin_id);
+    state.default_jobs.retain(|job| job.plugin_id != plugin_id);
+    state.queued_user_jobs.retain(|key| !key.ends_with(&suffix));
+    state.queued_default_jobs.retain(|key| !key.ends_with(&suffix));
     state.processing_jobs.retain(|key| !key.ends_with(&suffix));
     inner.wake.notify_all();
+}
+
+fn enqueue_root(state: &mut RuntimeState, root: PathBuf, lane: QueueLane) {
+    if let Some(active_lane) = state.active_roots.get(&root).copied() {
+        if active_lane == QueueLane::Default && matches!(lane, QueueLane::User | QueueLane::UserImmediate) {
+            if state.queued_user_roots.insert(root.clone()) {
+                state.pending_user_roots.push_front(root);
+            }
+        }
+
+        return;
+    }
+
+    match lane {
+        QueueLane::UserImmediate | QueueLane::User => {
+            if state.queued_user_roots.insert(root.clone()) {
+                state.pending_user_roots.push_front(root.clone());
+            }
+
+            state.queued_default_roots.remove(&root);
+            remove_root_from_queue(&mut state.pending_default_roots, &root);
+        }
+
+        QueueLane::Default => {
+            if !state.queued_user_roots.contains(&root)
+                && state.queued_default_roots.insert(root.clone())
+            {
+                state.pending_default_roots.push_back(root);
+            }
+        }
+    }
+}
+
+fn remove_root_from_queue(queue: &mut VecDeque<PathBuf>, root: &Path) {
+    if let Some(index) = queue.iter().position(|entry| entry == root) {
+        queue.remove(index);
+    }
+}
+
+fn enqueue_job_in_lane(state: &mut RuntimeState, job: PluginJob, key: String, lane: QueueLane) {
+    match lane {
+        QueueLane::UserImmediate => {
+            if state.queued_user_jobs.contains(&key) {
+                return;
+            }
+
+            if state.queued_default_jobs.remove(&key) {
+                remove_job_from_queue(&mut state.default_jobs, &key);
+            }
+
+            state.queued_user_jobs.insert(key);
+            state.user_jobs.push_front(job);
+        }
+
+        QueueLane::User => {
+            if state.queued_user_jobs.contains(&key) {
+                return;
+            }
+
+            if state.queued_default_jobs.remove(&key) {
+                remove_job_from_queue(&mut state.default_jobs, &key);
+            }
+
+            state.queued_user_jobs.insert(key);
+            state.user_jobs.push_back(job);
+        }
+
+        QueueLane::Default => {
+            if state.queued_user_jobs.contains(&key) || state.queued_default_jobs.contains(&key) {
+                return;
+            }
+
+            state.queued_default_jobs.insert(key);
+            state.default_jobs.push_back(job);
+        }
+    }
+}
+
+fn has_user_work(inner: &Arc<RuntimeInner>) -> bool {
+    let state = inner.state.lock().expect("plugin runtime lock poisoned");
+
+    !state.pending_user_roots.is_empty()
+        || !state.user_jobs.is_empty()
+        || state
+            .active_roots
+            .values()
+            .any(|lane| matches!(lane, QueueLane::User | QueueLane::UserImmediate))
+}
+
+fn remove_job_from_queue(queue: &mut VecDeque<PluginJob>, key: &str) {
+    if let Some(index) = queue
+        .iter()
+        .position(|job| job_key(&job.source_path, &job.plugin_id) == key)
+    {
+        queue.remove(index);
+    }
 }
 
 fn discovery_report(inner: &Arc<RuntimeInner>) -> Result<PluginDiscoveryReport> {
@@ -1457,4 +1599,64 @@ fn system_time_rfc3339(value: std::time::SystemTime) -> String {
     datetime
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_job(path: &str, plugin_id: &str) -> PluginJob {
+        PluginJob {
+            source_path: PathBuf::from(path),
+            plugin_id: plugin_id.to_string(),
+            attempts: 1,
+            run_id: format!("run-{path}"),
+        }
+    }
+
+    #[test]
+    fn user_jobs_are_popped_before_default_jobs() {
+        let mut state = RuntimeState::default();
+        let default = test_job("/tmp/default.pdf", "ocr");
+        let default_key = job_key(&default.source_path, &default.plugin_id);
+        enqueue_job_in_lane(&mut state, default, default_key.clone(), QueueLane::Default);
+
+        let user = test_job("/tmp/user.pdf", "ocr");
+        let user_key = job_key(&user.source_path, &user.plugin_id);
+        enqueue_job_in_lane(&mut state, user.clone(), user_key.clone(), QueueLane::User);
+
+        assert_eq!(state.user_jobs.front().map(|job| job.source_path.clone()), Some(user.source_path));
+        assert!(state.queued_user_jobs.contains(&user_key));
+        assert!(state.queued_default_jobs.contains(&default_key));
+    }
+
+    #[test]
+    fn user_request_promotes_existing_default_job() {
+        let mut state = RuntimeState::default();
+        let path = "/tmp/promoted.pdf";
+        let default = test_job(path, "ocr");
+        let key = job_key(&default.source_path, &default.plugin_id);
+        enqueue_job_in_lane(&mut state, default, key.clone(), QueueLane::Default);
+
+        let user = test_job(path, "ocr");
+        enqueue_job_in_lane(&mut state, user.clone(), key.clone(), QueueLane::User);
+
+        assert!(state.default_jobs.is_empty());
+        assert!(state.queued_default_jobs.is_empty());
+        assert_eq!(state.user_jobs.front().map(|job| job.source_path.clone()), Some(user.source_path));
+        assert!(state.queued_user_jobs.contains(&key));
+    }
+
+    #[test]
+    fn user_scan_promotes_existing_default_root() {
+        let mut state = RuntimeState::default();
+        let root = PathBuf::from("/tmp/ocr-test");
+        enqueue_root(&mut state, root.clone(), QueueLane::Default);
+        enqueue_root(&mut state, root.clone(), QueueLane::User);
+
+        assert!(state.pending_default_roots.is_empty());
+        assert!(state.queued_default_roots.is_empty());
+        assert_eq!(state.pending_user_roots.front(), Some(&root));
+        assert!(state.queued_user_roots.contains(&root));
+    }
 }

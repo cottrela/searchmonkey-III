@@ -41,6 +41,7 @@
     activeFileMatchNumber,
     activeFileMatchTotal,
     canNavigateFiles,
+    reindexingPaths,
     drilldown = false,
     onPrevious,
     onNext,
@@ -57,6 +58,7 @@
     activeFileMatchNumber: number;
     activeFileMatchTotal: number;
     canNavigateFiles: boolean;
+    reindexingPaths: Set<string>;
     drilldown?: boolean;
     onPrevious: () => void;
     onNext: () => void;
@@ -86,6 +88,7 @@
   const effectiveWrap = $derived(wrapLines && canWrap);
   const renderLines = $derived.by(() => buildRenderLines(sourceLines));
   const activeMatchText = $derived(preview.activeMatch?.line_text ?? '');
+  const activeMatchReindexing = $derived(Boolean(preview.activeMatch && reindexingPaths.has(preview.activeMatch.path)));
   const activeMatchOnly = $derived.by(() => {
     const match = preview.activeMatch;
     if (!match?.submatches.length) return activeMatchText;
@@ -391,9 +394,15 @@
       <div class="desktop-preview-file">
         <div class="desktop-preview-title">
           <h2 title={preview.filePath}>{filename(preview.filePath)}</h2>
-          {#if preview.activeMatch?.meta_outdated}
-            <button type="button" class="meta-hint" onclick={() => preview.activeMatch && onReindex(preview.activeMatch)} title="Re-index this file">
-              Re-index file?
+          {#if preview.activeMatch && (preview.activeMatch.meta_outdated || activeMatchReindexing)}
+            <button
+              type="button"
+              class="meta-hint"
+              onclick={() => preview.activeMatch && onReindex(preview.activeMatch)}
+              disabled={activeMatchReindexing}
+              title={activeMatchReindexing ? 'Re-index request queued' : 'Re-index this file'}
+            >
+              {activeMatchReindexing ? 'Queued for re-index' : 'Re-index file?'}
             </button>
           {/if}
         </div>
