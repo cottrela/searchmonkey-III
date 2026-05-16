@@ -135,8 +135,10 @@
   let pluginDialogPage = $state<'installed' | 'available' | 'updates' | 'install'>('installed');
   let pluginStatus = $state<PluginIndexSummary | null>(null);
   let pluginStatusError = $state('');
-  let pluginStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+  let pluginStatusPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pluginStatusPollInFlight = false;
   let startupPluginScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let appVisible = $state(true);
 
   const PREVIEW_CONTEXT_LINES = 50;
   const PREVIEW_EDGE_MARGIN = 10;
@@ -144,7 +146,9 @@
   const SEARCH_RESULT_FLUSH_MS = 500;
   const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 750;
   const SEARCH_STATUS_POLL_MS = 150;
-  const PLUGIN_STATUS_POLL_MS = 1500;
+  const PLUGIN_STATUS_IDLE_POLL_MS = 5000;
+  const PLUGIN_STATUS_ACTIVE_POLL_MS = 1000;
+  const PLUGIN_STATUS_HEAVY_POLL_MS = 500;
   const STARTUP_PLUGIN_SCAN_DELAY_MS = 1500;
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
@@ -382,10 +386,17 @@
         compactView = 'results';
       }
     };
+    const syncAppVisibility = () => {
+      appVisible = document.visibilityState === 'visible' && document.hasFocus();
+    };
 
     syncConstraint();
+    syncAppVisibility();
     oneUpMedia.addEventListener('change', syncConstraint);
     fullMedia.addEventListener('change', syncConstraint);
+    document.addEventListener('visibilitychange', syncAppVisibility);
+    window.addEventListener('focus', syncAppVisibility);
+    window.addEventListener('blur', syncAppVisibility);
 
     recentSearches = loadCriteria(RECENT_SEARCHES_KEY);
     savedSearches = loadCriteria(SAVED_SEARCHES_KEY);
@@ -480,10 +491,15 @@
         if (!path) path = '/';
         scheduleStartupPluginScan();
       });
-    void refreshPluginStatus();
-    startPluginStatusPolling();
+    if (pluginDialogOpen && appVisible) {
+      void refreshPluginStatus();
+    }
+    syncPluginStatusPolling();
 
     return () => {
+      document.removeEventListener('visibilitychange', syncAppVisibility);
+      window.removeEventListener('focus', syncAppVisibility);
+      window.removeEventListener('blur', syncAppVisibility);
       oneUpMedia.removeEventListener('change', syncConstraint);
       fullMedia.removeEventListener('change', syncConstraint);
       clearStatusPollTimer();
@@ -519,17 +535,43 @@
     };
   });
 
+  function shouldPollPluginStatus() {
+    return pluginDialogOpen && appVisible;
+  }
+
+  function pluginStatusPollMs() {
+    if (!pluginStatus) return PLUGIN_STATUS_ACTIVE_POLL_MS;
+    const totalQueued = pluginStatus.plugin_summaries.reduce((sum, summary) => sum + summary.queued_count, 0);
+    const totalProcessing = pluginStatus.plugin_summaries.reduce((sum, summary) => sum + summary.processing_count, 0);
+    if (pluginStatus.plugin_state === 'working' && totalProcessing > 0) return PLUGIN_STATUS_HEAVY_POLL_MS;
+    if (pluginStatus.plugin_state === 'working' || totalQueued > 0 || pluginStatus.search_active) {
+      return PLUGIN_STATUS_ACTIVE_POLL_MS;
+    }
+    return PLUGIN_STATUS_IDLE_POLL_MS;
+  }
+
   function startPluginStatusPolling() {
     clearPluginStatusPollTimer();
-    pluginStatusPollTimer = setInterval(() => {
+    if (!shouldPollPluginStatus()) return;
+    pluginStatusPollTimer = setTimeout(() => {
+      pluginStatusPollTimer = null;
       void refreshPluginStatus();
-    }, PLUGIN_STATUS_POLL_MS);
+    }, pluginStatusPollMs());
   }
 
   function clearPluginStatusPollTimer() {
     if (!pluginStatusPollTimer) return;
-    clearInterval(pluginStatusPollTimer);
+    clearTimeout(pluginStatusPollTimer);
     pluginStatusPollTimer = null;
+  }
+
+  function syncPluginStatusPolling() {
+    if (!shouldPollPluginStatus()) {
+      clearPluginStatusPollTimer();
+      return;
+    }
+    if (pluginStatusPollInFlight || pluginStatusPollTimer) return;
+    startPluginStatusPolling();
   }
 
   function scheduleStartupPluginScan() {
@@ -556,12 +598,26 @@
     startupPluginScanTimer = null;
   }
 
+  $effect(() => {
+    if (pluginDialogOpen && appVisible && !pluginStatus) {
+      void refreshPluginStatus();
+      return;
+    }
+    syncPluginStatusPolling();
+  });
+
   async function refreshPluginStatus() {
+    if (!shouldPollPluginStatus() || pluginStatusPollInFlight) return;
+    pluginStatusPollInFlight = true;
     try {
       pluginStatus = await getPluginIndexSummary();
       pluginStatusError = '';
     } catch (error) {
       pluginStatusError = normalizeError(error);
+    } finally {
+      pluginStatusPollInFlight = false;
+      clearPluginStatusPollTimer();
+      if (shouldPollPluginStatus()) startPluginStatusPolling();
     }
   }
 
