@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { PluginIndexStatus, SearchState } from '$lib/types';
+  import type { PluginIndexSummary, SearchState } from '$lib/types';
 
   let {
     state,
@@ -15,7 +15,7 @@
     filesWithMatches: number;
     elapsedMs?: number;
     errorMessage?: string;
-    pluginStatus?: PluginIndexStatus | null;
+    pluginStatus?: PluginIndexSummary | null;
     onManagePlugins?: () => void;
   } = $props();
 
@@ -49,9 +49,7 @@
         acc.attention += summary.attention_count;
         acc.processing += summary.processing_count;
         acc.queued += summary.queued_count;
-        acc.blocked += pluginStatus.issues.filter(
-          (issue) => issue.plugin_id === summary.plugin_id && issue.attempts >= 4
-        ).length;
+        acc.blocked += summary.blocked_count;
         return acc;
       },
       { attention: 0, processing: 0, queued: 0, blocked: 0 }

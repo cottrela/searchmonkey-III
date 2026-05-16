@@ -48,7 +48,7 @@ const PLUGIN_MENU_ITEM_PREFIX: &str = "plugin-entry:";
 struct InstallPluginResult {
     plugin_id: String,
     version: String,
-    status: plugins::runtime::PluginIndexStatus,
+    status: plugins::runtime::PluginIndexSummary,
 }
 
 #[derive(Default)]
@@ -297,17 +297,52 @@ async fn index_file_with_plugin(source_path: String) -> Result<indexer::IndexRes
 }
 
 #[tauri::command]
+fn get_plugin_index_summary(
+    plugin_index: State<'_, PluginIndexRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    Ok(plugin_index.summary())
+}
+
+#[tauri::command]
 fn get_plugin_index_status(
     plugin_index: State<'_, PluginIndexRuntime>,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
-    Ok(plugin_index.status())
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    Ok(plugin_index.summary())
+}
+
+#[tauri::command]
+fn get_plugin_issue_counts(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+) -> Result<Vec<plugins::runtime::PluginIssueCount>, String> {
+    plugin_index
+        .issue_counts(plugin_id.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn get_plugin_issues(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    status: Option<String>,
+    error_code: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<plugins::runtime::PluginIssue>, String> {
+    plugin_index
+        .issues_page(
+            plugin_id.trim(),
+            status.as_deref(),
+            error_code.as_deref(),
+            limit.unwrap_or(25),
+        )
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn queue_plugin_scan(
     plugin_index: State<'_, PluginIndexRuntime>,
     path: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
     if path.exists() {
         if path.is_file() {
@@ -320,7 +355,7 @@ fn queue_plugin_scan(
                 .map_err(|err| err.to_string())?;
         }
     }
-    Ok(plugin_index.status())
+    Ok(plugin_index.summary())
 }
 
 #[tauri::command]
@@ -328,7 +363,7 @@ fn ignore_plugin_issue(
     plugin_index: State<'_, PluginIndexRuntime>,
     path: String,
     plugin_id: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
     plugin_index
         .ignore_issue(&path, plugin_id.trim())
@@ -340,7 +375,7 @@ fn unignore_plugin_issue(
     plugin_index: State<'_, PluginIndexRuntime>,
     path: String,
     plugin_id: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
     plugin_index
         .unignore_issue(&path, plugin_id.trim())
@@ -352,7 +387,7 @@ fn retry_plugin_issue_type(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
     error_code: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .retry_issue_type(plugin_id.trim(), error_code.trim())
         .map_err(|err| err.to_string())
@@ -363,7 +398,7 @@ fn ignore_plugin_issue_type(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
     error_code: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .ignore_issue_type(plugin_id.trim(), error_code.trim())
         .map_err(|err| err.to_string())
@@ -375,7 +410,7 @@ fn set_plugin_issue_type_auto_ignore(
     plugin_id: String,
     error_code: String,
     enabled: bool,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_issue_type_auto_ignore(plugin_id.trim(), error_code.trim(), enabled)
         .map_err(|err| err.to_string())
@@ -385,14 +420,14 @@ fn set_plugin_issue_type_auto_ignore(
 fn set_plugin_index_paused(
     plugin_index: State<'_, PluginIndexRuntime>,
     paused: bool,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     Ok(plugin_index.set_paused(paused))
 }
 
 #[tauri::command]
 fn rebuild_plugin_index(
     plugin_index: State<'_, PluginIndexRuntime>,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     Ok(plugin_index.rebuild())
 }
 
@@ -400,7 +435,7 @@ fn rebuild_plugin_index(
 fn refresh_plugin_supported_files(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .refresh_plugin_supported_files(plugin_id.trim())
         .map_err(|err| err.to_string())
@@ -410,7 +445,7 @@ fn refresh_plugin_supported_files(
 fn reset_plugin_cache(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .reset_plugin_cache(plugin_id.trim())
         .map_err(|err| err.to_string())
@@ -445,7 +480,7 @@ fn set_active_plugin_version(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
     version: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_active_plugin_version(plugin_id.trim(), version.trim())
         .map_err(|err| err.to_string())
@@ -456,7 +491,7 @@ fn set_plugin_enabled(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
     enabled: bool,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_plugin_enabled(plugin_id.trim(), enabled)
         .map_err(|err| err.to_string())
@@ -467,7 +502,7 @@ fn uninstall_plugin_version(
     plugin_index: State<'_, PluginIndexRuntime>,
     plugin_id: String,
     version: String,
-) -> Result<plugins::runtime::PluginIndexStatus, String> {
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .uninstall_plugin_version(plugin_id.trim(), version.trim())
         .map_err(|err| err.to_string())
@@ -949,7 +984,10 @@ pub fn run() {
             cancel_search,
             clear_search,
             copy_text,
+            get_plugin_index_summary,
             get_results,
+            get_plugin_issue_counts,
+            get_plugin_issues,
             get_plugin_index_status,
             get_search_status,
             home_dir,

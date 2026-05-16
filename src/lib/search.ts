@@ -3,7 +3,9 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   FilePreview,
   InstallPluginResult,
-  PluginIndexStatus,
+  PluginIndexSummary,
+  PluginIssue,
+  PluginIssueCount,
   SearchBufferUpdatedEvent,
   SearchMatch,
   SearchRequest,
@@ -71,20 +73,33 @@ export async function clearSearch(searchId: number): Promise<void> {
   return invoke<void>('clear_search', { searchId });
 }
 
-export async function getPluginIndexStatus(): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('get_plugin_index_status');
+export async function getPluginIndexSummary(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('get_plugin_index_summary');
 }
 
-export async function setPluginIndexPaused(paused: boolean): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('set_plugin_index_paused', { paused });
+export async function getPluginIssueCounts(pluginId: string): Promise<PluginIssueCount[]> {
+  return invoke<PluginIssueCount[]>('get_plugin_issue_counts', { pluginId });
 }
 
-export async function rebuildPluginIndex(): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('rebuild_plugin_index');
+export async function getPluginIssues(
+  pluginId: string,
+  status?: string | null,
+  errorCode?: string | null,
+  limit = 25
+): Promise<PluginIssue[]> {
+  return invoke<PluginIssue[]>('get_plugin_issues', { pluginId, status, errorCode, limit });
 }
 
-export async function refreshPluginSupportedFiles(pluginId: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('refresh_plugin_supported_files', { pluginId });
+export async function setPluginIndexPaused(paused: boolean): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_index_paused', { paused });
+}
+
+export async function rebuildPluginIndex(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('rebuild_plugin_index');
+}
+
+export async function refreshPluginSupportedFiles(pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('refresh_plugin_supported_files', { pluginId });
 }
 
 export async function pluginFolderPath(): Promise<string> {
@@ -95,46 +110,46 @@ export async function installPluginPackage(archivePath: string): Promise<Install
   return invoke<InstallPluginResult>('install_plugin_package', { archivePath });
 }
 
-export async function queuePluginScan(path: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('queue_plugin_scan', { path });
+export async function queuePluginScan(path: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('queue_plugin_scan', { path });
 }
 
-export async function resetPluginCache(pluginId: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('reset_plugin_cache', { pluginId });
+export async function resetPluginCache(pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('reset_plugin_cache', { pluginId });
 }
 
-export async function ignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('ignore_plugin_issue', { path, pluginId });
+export async function ignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('ignore_plugin_issue', { path, pluginId });
 }
 
-export async function unignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('unignore_plugin_issue', { path, pluginId });
+export async function unignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('unignore_plugin_issue', { path, pluginId });
 }
 
-export async function retryPluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('retry_plugin_issue_type', { pluginId, errorCode });
+export async function retryPluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('retry_plugin_issue_type', { pluginId, errorCode });
 }
 
-export async function ignorePluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('ignore_plugin_issue_type', { pluginId, errorCode });
+export async function ignorePluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('ignore_plugin_issue_type', { pluginId, errorCode });
 }
 
 export async function setPluginIssueTypeAutoIgnore(
   pluginId: string,
   errorCode: string,
   enabled: boolean
-): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('set_plugin_issue_type_auto_ignore', { pluginId, errorCode, enabled });
+): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_issue_type_auto_ignore', { pluginId, errorCode, enabled });
 }
 
-export async function setActivePluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('set_active_plugin_version', { pluginId, version });
+export async function setActivePluginVersion(pluginId: string, version: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_active_plugin_version', { pluginId, version });
 }
 
-export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('set_plugin_enabled', { pluginId, enabled });
+export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_enabled', { pluginId, enabled });
 }
 
-export async function uninstallPluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
-  return invoke<PluginIndexStatus>('uninstall_plugin_version', { pluginId, version });
+export async function uninstallPluginVersion(pluginId: string, version: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('uninstall_plugin_version', { pluginId, version });
 }

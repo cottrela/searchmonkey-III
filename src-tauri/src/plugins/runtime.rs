@@ -10,7 +10,8 @@ use crate::plugins::registry::{
 };
 use crate::plugins::state_db::{
     is_attention_status, is_retry_ready, now_rfc3339, queued_status, ready_status,
-    retry_after_for_attempt, PluginCounts, PluginIssueRow, PluginRunRecord, StateDb,
+    retry_after_for_attempt, PluginCounts, PluginIssueCountRow, PluginIssueRow, PluginRunRecord,
+    StateDb,
 };
 use anyhow::Result;
 use ignore::{DirEntry, WalkBuilder};
@@ -31,7 +32,7 @@ const ACTIVE_QUEUE_TARGET: usize = 16;
 const RUN_COUNTER_START: u64 = 1;
 
 #[derive(Debug, Clone, Serialize)]
-pub struct PluginIndexStatus {
+pub struct PluginIndexSummary {
     pub enabled_plugins: Vec<String>,
     pub installed_plugins: Vec<InstalledPluginInfo>,
     pub indexing_state: String,
@@ -41,7 +42,6 @@ pub struct PluginIndexStatus {
     pub scanner_running: bool,
     pub worker_running: bool,
     pub plugin_summaries: Vec<PluginHealthSummary>,
-    pub issues: Vec<PluginIssue>,
     pub auto_ignored_issue_types: Vec<PluginIssuePreferenceSummary>,
 }
 
@@ -73,6 +73,7 @@ pub struct PluginHealthSummary {
     pub ignored_count: usize,
     pub queued_count: usize,
     pub processing_count: usize,
+    pub blocked_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,14 @@ pub struct PluginIssue {
     pub attempts: u32,
     pub retry_after: Option<String>,
     pub last_reported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginIssueCount {
+    pub plugin_id: String,
+    pub status: String,
+    pub error_code: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,7 +258,7 @@ impl PluginIndexRuntime {
         self.inner.wake.notify_all();
     }
 
-    pub fn status(&self) -> PluginIndexStatus {
+    pub fn summary(&self) -> PluginIndexSummary {
         let installed_plugins = discovered_plugins(self);
         let plugin_ids = installed_plugins
             .iter()
@@ -260,16 +269,6 @@ impl PluginIndexRuntime {
             .state_db
             .list_plugin_counts(&plugin_ids)
             .unwrap_or_default();
-        let issues = plugin_ids
-            .iter()
-            .flat_map(|plugin_id| {
-                self.inner
-                    .state_db
-                    .list_plugin_issues(plugin_id)
-                    .unwrap_or_default()
-            })
-            .map(map_issue_row)
-            .collect::<Vec<_>>();
         let auto_ignored_issue_types = self
             .inner
             .state_db
@@ -311,7 +310,7 @@ impl PluginIndexRuntime {
             "working"
         };
 
-        PluginIndexStatus {
+        PluginIndexSummary {
             enabled_plugins: installed_plugins
                 .iter()
                 .filter(|plugin| plugin.enabled)
@@ -328,12 +327,48 @@ impl PluginIndexRuntime {
                 .iter()
                 .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
                 .collect(),
-            issues,
             auto_ignored_issue_types,
         }
     }
 
-    pub fn set_paused(&self, paused: bool) -> PluginIndexStatus {
+    pub fn issue_counts(&self, plugin_id: &str) -> Result<Vec<PluginIssueCount>> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+        Ok(self
+            .inner
+            .state_db
+            .list_plugin_issue_counts(plugin_id)?
+            .into_iter()
+            .map(|row| map_issue_count_row(plugin_id, row))
+            .collect())
+    }
+
+    pub fn issues_page(
+        &self,
+        plugin_id: &str,
+        status: Option<&str>,
+        error_code: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PluginIssue>> {
+        let plugin_id = plugin_id.trim();
+        if plugin_id.is_empty() {
+            anyhow::bail!("plugin id is required");
+        }
+        let status = status.map(str::trim).filter(|value| !value.is_empty());
+        let error_code = error_code.map(str::trim).filter(|value| !value.is_empty());
+        let limit = limit.max(1).min(100);
+        Ok(self
+            .inner
+            .state_db
+            .list_plugin_issues_page(plugin_id, status, error_code, limit)?
+            .into_iter()
+            .map(map_issue_row)
+            .collect())
+    }
+
+    pub fn set_paused(&self, paused: bool) -> PluginIndexSummary {
         let mut state = self
             .inner
             .state
@@ -342,10 +377,10 @@ impl PluginIndexRuntime {
         state.paused = paused;
         self.inner.wake.notify_all();
         drop(state);
-        self.status()
+        self.summary()
     }
 
-    pub fn rebuild(&self) -> PluginIndexStatus {
+    pub fn rebuild(&self) -> PluginIndexSummary {
         let mut state = self
             .inner
             .state
@@ -364,20 +399,20 @@ impl PluginIndexRuntime {
         let _ = self.inner.state_db.clear_all();
         self.inner.wake.notify_all();
         drop(state);
-        self.status()
+        self.summary()
     }
 
-    pub fn refresh_plugin_supported_files(&self, plugin_id: &str) -> Result<PluginIndexStatus> {
+    pub fn refresh_plugin_supported_files(&self, plugin_id: &str) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         if plugin_id.is_empty() {
             anyhow::bail!("plugin id is required");
         }
 
         self.request_plugin_refresh(plugin_id)?;
-        Ok(self.status())
+        Ok(self.summary())
     }
 
-    pub fn reset_plugin_cache(&self, plugin_id: &str) -> Result<PluginIndexStatus> {
+    pub fn reset_plugin_cache(&self, plugin_id: &str) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         if plugin_id.is_empty() {
             anyhow::bail!("plugin id is required");
@@ -410,10 +445,10 @@ impl PluginIndexRuntime {
         }
         self.inner.state_db.clear_plugin(plugin_id)?;
         self.inner.wake.notify_all();
-        Ok(self.status())
+        Ok(self.summary())
     }
 
-    pub fn ignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexStatus> {
+    pub fn ignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexSummary> {
         let attempts = self
             .inner
             .state_db
@@ -423,10 +458,10 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .mark_ignored(source_path, plugin_id, attempts)?;
-        Ok(self.status())
+        Ok(self.summary())
     }
 
-    pub fn unignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexStatus> {
+    pub fn unignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexSummary> {
         let attempts = self
             .inner
             .state_db
@@ -444,14 +479,14 @@ impl PluginIndexRuntime {
                 .state_db
                 .mark_missing(source_path, plugin_id, attempts)?;
         }
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn retry_issue_type(
         &self,
         plugin_id: &str,
         error_code: &str,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         let error_code = error_code.trim();
         if plugin_id.is_empty() || error_code.is_empty() {
@@ -479,14 +514,14 @@ impl PluginIndexRuntime {
             let _ = self.request_retry(&source_path);
         }
 
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn ignore_issue_type(
         &self,
         plugin_id: &str,
         error_code: &str,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         let error_code = error_code.trim();
         if plugin_id.is_empty() || error_code.is_empty() {
@@ -496,7 +531,7 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .ignore_issue_type(plugin_id, error_code)?;
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn set_issue_type_auto_ignore(
@@ -504,7 +539,7 @@ impl PluginIndexRuntime {
         plugin_id: &str,
         error_code: &str,
         enabled: bool,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         let error_code = error_code.trim();
         if plugin_id.is_empty() || error_code.is_empty() {
@@ -519,7 +554,7 @@ impl PluginIndexRuntime {
                 .state_db
                 .ignore_issue_type(plugin_id, error_code)?;
         }
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn default_plugin_folder(&self) -> Option<PathBuf> {
@@ -529,7 +564,7 @@ impl PluginIndexRuntime {
     pub fn install_plugin_archive(
         &self,
         archive_path: &Path,
-    ) -> Result<(String, String, PluginIndexStatus)> {
+    ) -> Result<(String, String, PluginIndexSummary)> {
         let plugin_root = self
             .default_plugin_folder()
             .ok_or_else(|| anyhow::anyhow!("Could not resolve the plugin folder."))?;
@@ -538,14 +573,14 @@ impl PluginIndexRuntime {
             .state_db
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
         self.request_plugin_refresh(&installed.plugin_id)?;
-        Ok((installed.plugin_id, installed.version, self.status()))
+        Ok((installed.plugin_id, installed.version, self.summary()))
     }
 
     pub fn set_plugin_enabled(
         &self,
         plugin_id: &str,
         enabled: bool,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         if plugin_id.is_empty() {
             anyhow::bail!("plugin id is required");
@@ -563,14 +598,14 @@ impl PluginIndexRuntime {
             drop_runtime_jobs_for_plugin(&self.inner, plugin_id);
             self.reset_plugin_cache(plugin_id)?;
         }
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn set_active_plugin_version(
         &self,
         plugin_id: &str,
         version: &str,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let discovery = discovery_report(&self.inner)?;
         let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
             anyhow::bail!("plugin {plugin_id} is not installed");
@@ -581,14 +616,14 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .set_preferred_plugin_version(plugin_id, version)?;
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     pub fn uninstall_plugin_version(
         &self,
         plugin_id: &str,
         version: &str,
-    ) -> Result<PluginIndexStatus> {
+    ) -> Result<PluginIndexSummary> {
         let discovery = discovery_report(&self.inner)?;
         let Some(versions) = discovery.registry.versions_by_id.get(plugin_id) else {
             anyhow::bail!("plugin {plugin_id} is not installed");
@@ -613,7 +648,7 @@ impl PluginIndexRuntime {
                 .clear_preferred_plugin_version(plugin_id)?;
             self.inner.state_db.clear_plugin(plugin_id)?;
         }
-        Ok(self.status())
+        Ok(self.summary())
     }
 
     #[cfg(test)]
@@ -1356,6 +1391,16 @@ fn plugin_health_summary(plugin_id: &str, counts: Option<&PluginCounts>) -> Plug
         ignored_count: counts.ignored_count,
         queued_count: counts.queued_count,
         processing_count: counts.processing_count,
+        blocked_count: counts.blocked_count,
+    }
+}
+
+fn map_issue_count_row(plugin_id: &str, row: PluginIssueCountRow) -> PluginIssueCount {
+    PluginIssueCount {
+        plugin_id: plugin_id.to_string(),
+        status: row.status,
+        error_code: row.error_code,
+        count: row.count,
     }
 }
 

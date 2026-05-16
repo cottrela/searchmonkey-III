@@ -1,11 +1,13 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
   import { filename } from '$lib/paths';
+  import { getPluginIssueCounts, getPluginIssues } from '$lib/search';
   import type {
     InstalledPluginInfo,
     PluginHealthSummary,
-    PluginIndexStatus,
-    PluginIssue
+    PluginIndexSummary,
+    PluginIssue,
+    PluginIssueCount
   } from '$lib/types';
 
   type PluginDialogPage = 'installed' | 'available' | 'updates' | 'install';
@@ -40,7 +42,7 @@
     onActivateVersion,
     onUninstallVersion
   }: {
-    status: PluginIndexStatus | null;
+    status: PluginIndexSummary | null;
     selectedPluginId?: string | null;
     initialPage?: PluginDialogPage;
     onClose?: () => void;
@@ -81,9 +83,15 @@
   let pendingIssueTypeActions = $state<Record<string, boolean>>({});
   let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
   let hiddenRetriedPaths = $state<Record<string, string>>({});
+  let issueCountsByPlugin = $state<Record<string, PluginIssueCount[]>>({});
+  let selectedAttentionIssueItems = $state<PluginIssue[]>([]);
+  let selectedIgnoredIssueItems = $state<PluginIssue[]>([]);
   let installStatus = $state<'ready' | 'installing' | 'success' | 'failed'>('ready');
   let installMessage = $state('');
   let installDropActive = $state(false);
+  let issueCountsRequestId = 0;
+  let attentionIssuesRequestId = 0;
+  let ignoredIssuesRequestId = 0;
 
   $effect(() => {
     currentPage = initialPage;
@@ -97,10 +105,9 @@
   });
 
   $effect(() => {
-    if (!status) return;
-
+    const visibleIssues = [...selectedAttentionIssueItems, ...selectedIgnoredIssueItems];
     const nextHiddenRetriedPaths: Record<string, string> = {};
-    for (const issue of status.issues) {
+    for (const issue of visibleIssues) {
       const hiddenTimestamp = hiddenRetriedPaths[issue.source_path];
       if (!hiddenTimestamp) continue;
       if (issue.last_reported_at === hiddenTimestamp) nextHiddenRetriedPaths[issue.source_path] = hiddenTimestamp;
@@ -156,27 +163,26 @@
         .map((item) => item.error_code)
     );
   });
-  const pluginIssues = $derived.by<PluginIssue[]>(() => {
-    if (!status || !selectedPluginIdValue) return [];
-    let issues = status.issues.filter((issue) => issue.plugin_id === selectedPluginIdValue);
-    issues = issues.filter((issue) => !hiddenIgnoredPaths[issue.source_path]);
-    issues = issues.filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
-    return issues;
+  const selectedIssueCounts = $derived.by<PluginIssueCount[]>(() => {
+    if (!selectedPluginIdValue) return [];
+    return issueCountsByPlugin[selectedPluginIdValue] ?? [];
   });
-  const activeIssues = $derived.by<PluginIssue[]>(() => pluginIssues.filter((issue) => issue.status !== 'ignored'));
-  const activeIssueCount = $derived(activeIssues.length);
-  const ignoredIssues = $derived.by<PluginIssue[]>(() => pluginIssues.filter((issue) => issue.status === 'ignored'));
-  const activeIssueCategories = $derived.by<IssueCategory[]>(() => buildIssueCategories(activeIssues));
-  const ignoredIssueCategories = $derived.by<IssueCategory[]>(() => buildIssueCategories(ignoredIssues));
+  const activeIssueCount = $derived(selectedSummary?.attention_count ?? 0);
+  const activeIssueCategories = $derived.by<IssueCategory[]>(() =>
+    buildIssueCategoriesFromCounts(selectedIssueCounts, 'attention')
+  );
+  const ignoredIssueCategories = $derived.by<IssueCategory[]>(() => {
+    if (!showIgnoredIssues) return [];
+    return buildIssueCategoriesFromCounts(selectedIssueCounts, 'ignored');
+  });
   const selectedAttentionIssues = $derived.by<PluginIssue[]>(() => {
-    if (!selectedAttentionIssueCode) return [];
-    return activeIssues.filter((issue) => issue.error_code === selectedAttentionIssueCode);
+    return selectedAttentionIssueItems.filter((issue) => !hiddenIgnoredPaths[issue.source_path])
+      .filter((issue) => hiddenRetriedPaths[issue.source_path] !== issue.last_reported_at);
   });
   const selectedIgnoredIssues = $derived.by<PluginIssue[]>(() => {
-    if (!selectedIgnoredIssueCode) return [];
-    return ignoredIssues.filter((issue) => issue.error_code === selectedIgnoredIssueCode);
+    if (!showIgnoredIssues) return [];
+    return selectedIgnoredIssueItems;
   });
-  const ignoredIssueTypeCount = $derived(ignoredIssueCategories.length);
   const ignoredIssueCount = $derived.by(() => {
     return selectedSummary?.ignored_count ?? 0;
   });
@@ -204,42 +210,118 @@
   });
 
   $effect(() => {
+    if (!showIgnoredIssues) {
+      selectedIgnoredIssueCode = null;
+      return;
+    }
     if (!selectedIgnoredIssueCode) return;
     if (ignoredIssueCategories.some((category) => category.code === selectedIgnoredIssueCode)) return;
     selectedIgnoredIssueCode = null;
+  });
+
+  $effect(() => {
+    if (!selectedPluginIdValue) return;
+    void loadIssueCounts(selectedPluginIdValue);
+  });
+
+  $effect(() => {
+    if (!selectedPluginIdValue || !selectedAttentionIssueCode) {
+      selectedAttentionIssueItems = [];
+      return;
+    }
+    void loadAttentionIssues(selectedPluginIdValue, selectedAttentionIssueCode);
+  });
+
+  $effect(() => {
+    if (!selectedPluginIdValue || !showIgnoredIssues || !selectedIgnoredIssueCode) {
+      selectedIgnoredIssueItems = [];
+      return;
+    }
+    void loadIgnoredIssues(selectedPluginIdValue, selectedIgnoredIssueCode);
   });
 
   function selectPlugin(plugin: InstalledPluginInfo) {
     internalSelectedPluginId = plugin.id;
     selectedAttentionIssueCode = null;
     selectedIgnoredIssueCode = null;
+    selectedAttentionIssueItems = [];
+    selectedIgnoredIssueItems = [];
     currentPage = 'installed';
   }
 
-  function buildIssueCategories(issues: PluginIssue[]): IssueCategory[] {
+  function buildIssueCategoriesFromCounts(
+    counts: PluginIssueCount[],
+    visibility: 'attention' | 'ignored'
+  ): IssueCategory[] {
     if (!selectedPluginIdValue) return [];
-    const counts = new Map<string, IssueCategory>();
-    for (const issue of issues) {
-      const existing = counts.get(issue.error_code);
+    const categories = new Map<string, IssueCategory>();
+    for (const item of counts) {
+      const isIgnored = item.status === 'ignored';
+      if (visibility === 'attention' && isIgnored) continue;
+      if (visibility === 'ignored' && !isIgnored) continue;
+      const existing = categories.get(item.error_code);
       if (existing) {
-        existing.count += 1;
-        existing.autoIgnored = autoIgnoredIssueCodes.has(issue.error_code);
+        existing.count += item.count;
+        existing.autoIgnored = autoIgnoredIssueCodes.has(item.error_code);
         continue;
       }
-      counts.set(issue.error_code, {
-        code: issue.error_code,
-        label: labelForIssueCode(issue.error_code, issue.message),
-        count: 1,
+      categories.set(item.error_code, {
+        code: item.error_code,
+        label: labelForIssueCode(item.error_code),
+        count: item.count,
         pluginId: selectedPluginIdValue,
-        autoIgnored: autoIgnoredIssueCodes.has(issue.error_code)
+        autoIgnored: autoIgnoredIssueCodes.has(item.error_code)
       });
     }
-    return [...counts.values()].sort(
+    return [...categories.values()].sort(
       (left, right) =>
         right.count - left.count
         || left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
         || left.code.localeCompare(right.code, undefined, { sensitivity: 'base' })
     );
+  }
+
+  async function loadIssueCounts(pluginId: string) {
+    const requestId = ++issueCountsRequestId;
+    try {
+      const counts = await getPluginIssueCounts(pluginId);
+      if (requestId !== issueCountsRequestId) return;
+      issueCountsByPlugin = { ...issueCountsByPlugin, [pluginId]: counts };
+    } catch {
+      if (requestId !== issueCountsRequestId) return;
+      issueCountsByPlugin = { ...issueCountsByPlugin, [pluginId]: [] };
+    }
+  }
+
+  async function loadAttentionIssues(pluginId: string, errorCode: string) {
+    const requestId = ++attentionIssuesRequestId;
+    try {
+      const issues = await getPluginIssues(pluginId, null, errorCode, 25);
+      if (requestId !== attentionIssuesRequestId) return;
+      selectedAttentionIssueItems = issues.filter((issue) => issue.status !== 'ignored');
+    } catch {
+      if (requestId !== attentionIssuesRequestId) return;
+      selectedAttentionIssueItems = [];
+    }
+  }
+
+  async function loadIgnoredIssues(pluginId: string, errorCode: string) {
+    const requestId = ++ignoredIssuesRequestId;
+    try {
+      const issues = await getPluginIssues(pluginId, 'ignored', errorCode, 25);
+      if (requestId !== ignoredIssuesRequestId) return;
+      selectedIgnoredIssueItems = issues;
+    } catch {
+      if (requestId !== ignoredIssuesRequestId) return;
+      selectedIgnoredIssueItems = [];
+    }
+  }
+
+  async function refreshIssueData(pluginId?: string | null) {
+    if (!pluginId) return;
+    await loadIssueCounts(pluginId);
+    if (selectedAttentionIssueCode) await loadAttentionIssues(pluginId, selectedAttentionIssueCode);
+    if (showIgnoredIssues && selectedIgnoredIssueCode) await loadIgnoredIssues(pluginId, selectedIgnoredIssueCode);
   }
 
   function labelForIssue(issue: PluginIssue): string {
@@ -362,6 +444,7 @@
     hiddenRetriedPaths = markHiddenRetry(hiddenRetriedPaths, path, lastReportedAt);
     try {
       await onRetryFailure(path);
+      await refreshIssueData(selectedPluginIdValue);
     } finally {
       pendingRetryPaths = markPending(pendingRetryPaths, path, false);
     }
@@ -392,6 +475,7 @@
     hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, true);
     try {
       await onIgnoreFailure(path, pluginId);
+      await refreshIssueData(pluginId);
       hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, false);
     } catch (error) {
       hiddenIgnoredPaths = markPending(hiddenIgnoredPaths, path, false);
@@ -404,6 +488,7 @@
     pendingUnignorePaths = markPending(pendingUnignorePaths, path, true);
     try {
       await onUnignoreFailure(path, pluginId);
+      await refreshIssueData(pluginId);
     } finally {
       pendingUnignorePaths = markPending(pendingUnignorePaths, path, false);
     }
@@ -416,6 +501,7 @@
     pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
     try {
       await onRetryIssueType(category.pluginId, category.code);
+      await refreshIssueData(category.pluginId);
     } finally {
       pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
     }
@@ -428,6 +514,7 @@
     pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
     try {
       await onIgnoreIssueType(category.pluginId, category.code);
+      await refreshIssueData(category.pluginId);
     } finally {
       pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
     }
@@ -440,6 +527,7 @@
     pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
     try {
       await onAutoIgnoreIssueType(category.pluginId, category.code, enabled);
+      await refreshIssueData(category.pluginId);
     } finally {
       pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
     }
@@ -907,139 +995,144 @@
               <p class="issues-empty-title">No files need attention</p>
               {#if ignoredIssueCount}
                 <p class="muted">{ignoredIssueCount} issues are auto-handled</p>
+                <button type="button" class="secondary manage-ignored-button" onclick={() => (showIgnoredIssues = true)}>
+                  Manage ignored issues
+                </button>
               {/if}
             </div>
           {/if}
 
-          {#if ignoredIssueCount || ignoredIssueTypeCount}
+          {#if ignoredIssueCount}
             <details class="ignored-issues-panel" bind:open={showIgnoredIssues}>
               <summary>
                 <span>Ignored &amp; Auto-handled</span>
                 <strong>{ignoredIssueCount}</strong>
               </summary>
 
-              {#if ignoredIssueCategories.length}
-                <div class="issues-section ignored-section">
-                  <div class="issues-section-header">
-                    <h5>Ignored Issue Types</h5>
-                    <p class="muted">Configuration and muted issue types live here.</p>
-                  </div>
-                  <div class="issue-categories ignored-categories">
-                    {#each ignoredIssueCategories as category}
-                      <div class="issue-category-group">
-                        <button
-                          type="button"
-                          class:subtle-pill={true}
-                          class:selected={selectedIgnoredIssueCode === category.code}
-                          class="issue-category-pill"
-                          onclick={() => toggleIgnoredIssueCategory(category)}
-                        >
-                          <span>{category.label}</span>
-                          <strong>{category.count}</strong>
-                          <span class="chevron">{selectedIgnoredIssueCode === category.code ? '▴' : '▾'}</span>
-                        </button>
-                        {#if selectedIgnoredIssueCode === category.code}
-                          <div class="issue-category-actions">
-                            <button
-                              type="button"
-                              class="secondary"
-                              disabled={isIssueTypeActionPending(category.pluginId, category.code, 'retry')}
-                              onclick={() => retryIssueType(category)}
-                            >
-                              {isIssueTypeActionPending(category.pluginId, category.code, 'retry') ? 'Queueing…' : 'Retry all'}
-                            </button>
-                            <button
-                              type="button"
-                              class="secondary auto-ignore"
-                              disabled={isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
-                              onclick={() => autoIgnoreIssueType(category, !category.autoIgnored)}
-                            >
-                              {#if isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
-                                Saving…
-                              {:else if category.autoIgnored}
-                                Disable auto-ignore
-                              {:else}
-                                Always ignore this issue type
-                              {/if}
-                            </button>
-                          </div>
-                        {/if}
-                      </div>
-                    {/each}
-                  </div>
-
-                  {#if selectedIgnoredIssues.length}
-                    <div class="issues-list">
-                      {#each selectedIgnoredIssues as issue}
-                        <article class="issue-card ignored-card">
-                          <div class="issue-copy">
-                            <strong title={issue.file_name}>{truncateFilenameMiddle(issue.file_name)}</strong>
-                            <p>
-                              {labelForIssue(issue)}
-                              <span class="ignored-badge">Ignored</span>
-                            </p>
-                            {#if issueStatusText(issue)}
-                              <p class="muted">{issueStatusText(issue)}</p>
-                            {/if}
-                          </div>
-                          <div class="issue-actions">
-                            <button
-                              type="button"
-                              class="secondary"
-                              disabled={pendingOpenPaths[issue.source_path]}
-                              onclick={() => openIssue(issue.source_path)}
-                            >
-                              {pendingOpenPaths[issue.source_path] ? 'Opening…' : 'Open'}
-                            </button>
-                            <button
-                              type="button"
-                              class="secondary"
-                              disabled={pendingRevealPaths[issue.source_path]}
-                              onclick={() => revealIssue(issue.source_path)}
-                            >
-                              {pendingRevealPaths[issue.source_path] ? 'Revealing…' : 'Reveal'}
-                            </button>
-                            <button
-                              type="button"
-                              class="secondary"
-                              disabled={pendingUnignorePaths[issue.source_path]}
-                              onclick={() => unignoreIssue(issue.source_path, issue.plugin_id)}
-                            >
-                              {pendingUnignorePaths[issue.source_path] ? 'Re-enabling…' : 'Re-enable issue'}
-                            </button>
-                            <details
-                              class="details"
-                              open={isIssueExpanded(issue)}
-                              ontoggle={(event) => setIssueExpanded(issue, (event.currentTarget as HTMLDetailsElement).open)}
-                            >
-                              <summary>{isIssueExpanded(issue) ? 'Hide details ▴' : 'Details ▾'}</summary>
-                              <div class="details-copy">
-                                <div class="detail-row">
-                                  <span class="detail-label">Full path</span>
-                                  <code>{issue.source_path}</code>
-                                </div>
-                                <div class="detail-row">
-                                  <span class="detail-label">Error code</span>
-                                  <code>{issue.error_code}</code>
-                                </div>
-                                <div class="detail-row">
-                                  <span class="detail-label">Attempts</span>
-                                  <code>{issue.attempts}</code>
-                                </div>
-                                <div class="detail-row raw-output">
-                                  <span class="detail-label">Raw plugin output</span>
-                                  <pre>{issue.details}</pre>
-                                </div>
-                              </div>
-                            </details>
-                          </div>
-                        </article>
+              {#if showIgnoredIssues}
+                {#if ignoredIssueCategories.length}
+                  <div class="issues-section ignored-section">
+                    <div class="issues-section-header">
+                      <h5>Ignored Issue Types</h5>
+                      <p class="muted">Configuration and muted issue types live here.</p>
+                    </div>
+                    <div class="issue-categories ignored-categories">
+                      {#each ignoredIssueCategories as category}
+                        <div class="issue-category-group">
+                          <button
+                            type="button"
+                            class:subtle-pill={true}
+                            class:selected={selectedIgnoredIssueCode === category.code}
+                            class="issue-category-pill"
+                            onclick={() => toggleIgnoredIssueCategory(category)}
+                          >
+                            <span>{category.label}</span>
+                            <strong>{category.count}</strong>
+                            <span class="chevron">{selectedIgnoredIssueCode === category.code ? '▴' : '▾'}</span>
+                          </button>
+                          {#if selectedIgnoredIssueCode === category.code}
+                            <div class="issue-category-actions">
+                              <button
+                                type="button"
+                                class="secondary"
+                                disabled={isIssueTypeActionPending(category.pluginId, category.code, 'retry')}
+                                onclick={() => retryIssueType(category)}
+                              >
+                                {isIssueTypeActionPending(category.pluginId, category.code, 'retry') ? 'Queueing…' : 'Retry all'}
+                              </button>
+                              <button
+                                type="button"
+                                class="secondary auto-ignore"
+                                disabled={isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
+                                onclick={() => autoIgnoreIssueType(category, !category.autoIgnored)}
+                              >
+                                {#if isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
+                                  Saving…
+                                {:else if category.autoIgnored}
+                                  Disable auto-ignore
+                                {:else}
+                                  Always ignore this issue type
+                                {/if}
+                              </button>
+                            </div>
+                          {/if}
+                        </div>
                       {/each}
                     </div>
-                  {/if}
-                </div>
-              {:else}
-                <p class="muted">No ignored issue types.</p>
+
+                    {#if selectedIgnoredIssues.length}
+                      <div class="issues-list">
+                        {#each selectedIgnoredIssues as issue}
+                          <article class="issue-card ignored-card">
+                            <div class="issue-copy">
+                              <strong title={issue.file_name}>{truncateFilenameMiddle(issue.file_name)}</strong>
+                              <p>
+                                {labelForIssue(issue)}
+                                <span class="ignored-badge">Ignored</span>
+                              </p>
+                              {#if issueStatusText(issue)}
+                                <p class="muted">{issueStatusText(issue)}</p>
+                              {/if}
+                            </div>
+                            <div class="issue-actions">
+                              <button
+                                type="button"
+                                class="secondary"
+                                disabled={pendingOpenPaths[issue.source_path]}
+                                onclick={() => openIssue(issue.source_path)}
+                              >
+                                {pendingOpenPaths[issue.source_path] ? 'Opening…' : 'Open'}
+                              </button>
+                              <button
+                                type="button"
+                                class="secondary"
+                                disabled={pendingRevealPaths[issue.source_path]}
+                                onclick={() => revealIssue(issue.source_path)}
+                              >
+                                {pendingRevealPaths[issue.source_path] ? 'Revealing…' : 'Reveal'}
+                              </button>
+                              <button
+                                type="button"
+                                class="secondary"
+                                disabled={pendingUnignorePaths[issue.source_path]}
+                                onclick={() => unignoreIssue(issue.source_path, issue.plugin_id)}
+                              >
+                                {pendingUnignorePaths[issue.source_path] ? 'Re-enabling…' : 'Re-enable issue'}
+                              </button>
+                              <details
+                                class="details"
+                                open={isIssueExpanded(issue)}
+                                ontoggle={(event) => setIssueExpanded(issue, (event.currentTarget as HTMLDetailsElement).open)}
+                              >
+                                <summary>{isIssueExpanded(issue) ? 'Hide details ▴' : 'Details ▾'}</summary>
+                                <div class="details-copy">
+                                  <div class="detail-row">
+                                    <span class="detail-label">Full path</span>
+                                    <code>{issue.source_path}</code>
+                                  </div>
+                                  <div class="detail-row">
+                                    <span class="detail-label">Error code</span>
+                                    <code>{issue.error_code}</code>
+                                  </div>
+                                  <div class="detail-row">
+                                    <span class="detail-label">Attempts</span>
+                                    <code>{issue.attempts}</code>
+                                  </div>
+                                  <div class="detail-row raw-output">
+                                    <span class="detail-label">Raw plugin output</span>
+                                    <pre>{issue.details}</pre>
+                                  </div>
+                                </div>
+                              </details>
+                            </div>
+                          </article>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {:else}
+                  <p class="muted">No ignored issue types.</p>
+                {/if}
               {/if}
             </details>
           {/if}

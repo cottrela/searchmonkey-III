@@ -24,6 +24,7 @@ pub struct PluginCounts {
     pub ignored_count: usize,
     pub queued_count: usize,
     pub processing_count: usize,
+    pub blocked_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,13 @@ pub struct PluginIssueRow {
     pub attempts: u32,
     pub retry_after: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PluginIssueCountRow {
+    pub status: String,
+    pub error_code: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -650,7 +658,8 @@ impl StateDb {
                     SUM(CASE WHEN status IN ('failed', 'missing', 'skipped') THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status IN ('failed', 'missing', 'skipped') AND attempts >= 4 THEN 1 ELSE 0 END)
                  FROM indexed_files WHERE plugin_id = ?1",
                 params![plugin_id],
                 |row| {
@@ -660,6 +669,7 @@ impl StateDb {
                         ignored_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as usize,
                         queued_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as usize,
                         processing_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as usize,
+                        blocked_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0) as usize,
                     })
                 },
             )?;
@@ -690,6 +700,64 @@ impl StateDb {
                 updated_at: row.get(8)?,
             })
         })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_plugin_issue_counts(&self, plugin_id: &str) -> Result<Vec<PluginIssueCountRow>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT status, COALESCE(error_code, status), COUNT(*)
+             FROM indexed_files
+             WHERE plugin_id = ?1 AND status IN ('failed', 'missing', 'skipped', 'ignored')
+             GROUP BY status, COALESCE(error_code, status)
+             ORDER BY COUNT(*) DESC, COALESCE(error_code, status) ASC",
+        )?;
+        let rows = stmt.query_map(params![plugin_id], |row| {
+            Ok(PluginIssueCountRow {
+                status: row.get(0)?,
+                error_code: row.get(1)?,
+                count: row.get::<_, i64>(2)? as usize,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_plugin_issues_page(
+        &self,
+        plugin_id: &str,
+        status: Option<&str>,
+        error_code: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PluginIssueRow>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT source_path, plugin_id, status, error_code, error_message, error_hint, attempts, retry_after, updated_at
+             FROM indexed_files
+             WHERE plugin_id = ?1
+               AND status IN ('failed', 'missing', 'skipped', 'ignored')
+               AND (?2 IS NULL OR status = ?2)
+               AND (?3 IS NULL OR COALESCE(error_code, status) = ?3)
+             ORDER BY updated_at ASC, source_path ASC
+             LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![plugin_id, status, error_code, limit as i64],
+            |row| {
+                Ok(PluginIssueRow {
+                    source_path: row.get(0)?,
+                    plugin_id: row.get(1)?,
+                    status: row.get(2)?,
+                    error_code: row.get(3)?,
+                    error_message: row.get(4)?,
+                    error_hint: row.get(5)?,
+                    attempts: row.get::<_, i64>(6)? as u32,
+                    retry_after: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            },
+        )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }

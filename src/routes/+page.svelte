@@ -17,7 +17,7 @@
   import {
     cancelSearch as cancelSearchCommand,
     getResults,
-    getPluginIndexStatus,
+    getPluginIndexSummary,
     ignorePluginIssue,
     ignorePluginIssueType,
     installPluginPackage,
@@ -51,7 +51,7 @@
     FileResultGroup,
     FilePreview,
     PreviewState,
-    PluginIndexStatus,
+    PluginIndexSummary,
     SearchBufferUpdatedEvent,
     SearchCriteria,
     SearchMatch,
@@ -133,7 +133,7 @@
   let pluginDialogOpen = $state(false);
   let pluginDialogSelection = $state<string | null>(null);
   let pluginDialogPage = $state<'installed' | 'available' | 'updates' | 'install'>('installed');
-  let pluginStatus = $state<PluginIndexStatus | null>(null);
+  let pluginStatus = $state<PluginIndexSummary | null>(null);
   let pluginStatusError = $state('');
   let pluginStatusPollTimer: ReturnType<typeof setInterval> | null = null;
   let startupPluginScanTimer: ReturnType<typeof setTimeout> | null = null;
@@ -144,7 +144,7 @@
   const SEARCH_RESULT_FLUSH_MS = 500;
   const SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS = 750;
   const SEARCH_STATUS_POLL_MS = 150;
-  const PLUGIN_STATUS_POLL_MS = 1000;
+  const PLUGIN_STATUS_POLL_MS = 1500;
   const STARTUP_PLUGIN_SCAN_DELAY_MS = 1500;
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
@@ -558,7 +558,7 @@
 
   async function refreshPluginStatus() {
     try {
-      pluginStatus = await getPluginIndexStatus();
+      pluginStatus = await getPluginIndexSummary();
       pluginStatusError = '';
     } catch (error) {
       pluginStatusError = normalizeError(error);

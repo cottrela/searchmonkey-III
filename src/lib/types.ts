@@ -193,6 +193,7 @@ export type PluginHealthSummary = {
   ignored_count: number;
   queued_count: number;
   processing_count: number;
+  blocked_count: number;
 };
 
 export type PluginIssue = {
@@ -213,6 +214,13 @@ export type PluginIssuePreference = {
   error_code: string;
 };
 
+export type PluginIssueCount = {
+  plugin_id: string;
+  status: string;
+  error_code: string;
+  count: number;
+};
+
 export type PluginIndexFailure = {
   source_path: string;
   plugin_id: string;
@@ -223,7 +231,7 @@ export type PluginIndexFailure = {
   next_retry_at?: string | null;
 };
 
-export type PluginIndexStatus = {
+export type PluginIndexSummary = {
   enabled_plugins: string[];
   installed_plugins: InstalledPluginInfo[];
   indexing_state: string;
@@ -233,12 +241,11 @@ export type PluginIndexStatus = {
   scanner_running: boolean;
   worker_running: boolean;
   plugin_summaries: PluginHealthSummary[];
-  issues: PluginIssue[];
   auto_ignored_issue_types: PluginIssuePreference[];
 };
 
 export type InstallPluginResult = {
   plugin_id: string;
   version: string;
-  status: PluginIndexStatus;
+  status: PluginIndexSummary;
 };
