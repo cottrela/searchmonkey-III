@@ -19,6 +19,7 @@
     getResults,
     getPluginIndexStatus,
     ignorePluginIssue,
+    ignorePluginIssueType,
     installPluginPackage,
     pluginFolderPath,
     queuePluginScan,
@@ -32,9 +33,11 @@
     readFilePreview,
     revealFilePath,
     resetPluginCache,
+    retryPluginIssueType,
     setActivePluginVersion,
     setPluginEnabled,
     setPluginIndexPaused,
+    setPluginIssueTypeAutoIgnore,
     startSearch as startSearchCommand,
     uninstallPluginVersion,
     unignorePluginIssue
@@ -666,6 +669,36 @@
       pluginStatusError = '';
     } catch (error) {
       pluginStatusError = normalizeError(error);
+    }
+  }
+
+  async function retryPluginIssueCategory(pluginId: string, errorCode: string) {
+    try {
+      pluginStatus = await retryPluginIssueType(pluginId, errorCode);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+      throw error;
+    }
+  }
+
+  async function ignorePluginIssueCategory(pluginId: string, errorCode: string) {
+    try {
+      pluginStatus = await ignorePluginIssueType(pluginId, errorCode);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+      throw error;
+    }
+  }
+
+  async function autoIgnorePluginIssueCategory(pluginId: string, errorCode: string, enabled: boolean) {
+    try {
+      pluginStatus = await setPluginIssueTypeAutoIgnore(pluginId, errorCode, enabled);
+      pluginStatusError = '';
+    } catch (error) {
+      pluginStatusError = normalizeError(error);
+      throw error;
     }
   }
 
@@ -1948,6 +1981,9 @@
       onRevealFailure={revealPluginFailure}
       onIgnoreFailure={ignorePluginFailure}
       onUnignoreFailure={unignorePluginFailure}
+      onRetryIssueType={retryPluginIssueCategory}
+      onIgnoreIssueType={ignorePluginIssueCategory}
+      onAutoIgnoreIssueType={autoIgnorePluginIssueCategory}
       onActivateVersion={activatePluginVersion}
       onUninstallVersion={removePluginVersion}
     />

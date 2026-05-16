@@ -42,6 +42,7 @@ pub struct PluginIndexStatus {
     pub worker_running: bool,
     pub plugin_summaries: Vec<PluginHealthSummary>,
     pub issues: Vec<PluginIssue>,
+    pub auto_ignored_issue_types: Vec<PluginIssuePreferenceSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +70,7 @@ pub struct PluginHealthSummary {
     pub plugin_id: String,
     pub indexed_count: usize,
     pub attention_count: usize,
+    pub ignored_count: usize,
     pub queued_count: usize,
     pub processing_count: usize,
 }
@@ -85,6 +87,12 @@ pub struct PluginIssue {
     pub attempts: u32,
     pub retry_after: Option<String>,
     pub last_reported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginIssuePreferenceSummary {
+    pub plugin_id: String,
+    pub error_code: String,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +270,17 @@ impl PluginIndexRuntime {
             })
             .map(map_issue_row)
             .collect::<Vec<_>>();
+        let auto_ignored_issue_types = self
+            .inner
+            .state_db
+            .list_issue_preferences()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|preference| PluginIssuePreferenceSummary {
+                plugin_id: preference.plugin_id,
+                error_code: preference.error_code,
+            })
+            .collect::<Vec<_>>();
 
         let state = self
             .inner
@@ -310,6 +329,7 @@ impl PluginIndexRuntime {
                 .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
                 .collect(),
             issues,
+            auto_ignored_issue_types,
         }
     }
 
@@ -423,6 +443,81 @@ impl PluginIndexRuntime {
             self.inner
                 .state_db
                 .mark_missing(source_path, plugin_id, attempts)?;
+        }
+        Ok(self.status())
+    }
+
+    pub fn retry_issue_type(
+        &self,
+        plugin_id: &str,
+        error_code: &str,
+    ) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        let error_code = error_code.trim();
+        if plugin_id.is_empty() || error_code.is_empty() {
+            anyhow::bail!("plugin id and error code are required");
+        }
+
+        for issue in self
+            .inner
+            .state_db
+            .list_plugin_issues(plugin_id)?
+            .into_iter()
+            .filter(|row| {
+                row.status != "ignored"
+                    && row
+                        .error_code
+                        .as_deref()
+                        .unwrap_or(row.status.as_str())
+                        == error_code
+            })
+        {
+            let source_path = PathBuf::from(&issue.source_path);
+            if !source_path.exists() {
+                continue;
+            }
+            let _ = self.request_retry(&source_path);
+        }
+
+        Ok(self.status())
+    }
+
+    pub fn ignore_issue_type(
+        &self,
+        plugin_id: &str,
+        error_code: &str,
+    ) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        let error_code = error_code.trim();
+        if plugin_id.is_empty() || error_code.is_empty() {
+            anyhow::bail!("plugin id and error code are required");
+        }
+
+        self.inner
+            .state_db
+            .ignore_issue_type(plugin_id, error_code)?;
+        Ok(self.status())
+    }
+
+    pub fn set_issue_type_auto_ignore(
+        &self,
+        plugin_id: &str,
+        error_code: &str,
+        enabled: bool,
+    ) -> Result<PluginIndexStatus> {
+        let plugin_id = plugin_id.trim();
+        let error_code = error_code.trim();
+        if plugin_id.is_empty() || error_code.is_empty() {
+            anyhow::bail!("plugin id and error code are required");
+        }
+
+        self.inner
+            .state_db
+            .set_issue_auto_ignore(plugin_id, error_code, enabled)?;
+        if enabled {
+            self.inner
+                .state_db
+                .ignore_issue_type(plugin_id, error_code)?;
         }
         Ok(self.status())
     }
@@ -1258,6 +1353,7 @@ fn plugin_health_summary(plugin_id: &str, counts: Option<&PluginCounts>) -> Plug
         plugin_id: plugin_id.to_string(),
         indexed_count: counts.indexed_count,
         attention_count: counts.attention_count,
+        ignored_count: counts.ignored_count,
         queued_count: counts.queued_count,
         processing_count: counts.processing_count,
     }

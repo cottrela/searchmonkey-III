@@ -9,6 +9,22 @@
   } from '$lib/types';
 
   type PluginDialogPage = 'installed' | 'available' | 'updates' | 'install';
+  type IssueCategory = {
+    code: string;
+    label: string;
+    count: number;
+    pluginId: string;
+    autoIgnored: boolean;
+  };
+  const KNOWN_ISSUE_TYPES = [
+    { code: 'cloud_file_unavailable', label: 'Cloud file unavailable' },
+    { code: 'pdf_open_failed', label: 'Could not open PDF' },
+    { code: 'encrypted_pdf', label: 'Encrypted PDF' },
+    { code: 'corrupt_pdf', label: 'Corrupt PDF' },
+    { code: 'plugin_timeout', label: 'Plugin timed out' },
+    { code: 'missing_source', label: 'Source file missing' },
+    { code: 'skipped', label: 'Skipped' }
+  ] as const;
 
   let {
     status,
@@ -27,6 +43,9 @@
     onRevealFailure,
     onIgnoreFailure,
     onUnignoreFailure,
+    onRetryIssueType,
+    onIgnoreIssueType,
+    onAutoIgnoreIssueType,
     onActivateVersion,
     onUninstallVersion
   }: {
@@ -46,6 +65,9 @@
     onRevealFailure?: (path: string) => void | Promise<void>;
     onIgnoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
     onUnignoreFailure?: (path: string, pluginId: string) => void | Promise<void>;
+    onRetryIssueType?: (pluginId: string, errorCode: string) => void | Promise<void>;
+    onIgnoreIssueType?: (pluginId: string, errorCode: string) => void | Promise<void>;
+    onAutoIgnoreIssueType?: (pluginId: string, errorCode: string, enabled: boolean) => void | Promise<void>;
     onActivateVersion?: (pluginId: string, version: string) => void | Promise<void>;
     onUninstallVersion?: (pluginId: string, version: string) => void | Promise<void>;
   } = $props();
@@ -62,6 +84,7 @@
   let pendingVersionActivations = $state<Record<string, boolean>>({});
   let pendingVersionUninstalls = $state<Record<string, boolean>>({});
   let pendingPluginToggles = $state<Record<string, boolean>>({});
+  let pendingIssueTypeActions = $state<Record<string, boolean>>({});
   let hiddenIgnoredPaths = $state<Record<string, boolean>>({});
   let hiddenRetriedPaths = $state<Record<string, string>>({});
   let installStatus = $state<'ready' | 'installing' | 'success' | 'failed'>('ready');
@@ -131,6 +154,14 @@
     if (!status || !selectedPluginIdValue) return null;
     return status.plugin_summaries.find((summary) => summary.plugin_id === selectedPluginIdValue) ?? null;
   });
+  const autoIgnoredIssueCodes = $derived.by<Set<string>>(() => {
+    if (!status || !selectedPluginIdValue) return new Set();
+    return new Set(
+      status.auto_ignored_issue_types
+        .filter((item) => item.plugin_id === selectedPluginIdValue)
+        .map((item) => item.error_code)
+    );
+  });
   const pluginIssues = $derived.by<PluginIssue[]>(() => {
     if (!status || !selectedPluginIdValue) return [];
     let issues = status.issues.filter((issue) => issue.plugin_id === selectedPluginIdValue);
@@ -150,15 +181,42 @@
     if (selectedIssueCode) issues = issues.filter((issue) => issue.error_code === selectedIssueCode);
     return issues;
   });
-  const issueCategories = $derived.by(() => {
-    const counts = new Map<string, { code: string; label: string; count: number }>();
+  const issueCategories = $derived.by<IssueCategory[]>(() => {
+    if (!selectedPluginIdValue) return [];
+    const counts = new Map<string, IssueCategory>();
+    for (const issueType of KNOWN_ISSUE_TYPES) {
+      counts.set(issueType.code, {
+        code: issueType.code,
+        label: issueType.label,
+        count: 0,
+        pluginId: selectedPluginIdValue,
+        autoIgnored: autoIgnoredIssueCodes.has(issueType.code)
+      });
+    }
+    for (const issueCode of autoIgnoredIssueCodes) {
+      if (counts.has(issueCode)) continue;
+      counts.set(issueCode, {
+        code: issueCode,
+        label: labelForIssueCode(issueCode),
+        count: 0,
+        pluginId: selectedPluginIdValue,
+        autoIgnored: true
+      });
+    }
     for (const issue of activeIssues) {
       const existing = counts.get(issue.error_code);
       if (existing) {
         existing.count += 1;
+        existing.autoIgnored = autoIgnoredIssueCodes.has(issue.error_code);
         continue;
       }
-      counts.set(issue.error_code, { code: issue.error_code, label: labelForIssue(issue), count: 1 });
+      counts.set(issue.error_code, {
+        code: issue.error_code,
+        label: labelForIssueCode(issue.error_code, issue.message),
+        count: 1,
+        pluginId: selectedPluginIdValue,
+        autoIgnored: autoIgnoredIssueCodes.has(issue.error_code)
+      });
     }
     return [...counts.values()].sort(
       (left, right) =>
@@ -167,10 +225,7 @@
     );
   });
   const ignoredIssueCount = $derived.by(() => {
-    if (!status || !selectedPluginIdValue) return 0;
-    return status.issues.filter(
-      (issue) => issue.plugin_id === selectedPluginIdValue && issue.status === 'ignored' && !hiddenIgnoredPaths[issue.source_path]
-    ).length;
+    return selectedSummary?.ignored_count ?? 0;
   });
   const indexingLabel = $derived.by(() => {
     if (!status) return 'Idle';
@@ -189,6 +244,12 @@
     return 'Idle';
   });
 
+  $effect(() => {
+    if (!selectedIssueCode) return;
+    if (issueCategories.some((category) => category.code === selectedIssueCode)) return;
+    selectedIssueCode = null;
+  });
+
   function selectPlugin(plugin: InstalledPluginInfo) {
     internalSelectedPluginId = plugin.id;
     selectedIssueCode = null;
@@ -196,7 +257,11 @@
   }
 
   function labelForIssue(issue: PluginIssue): string {
-    switch (issue.error_code) {
+    return labelForIssueCode(issue.error_code, issue.message);
+  }
+
+  function labelForIssueCode(errorCode: string, fallbackMessage?: string): string {
+    switch (errorCode) {
       case 'cloud_file_unavailable':
         return 'Cloud file unavailable';
       case 'pdf_open_failed':
@@ -212,7 +277,7 @@
       case 'missing_source':
         return 'Source file missing';
       default:
-        return issue.message;
+        return fallbackMessage ?? errorCode;
     }
   }
 
@@ -289,6 +354,18 @@
     return { ...record, [path]: timestamp };
   }
 
+  function issueTypeActionKey(pluginId: string, errorCode: string, action: string) {
+    return `${pluginId}:${errorCode}:${action}`;
+  }
+
+  function isIssueTypeActionPending(pluginId: string, errorCode: string, action: string) {
+    return pendingIssueTypeActions[issueTypeActionKey(pluginId, errorCode, action)] ?? false;
+  }
+
+  function toggleIssueCategory(category: IssueCategory) {
+    selectedIssueCode = selectedIssueCode === category.code ? null : category.code;
+  }
+
   async function queueRetry(path: string, lastReportedAt: string) {
     if (!onRetryFailure || pendingRetryPaths[path]) return;
     pendingRetryPaths = markPending(pendingRetryPaths, path, true);
@@ -329,6 +406,42 @@
       await onUnignoreFailure(path, pluginId);
     } finally {
       pendingUnignorePaths = markPending(pendingUnignorePaths, path, false);
+    }
+  }
+
+  async function retryIssueType(category: IssueCategory) {
+    if (!onRetryIssueType) return;
+    const key = issueTypeActionKey(category.pluginId, category.code, 'retry');
+    if (pendingIssueTypeActions[key]) return;
+    pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
+    try {
+      await onRetryIssueType(category.pluginId, category.code);
+    } finally {
+      pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
+    }
+  }
+
+  async function ignoreIssueType(category: IssueCategory) {
+    if (!onIgnoreIssueType) return;
+    const key = issueTypeActionKey(category.pluginId, category.code, 'ignore');
+    if (pendingIssueTypeActions[key]) return;
+    pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
+    try {
+      await onIgnoreIssueType(category.pluginId, category.code);
+    } finally {
+      pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
+    }
+  }
+
+  async function autoIgnoreIssueType(category: IssueCategory, enabled: boolean) {
+    if (!onAutoIgnoreIssueType) return;
+    const key = issueTypeActionKey(category.pluginId, category.code, 'auto-ignore');
+    if (pendingIssueTypeActions[key]) return;
+    pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, true);
+    try {
+      await onAutoIgnoreIssueType(category.pluginId, category.code, enabled);
+    } finally {
+      pendingIssueTypeActions = markPending(pendingIssueTypeActions, key, false);
     }
   }
 
@@ -660,14 +773,52 @@
           {#if issueCategories.length}
             <div class="issue-categories">
               {#each issueCategories as category}
-                <button
-                  type="button"
-                  class:selected={selectedIssueCode === category.code}
-                  onclick={() => (selectedIssueCode = selectedIssueCode === category.code ? null : category.code)}
-                >
-                  <span>{category.label}</span>
-                  <strong>{category.count}</strong>
-                </button>
+                <div class="issue-category-group">
+                  <button
+                    type="button"
+                    class:selected={selectedIssueCode === category.code}
+                    class="issue-category-pill"
+                    onclick={() => toggleIssueCategory(category)}
+                  >
+                    <span>{category.label}</span>
+                    <strong>{category.count}</strong>
+                    <span class="chevron">{selectedIssueCode === category.code ? '▴' : '▾'}</span>
+                  </button>
+                  {#if selectedIssueCode === category.code}
+                    <div class="issue-category-actions">
+                      <button
+                        type="button"
+                        class="secondary"
+                        disabled={isIssueTypeActionPending(category.pluginId, category.code, 'retry')}
+                        onclick={() => retryIssueType(category)}
+                      >
+                        {isIssueTypeActionPending(category.pluginId, category.code, 'retry') ? 'Queueing…' : 'Retry all'}
+                      </button>
+                      <button
+                        type="button"
+                        class="secondary"
+                        disabled={isIssueTypeActionPending(category.pluginId, category.code, 'ignore')}
+                        onclick={() => ignoreIssueType(category)}
+                      >
+                        {isIssueTypeActionPending(category.pluginId, category.code, 'ignore') ? 'Ignoring…' : 'Ignore all'}
+                      </button>
+                      <button
+                        type="button"
+                        class="secondary auto-ignore"
+                        disabled={isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
+                        onclick={() => autoIgnoreIssueType(category, !category.autoIgnored)}
+                      >
+                        {#if isIssueTypeActionPending(category.pluginId, category.code, 'auto-ignore')}
+                          Saving…
+                        {:else if category.autoIgnored}
+                          Disable auto-ignore
+                        {:else}
+                          Always ignore this issue type
+                        {/if}
+                      </button>
+                    </div>
+                  {/if}
+                </div>
               {/each}
             </div>
 
@@ -856,7 +1007,8 @@
 
   .nav-groups button,
   .plugin-list button,
-  .issue-categories button,
+  .issue-category-pill,
+  .issue-category-actions button,
   .menu-panel button,
   .drop-zone {
     font: inherit;
@@ -1209,7 +1361,13 @@
     gap: 8px;
   }
 
-  .issue-categories button {
+  .issue-category-group {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+  }
+
+  .issue-category-pill {
     display: inline-flex;
     flex: 0 0 auto;
     gap: 10px;
@@ -1223,15 +1381,37 @@
     white-space: nowrap;
   }
 
-  .issue-categories button:hover {
+  .issue-category-pill:hover {
     border-color: #bdd3c1;
     background: #f4faf6;
   }
 
-  .issue-categories button.selected {
+  .issue-category-pill.selected {
     border-color: #0f6b3b;
     background: #edf7f1;
     color: #0f6b3b;
+  }
+
+  .issue-category-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-left: 12px;
+  }
+
+  .issue-category-actions button {
+    min-height: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .issue-category-actions .auto-ignore {
+    border-color: #bfd9c5;
+  }
+
+  .chevron {
+    font-size: 12px;
+    line-height: 1;
   }
 
   .issue-actions {

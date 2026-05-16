@@ -21,6 +21,7 @@ const STATUS_IGNORED: &str = "ignored";
 pub struct PluginCounts {
     pub indexed_count: usize,
     pub attention_count: usize,
+    pub ignored_count: usize,
     pub queued_count: usize,
     pub processing_count: usize,
 }
@@ -85,6 +86,12 @@ pub struct PluginRunRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct PluginIssuePreference {
+    pub plugin_id: String,
+    pub error_code: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct StateDb {
     path: PathBuf,
     index_root: PathBuf,
@@ -114,6 +121,7 @@ impl StateDb {
         let conn = self.open()?;
         conn.execute("DELETE FROM indexed_files", [])?;
         conn.execute("DELETE FROM plugin_runs", [])?;
+        conn.execute("DELETE FROM plugin_issue_preferences", [])?;
         conn.execute("DELETE FROM scan_roots", [])?;
         Ok(())
     }
@@ -126,6 +134,10 @@ impl StateDb {
         )?;
         conn.execute(
             "DELETE FROM plugin_runs WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        conn.execute(
+            "DELETE FROM plugin_issue_preferences WHERE plugin_id = ?1",
             params![plugin_id],
         )?;
         Ok(())
@@ -148,6 +160,63 @@ impl StateDb {
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    pub fn set_issue_auto_ignore(
+        &self,
+        plugin_id: &str,
+        error_code: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let conn = self.open()?;
+        if enabled {
+            conn.execute(
+                "INSERT INTO plugin_issue_preferences (plugin_id, error_code, auto_ignore)
+                 VALUES (?1, ?2, 1)
+                 ON CONFLICT(plugin_id, error_code) DO UPDATE SET auto_ignore = 1",
+                params![plugin_id, error_code],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM plugin_issue_preferences WHERE plugin_id = ?1 AND error_code = ?2",
+                params![plugin_id, error_code],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_issue_preferences(&self) -> Result<Vec<PluginIssuePreference>> {
+        let conn = self.open()?;
+        let mut stmt = conn.prepare(
+            "SELECT plugin_id, error_code
+             FROM plugin_issue_preferences
+             WHERE auto_ignore = 1
+             ORDER BY plugin_id ASC, error_code ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(PluginIssuePreference {
+                plugin_id: row.get(0)?,
+                error_code: row.get(1)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn ignore_issue_type(&self, plugin_id: &str, error_code: &str) -> Result<usize> {
+        let conn = self.open()?;
+        conn.execute(
+            "UPDATE indexed_files
+             SET status = ?3,
+                 retry_after = NULL,
+                 checked_at = ?4,
+                 updated_at = ?4
+             WHERE plugin_id = ?1
+               AND COALESCE(error_code, status) = ?2
+               AND status IN ('failed', 'missing', 'skipped')",
+            params![plugin_id, error_code, STATUS_IGNORED, now_rfc3339()],
+        )
+        .map_err(Into::into)
     }
 
     pub fn set_preferred_plugin_version(&self, plugin_id: &str, version: &str) -> Result<()> {
@@ -533,6 +602,21 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn has_issue_auto_ignore(&self, plugin_id: &str, error_code: &str) -> Result<bool> {
+        let conn = self.open()?;
+        conn.query_row(
+            "SELECT 1
+             FROM plugin_issue_preferences
+             WHERE plugin_id = ?1 AND error_code = ?2 AND auto_ignore = 1
+             LIMIT 1",
+            params![plugin_id, error_code],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(Into::into)
+    }
+
     pub fn mark_stale(
         &self,
         source_path: &Path,
@@ -564,6 +648,7 @@ impl StateDb {
                 "SELECT
                     SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status IN ('failed', 'missing', 'skipped') THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END)
                  FROM indexed_files WHERE plugin_id = ?1",
@@ -572,8 +657,9 @@ impl StateDb {
                     Ok(PluginCounts {
                         indexed_count: row.get::<_, Option<i64>>(0)?.unwrap_or(0) as usize,
                         attention_count: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as usize,
-                        queued_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as usize,
-                        processing_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as usize,
+                        ignored_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as usize,
+                        queued_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as usize,
+                        processing_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as usize,
                     })
                 },
             )?;
@@ -777,6 +863,12 @@ impl StateDb {
                active_version TEXT NOT NULL,
                enabled INTEGER NOT NULL DEFAULT 1
              );
+             CREATE TABLE IF NOT EXISTS plugin_issue_preferences (
+               plugin_id TEXT NOT NULL,
+               error_code TEXT NOT NULL,
+               auto_ignore INTEGER NOT NULL DEFAULT 1,
+               PRIMARY KEY (plugin_id, error_code)
+             );
              CREATE INDEX IF NOT EXISTS idx_indexed_files_plugin_status ON indexed_files(plugin_id, status);
              CREATE INDEX IF NOT EXISTS idx_indexed_files_root_path ON indexed_files(source_path);
              CREATE INDEX IF NOT EXISTS idx_plugin_runs_plugin ON plugin_runs(plugin_id, started_at);",
@@ -809,6 +901,14 @@ impl StateDb {
         retry_after: Option<&str>,
     ) -> Result<()> {
         let conn = self.open()?;
+        let effective_status = if matches!(status, STATUS_FAILED | STATUS_MISSING | STATUS_SKIPPED) {
+            match error_code {
+                Some(code) if self.has_issue_auto_ignore(plugin_id, code)? => STATUS_IGNORED,
+                _ => status,
+            }
+        } else {
+            status
+        };
         conn.execute(
             "UPDATE indexed_files
              SET status = ?3,
@@ -823,7 +923,7 @@ impl StateDb {
             params![
                 source_path.display().to_string(),
                 plugin_id,
-                status,
+                effective_status,
                 error_code,
                 error_message,
                 error_hint,

@@ -348,6 +348,40 @@ fn unignore_plugin_issue(
 }
 
 #[tauri::command]
+fn retry_plugin_issue_type(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    error_code: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .retry_issue_type(plugin_id.trim(), error_code.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn ignore_plugin_issue_type(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    error_code: String,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .ignore_issue_type(plugin_id.trim(), error_code.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn set_plugin_issue_type_auto_ignore(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    error_code: String,
+    enabled: bool,
+) -> Result<plugins::runtime::PluginIndexStatus, String> {
+    plugin_index
+        .set_issue_type_auto_ignore(plugin_id.trim(), error_code.trim(), enabled)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn set_plugin_index_paused(
     plugin_index: State<'_, PluginIndexRuntime>,
     paused: bool,
@@ -920,6 +954,7 @@ pub fn run() {
             get_search_status,
             home_dir,
             ignore_plugin_issue,
+            ignore_plugin_issue_type,
             install_plugin_package,
             index_file_with_plugin,
             list_directory,
@@ -935,7 +970,9 @@ pub fn run() {
             set_active_plugin_version,
             set_plugin_enabled,
             set_plugin_index_paused,
+            set_plugin_issue_type_auto_ignore,
             start_search,
+            retry_plugin_issue_type,
             uninstall_plugin_version,
             unignore_plugin_issue
         ])

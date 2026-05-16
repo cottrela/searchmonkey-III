@@ -190,6 +190,7 @@ export type PluginHealthSummary = {
   plugin_id: string;
   indexed_count: number;
   attention_count: number;
+  ignored_count: number;
   queued_count: number;
   processing_count: number;
 };
@@ -205,6 +206,11 @@ export type PluginIssue = {
   attempts: number;
   retry_after?: string | null;
   last_reported_at: string;
+};
+
+export type PluginIssuePreference = {
+  plugin_id: string;
+  error_code: string;
 };
 
 export type PluginIndexFailure = {
@@ -228,6 +234,7 @@ export type PluginIndexStatus = {
   worker_running: boolean;
   plugin_summaries: PluginHealthSummary[];
   issues: PluginIssue[];
+  auto_ignored_issue_types: PluginIssuePreference[];
 };
 
 export type InstallPluginResult = {

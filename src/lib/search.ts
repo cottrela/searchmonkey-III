@@ -111,6 +111,22 @@ export async function unignorePluginIssue(path: string, pluginId: string): Promi
   return invoke<PluginIndexStatus>('unignore_plugin_issue', { path, pluginId });
 }
 
+export async function retryPluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('retry_plugin_issue_type', { pluginId, errorCode });
+}
+
+export async function ignorePluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('ignore_plugin_issue_type', { pluginId, errorCode });
+}
+
+export async function setPluginIssueTypeAutoIgnore(
+  pluginId: string,
+  errorCode: string,
+  enabled: boolean
+): Promise<PluginIndexStatus> {
+  return invoke<PluginIndexStatus>('set_plugin_issue_type_auto_ignore', { pluginId, errorCode, enabled });
+}
+
 export async function setActivePluginVersion(pluginId: string, version: string): Promise<PluginIndexStatus> {
   return invoke<PluginIndexStatus>('set_active_plugin_version', { pluginId, version });
 }
