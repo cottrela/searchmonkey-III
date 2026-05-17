@@ -1,7 +1,10 @@
 use crate::plugins::cache::{self, CacheStatus};
 use crate::plugins::classifier::{FileClassifier, FileKind};
-use crate::plugins::failure_state::{classify_failure, FailureDisplay};
-use crate::plugins::index_paths::default_index_roots;
+use crate::plugins::failure_state::{classify_failure, remove_failure_state, FailureDisplay};
+use crate::plugins::index_paths::{
+    default_index_roots, mirror_meta_path, mirror_meta_tmp_path, mirror_text_path,
+    mirror_text_tmp_path,
+};
 use crate::plugins::indexer::{self, IndexFailure};
 use crate::plugins::installer::install_plugin_archive;
 use crate::plugins::registry::{
@@ -484,7 +487,11 @@ impl PluginIndexRuntime {
         Ok(self.summary())
     }
 
-    pub fn unignore_issue(&self, source_path: &Path, plugin_id: &str) -> Result<PluginIndexSummary> {
+    pub fn unignore_issue(
+        &self,
+        source_path: &Path,
+        plugin_id: &str,
+    ) -> Result<PluginIndexSummary> {
         let attempts = self
             .inner
             .state_db
@@ -498,9 +505,7 @@ impl PluginIndexRuntime {
                 .mark_stale(source_path, plugin_id, attempts, Some("Re-enabled"))?;
             self.request_user_scan(source_path)?;
         } else {
-            self.inner
-                .state_db
-                .mark_missing(source_path, plugin_id, attempts)?;
+            prune_missing_source(&self.inner, source_path, plugin_id);
         }
         Ok(self.summary())
     }
@@ -523,11 +528,7 @@ impl PluginIndexRuntime {
             .into_iter()
             .filter(|row| {
                 row.status != "ignored"
-                    && row
-                        .error_code
-                        .as_deref()
-                        .unwrap_or(row.status.as_str())
-                        == error_code
+                    && row.error_code.as_deref().unwrap_or(row.status.as_str()) == error_code
             })
         {
             let source_path = PathBuf::from(&issue.source_path);
@@ -599,11 +600,7 @@ impl PluginIndexRuntime {
         Ok((installed.plugin_id, installed.version, self.summary()))
     }
 
-    pub fn set_plugin_enabled(
-        &self,
-        plugin_id: &str,
-        enabled: bool,
-    ) -> Result<PluginIndexSummary> {
+    pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> Result<PluginIndexSummary> {
         let plugin_id = plugin_id.trim();
         if plugin_id.is_empty() {
             anyhow::bail!("plugin id is required");
@@ -954,16 +951,7 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             }
             Err(err) => {
                 if !job.source_path.exists() {
-                    let _ =
-                        inner
-                            .state_db
-                            .mark_missing(&job.source_path, &job.plugin_id, job.attempts);
-                    let _ = inner.state_db.finish_plugin_run(
-                        &job.run_id,
-                        "missing",
-                        Some("missing_source"),
-                        Some("Source file is missing"),
-                    );
+                    prune_missing_source(&inner, &job.source_path, &job.plugin_id);
                 } else {
                     let display = classify_index_error(&err);
                     let retry_after = retry_after_for_attempt(job.attempts);
@@ -1175,9 +1163,19 @@ fn mark_missing_for_root(inner: &Arc<RuntimeInner>, root: &Path, seen: &HashSet<
         if source_path.exists() {
             continue;
         }
-        let _ = inner
-            .state_db
-            .mark_missing(&source_path, &row.plugin_id, row.attempts);
+        prune_missing_source(inner, &source_path, &row.plugin_id);
+    }
+}
+
+fn prune_missing_source(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id: &str) {
+    let _ = inner.state_db.remove_indexed_file(source_path, plugin_id);
+
+    for index_root in &inner.index_roots {
+        let _ = fs::remove_file(mirror_text_path(index_root, source_path));
+        let _ = fs::remove_file(mirror_meta_path(index_root, source_path));
+        let _ = fs::remove_file(mirror_text_tmp_path(index_root, source_path));
+        let _ = fs::remove_file(mirror_meta_tmp_path(index_root, source_path));
+        let _ = remove_failure_state(index_root, source_path);
     }
 }
 
@@ -1357,14 +1355,18 @@ fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
     state.user_jobs.retain(|job| job.plugin_id != plugin_id);
     state.default_jobs.retain(|job| job.plugin_id != plugin_id);
     state.queued_user_jobs.retain(|key| !key.ends_with(&suffix));
-    state.queued_default_jobs.retain(|key| !key.ends_with(&suffix));
+    state
+        .queued_default_jobs
+        .retain(|key| !key.ends_with(&suffix));
     state.processing_jobs.retain(|key| !key.ends_with(&suffix));
     inner.wake.notify_all();
 }
 
 fn enqueue_root(state: &mut RuntimeState, root: PathBuf, lane: QueueLane) {
     if let Some(active_lane) = state.active_roots.get(&root).copied() {
-        if active_lane == QueueLane::Default && matches!(lane, QueueLane::User | QueueLane::UserImmediate) {
+        if active_lane == QueueLane::Default
+            && matches!(lane, QueueLane::User | QueueLane::UserImmediate)
+        {
             if state.queued_user_roots.insert(root.clone()) {
                 state.pending_user_roots.push_front(root);
             }
@@ -1604,6 +1606,11 @@ fn system_time_rfc3339(value: std::time::SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::index_paths::{
+        mirror_failure_state_path, mirror_meta_path, mirror_text_path,
+    };
+    use std::fs;
+    use tempfile::tempdir;
 
     fn test_job(path: &str, plugin_id: &str) -> PluginJob {
         PluginJob {
@@ -1625,7 +1632,10 @@ mod tests {
         let user_key = job_key(&user.source_path, &user.plugin_id);
         enqueue_job_in_lane(&mut state, user.clone(), user_key.clone(), QueueLane::User);
 
-        assert_eq!(state.user_jobs.front().map(|job| job.source_path.clone()), Some(user.source_path));
+        assert_eq!(
+            state.user_jobs.front().map(|job| job.source_path.clone()),
+            Some(user.source_path)
+        );
         assert!(state.queued_user_jobs.contains(&user_key));
         assert!(state.queued_default_jobs.contains(&default_key));
     }
@@ -1643,7 +1653,10 @@ mod tests {
 
         assert!(state.default_jobs.is_empty());
         assert!(state.queued_default_jobs.is_empty());
-        assert_eq!(state.user_jobs.front().map(|job| job.source_path.clone()), Some(user.source_path));
+        assert_eq!(
+            state.user_jobs.front().map(|job| job.source_path.clone()),
+            Some(user.source_path)
+        );
         assert!(state.queued_user_jobs.contains(&key));
     }
 
@@ -1658,5 +1671,58 @@ mod tests {
         assert!(state.queued_default_roots.is_empty());
         assert_eq!(state.pending_user_roots.front(), Some(&root));
         assert!(state.queued_user_roots.contains(&root));
+    }
+
+    #[test]
+    fn prune_missing_source_removes_db_row_and_cached_artifacts() {
+        let temp = tempdir().unwrap();
+        let index_root = temp.path().join("index");
+        let plugin_root = temp.path().join("plugins");
+        let state_db_path = temp.path().join("searchmonkey.sqlite");
+        fs::create_dir_all(&index_root).unwrap();
+        fs::create_dir_all(&plugin_root).unwrap();
+
+        let inner = Arc::new(RuntimeInner {
+            state: Mutex::new(RuntimeState::default()),
+            wake: Condvar::new(),
+            plugin_roots: vec![plugin_root],
+            index_roots: vec![index_root.clone()],
+            state_db: StateDb::new_with_path(&[index_root.clone()], state_db_path).unwrap(),
+            search_active: AtomicUsize::new(0),
+            run_counter: AtomicU64::new(RUN_COUNTER_START),
+        });
+        let source_path = temp.path().join("missing.pdf");
+
+        inner
+            .state_db
+            .upsert_discovered_file(
+                &source_path,
+                "sm.plugin.pdf",
+                "0.1.0",
+                123,
+                "2026-05-17T00:00:00Z",
+                queued_status(),
+                1,
+            )
+            .unwrap();
+
+        let text_path = mirror_text_path(&index_root, &source_path);
+        let meta_path = mirror_meta_path(&index_root, &source_path);
+        let failure_path = mirror_failure_state_path(&index_root, &source_path);
+        fs::create_dir_all(text_path.parent().unwrap()).unwrap();
+        fs::write(&text_path, "cached text").unwrap();
+        fs::write(&meta_path, "{}").unwrap();
+        fs::write(&failure_path, "{}").unwrap();
+
+        prune_missing_source(&inner, &source_path, "sm.plugin.pdf");
+
+        assert!(inner
+            .state_db
+            .get_indexed_file(&source_path, "sm.plugin.pdf")
+            .unwrap()
+            .is_none());
+        assert!(!text_path.exists());
+        assert!(!meta_path.exists());
+        assert!(!failure_path.exists());
     }
 }

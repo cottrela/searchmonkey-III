@@ -642,6 +642,7 @@ async fn start_search(
     let provider = RipgrepSidecarProvider::new(app.clone());
     let result_limit = request.max_matches.unwrap_or(UI_RESULT_LIMIT).max(1);
     let modified_after = request.modified_after;
+    let result_path_filter = crate::search::ripgrep::ResultPathFilter::from_request(&request);
     let mut child = provider.spawn(request).map_err(|err| err.to_string())?;
     let child_pid = child.id();
     let stdout = child
@@ -671,6 +672,7 @@ async fn start_search(
                 result_limit,
                 modified_after,
                 plugin_registry: provider.plugin_registry(),
+                result_path_filter,
             },
             |result, total_matches| {
                 prioritize_outdated_search_result(&plugin_index, &result);

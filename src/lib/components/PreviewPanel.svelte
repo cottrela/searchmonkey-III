@@ -76,6 +76,20 @@
   let lastScrolledTarget = '';
   let wrapLines = $state(false);
 
+  const IMAGE_EXTENSIONS = new Set([
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+    'tif',
+    'tiff',
+    'avif',
+    'heic',
+    'heif'
+  ]);
+
   const canNavigateMatches = $derived(activeFileMatchTotal > 1);
 
   const sourceLines = $derived.by(() =>
@@ -89,11 +103,17 @@
   const renderLines = $derived.by(() => buildRenderLines(sourceLines));
   const activeMatchText = $derived(preview.activeMatch?.line_text ?? '');
   const activeMatchReindexing = $derived(Boolean(preview.activeMatch && reindexingPaths.has(preview.activeMatch.path)));
+  const previewIsImage = $derived.by(() => isImagePath(preview.thumbnailPath));
   const activeMatchOnly = $derived.by(() => {
     const match = preview.activeMatch;
     if (!match?.submatches.length) return activeMatchText;
     return match.submatches.map((range) => match.line_text.slice(range.start, range.end)).join(' ');
   });
+
+  function isImagePath(filePath: string) {
+    const extension = filePath.split('.').at(-1)?.toLowerCase() ?? '';
+    return IMAGE_EXTENSIONS.has(extension);
+  }
 
   function buildSourceLines(
     filePreview: PreviewState['filePreview'],
@@ -323,6 +343,7 @@
       activeLine.scrollIntoView({ block: 'center' });
     });
   });
+
 </script>
 
 <aside bind:this={previewPanelElement} class="preview-panel" class:drilldown aria-label="Match preview">
@@ -450,42 +471,44 @@
       {#if !canWrap}
         <div class="wrap-message">Line wrapping is disabled for previews over 50,000 characters.</div>
       {/if}
-      {#if preview.filePreview}
-        <div
-          bind:this={previewElement}
-          class="preview"
-          class:wrap={effectiveWrap}
-        >
-          {#each renderLines as line (line.key)}
-            {#if line.kind === 'page-break'}
-              <div class="page-break-line" aria-hidden="true">
-                <span class="page-break-gutter"></span>
-                <code class="source"><span class="page-break">──────── {line.label} ────────</span></code>
-              </div>
-            {:else if line.isMatch}
-              <div
-                class="line"
-                role="button"
-                tabindex="0"
-                data-match="true"
-                data-active-match={line.isActive ? 'true' : undefined}
-                onclick={() => selectLineMatch(line.number)}
-                onkeydown={(event) => handleLineKeydown(event, line.number)}
-              >
-                <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
-                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
-              </div>
-            {:else}
-              <div class="line">
-                <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
-                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
-              </div>
-            {/if}
-          {/each}
-        </div>
-      {:else}
-        <div class="empty inline">Reading file...</div>
-      {/if}
+      <div class="preview-scroll">
+        {#if preview.filePreview}
+          <div
+            bind:this={previewElement}
+            class="preview"
+            class:wrap={effectiveWrap}
+          >
+            {#each renderLines as line (line.key)}
+              {#if line.kind === 'page-break'}
+                <div class="page-break-line" aria-hidden="true">
+                  <span class="page-break-gutter"></span>
+                  <code class="source"><span class="page-break">──────── {line.label} ────────</span></code>
+                </div>
+              {:else if line.isMatch}
+                <div
+                  class="line"
+                  role="button"
+                  tabindex="0"
+                  data-match="true"
+                  data-active-match={line.isActive ? 'true' : undefined}
+                  onclick={() => selectLineMatch(line.number)}
+                  onkeydown={(event) => handleLineKeydown(event, line.number)}
+                >
+                  <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
+                  <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+                </div>
+              {:else}
+                <div class="line">
+                  <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
+                  <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {:else}
+          <div class="empty inline">Reading file...</div>
+        {/if}
+      </div>
 
       <div class="mobile-match-nav">
         <button class="file-nav-button" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles} title="Previous file"><span class="nav-label-full">‹ File</span><span class="nav-label-short">‹</span></button>
@@ -788,10 +811,13 @@
   }
 
   .preview-body {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
     min-height: 0;
     padding: 14px;
+    overflow: hidden;
+  }
+
+  .preview-scroll {
+    min-height: 0;
   }
 
   .wrap-message {
@@ -802,6 +828,8 @@
   }
 
   .preview {
+    flex: 1 1 auto;
+    min-height: 0;
     margin: 12px 0 0;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1033,7 +1061,6 @@
     }
 
     .preview-body {
-      grid-template-rows: minmax(0, 1fr) auto;
       padding: 8px;
     }
 

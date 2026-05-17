@@ -107,12 +107,21 @@ pub struct StateDb {
 
 impl StateDb {
     pub fn new(index_roots: &[PathBuf]) -> Result<Self> {
+        let path = default_state_db_path().unwrap_or_else(|| {
+            index_roots
+                .first()
+                .cloned()
+                .expect("plugin index root should exist")
+                .join("searchmonkey.sqlite")
+        });
+        Self::new_with_path(index_roots, path)
+    }
+
+    pub(crate) fn new_with_path(index_roots: &[PathBuf], path: PathBuf) -> Result<Self> {
         let index_root = index_roots
             .first()
             .cloned()
             .context("no plugin index root configured")?;
-        let path =
-            default_state_db_path().unwrap_or_else(|| index_root.join("searchmonkey.sqlite"));
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -529,6 +538,20 @@ impl StateDb {
             attempts,
             None,
         )
+    }
+
+    pub fn remove_indexed_file(&self, source_path: &Path, plugin_id: &str) -> Result<()> {
+        let conn = self.open()?;
+        let source_path = source_path.display().to_string();
+        conn.execute(
+            "DELETE FROM indexed_files WHERE source_path = ?1 AND plugin_id = ?2",
+            params![source_path, plugin_id],
+        )?;
+        conn.execute(
+            "DELETE FROM plugin_runs WHERE source_path = ?1 AND plugin_id = ?2",
+            params![source_path, plugin_id],
+        )?;
+        Ok(())
     }
 
     pub fn mark_skipped(
@@ -969,7 +992,8 @@ impl StateDb {
         retry_after: Option<&str>,
     ) -> Result<()> {
         let conn = self.open()?;
-        let effective_status = if matches!(status, STATUS_FAILED | STATUS_MISSING | STATUS_SKIPPED) {
+        let effective_status = if matches!(status, STATUS_FAILED | STATUS_MISSING | STATUS_SKIPPED)
+        {
             match error_code {
                 Some(code) if self.has_issue_auto_ignore(plugin_id, code)? => STATUS_IGNORED,
                 _ => status,

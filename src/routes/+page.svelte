@@ -222,6 +222,7 @@
     if (!selected) {
       return {
         filePath: '',
+        thumbnailPath: '',
         filePreview: null,
         matches: [],
         activeMatchIndex: -1,
@@ -1166,6 +1167,7 @@
 
     return {
       filePath,
+      thumbnailPath: activeSelection?.preview_path ? activeSelection.path : '',
       filePreview,
       matches: visibleMatches,
       activeMatchIndex: selectedIndex,

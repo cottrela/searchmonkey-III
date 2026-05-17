@@ -10,6 +10,7 @@ pub struct SearchRunOptions {
     pub result_limit: usize,
     pub modified_after: Option<u64>,
     pub plugin_registry: Arc<PluginRegistry>,
+    pub result_path_filter: ripgrep::ResultPathFilter,
 }
 
 pub struct SearchRunSummary {
@@ -70,6 +71,9 @@ where
         else {
             continue;
         };
+        if !options.result_path_filter.matches_path(std::path::Path::new(&result.path)) {
+            continue;
+        }
 
         if options.modified_after.is_some() {
             ripgrep::add_file_metadata(&mut result);

@@ -112,7 +112,8 @@ impl PluginRegistry {
             if disabled_plugin_ids.contains(plugin_id) {
                 continue;
             }
-            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id)) {
+            if let Some(active) = select_active_plugin(versions, preferred_versions.get(plugin_id))
+            {
                 report
                     .registry
                     .by_id

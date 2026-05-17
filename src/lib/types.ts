@@ -162,6 +162,7 @@ export type FileResultGroup = {
 
 export type PreviewState = {
   filePath: string;
+  thumbnailPath: string;
   filePreview: FilePreview | null;
   matches: SearchMatch[];
   activeMatchIndex: number;
