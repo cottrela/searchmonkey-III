@@ -14,6 +14,10 @@ pub struct SearchRunOptions {
 }
 
 pub struct SearchRunSummary {
+    pub raw_stdout_lines: usize,
+    pub raw_match_lines: usize,
+    pub remapped_or_plain_matches: usize,
+    pub skipped_result_path_filter: usize,
     pub total_matches: usize,
     pub buffered_matches: usize,
     pub limit_reached: bool,
@@ -36,6 +40,15 @@ where
     F: FnMut(SearchMatch, usize),
 {
     let search_id = options.search_id;
+    let filter_summary = if debug_logging_enabled() {
+        Some(options.result_path_filter.debug_summary())
+    } else {
+        None
+    };
+    let mut raw_stdout_lines = 0usize;
+    let mut raw_match_lines = 0usize;
+    let mut remapped_or_plain_matches = 0usize;
+    let mut skipped_result_path_filter = 0usize;
     let mut total_matches = 0usize;
     let mut buffered_matches = 0usize;
     let mut limit_reached = false;
@@ -47,9 +60,10 @@ where
 
     if debug_logging {
         eprintln!(
-            "searchmonkey search {search_id}: rg runner started pid={} result_limit={}",
+            "searchmonkey search {search_id}: rg runner started pid={} result_limit={} {}",
             child.id(),
-            options.result_limit
+            options.result_limit,
+            filter_summary.unwrap_or_default()
         );
     }
 
@@ -62,16 +76,20 @@ where
                 continue;
             }
         };
+        raw_stdout_lines += 1;
 
         let Some(result) = ripgrep::RipgrepSidecarProvider::parse_match(&line) else {
             continue;
         };
+        raw_match_lines += 1;
 
         let Some(mut result) = result_mapper::map_search_match(result, &options.plugin_registry)
         else {
             continue;
         };
+        remapped_or_plain_matches += 1;
         if !options.result_path_filter.matches_path(std::path::Path::new(&result.path)) {
+            skipped_result_path_filter += 1;
             continue;
         }
 
@@ -143,11 +161,15 @@ where
 
     if debug_logging {
         eprintln!(
-            "searchmonkey search {search_id}: rg runner finished total_matches={total_matches} buffered_matches={buffered_matches} limit_reached={limit_reached} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
+            "searchmonkey search {search_id}: rg runner finished raw_stdout_lines={raw_stdout_lines} raw_match_lines={raw_match_lines} remapped_or_plain_matches={remapped_or_plain_matches} skipped_result_path_filter={skipped_result_path_filter} total_matches={total_matches} buffered_matches={buffered_matches} limit_reached={limit_reached} skipped_modified={skipped_modified} read_errors={read_errors} elapsed={elapsed_secs:.2}s exit={exit_status}"
         );
     }
 
     SearchRunSummary {
+        raw_stdout_lines,
+        raw_match_lines,
+        remapped_or_plain_matches,
+        skipped_result_path_filter,
         total_matches,
         buffered_matches,
         limit_reached,

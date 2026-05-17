@@ -101,13 +101,20 @@ impl RipgrepSidecarProvider {
             ..
         } = request;
         let path = expand_search_path(&path);
+        let include_patterns = include_patterns
+            .into_iter()
+            .map(normalize_glob_pattern)
+            .collect::<Vec<_>>();
+        let exclude_patterns = exclude_patterns
+            .into_iter()
+            .map(normalize_glob_pattern)
+            .collect::<Vec<_>>();
 
         let plugin_filter = SearchFilter::for_search_root(Path::new(&path), plugin_registry);
-        let _ = include_patterns;
 
-        for pattern in exclude_patterns {
+        for pattern in &exclude_patterns {
             args.push("--glob".to_string());
-            args.push(format!("!{}", normalize_glob_pattern(pattern)));
+            args.push(format!("!{pattern}"));
         }
 
         if ignore_node_modules {
@@ -165,11 +172,20 @@ impl RipgrepSidecarProvider {
         plugin_filter.apply_to_args(&mut args);
         args.push(query);
         args.push(path.clone());
+        let mut mirror_paths = Vec::new();
         for index_root in default_index_roots() {
             let mirror_path = mirror_search_path(&index_root, Path::new(&path));
             if mirror_path.exists() {
+                mirror_paths.push(mirror_path.to_string_lossy().to_string());
                 args.push(mirror_path.to_string_lossy().to_string());
             }
+        }
+
+        if debug_logging_enabled() {
+            eprintln!(
+                "searchmonkey rg request: path={} include_patterns={:?} exclude_patterns={:?} mirror_paths={:?}",
+                path, include_patterns, exclude_patterns, mirror_paths
+            );
         }
 
         args
@@ -470,6 +486,15 @@ impl ResultPathFilter {
             .exclude_patterns
             .iter()
             .any(|pattern| pattern.matches(path, &self.search_root))
+    }
+
+    pub fn debug_summary(&self) -> String {
+        format!(
+            "search_root={} include_count={} exclude_count={}",
+            self.search_root.display(),
+            self.include_patterns.len(),
+            self.exclude_patterns.len()
+        )
     }
 }
 

@@ -643,6 +643,21 @@ async fn start_search(
     let result_limit = request.max_matches.unwrap_or(UI_RESULT_LIMIT).max(1);
     let modified_after = request.modified_after;
     let result_path_filter = crate::search::ripgrep::ResultPathFilter::from_request(&request);
+    if crate::search::debug_logging_enabled() {
+        eprintln!(
+            "searchmonkey search {search_id}: start path={} query_len={} regex={} case_sensitive={} hidden={} follow_symlinks={} multiline={} include_patterns={:?} exclude_patterns={:?} max_matches={:?}",
+            request.path,
+            request.query.len(),
+            request.regex,
+            request.case_sensitive,
+            request.hidden,
+            request.follow_symlinks,
+            request.multiline,
+            request.include_patterns,
+            request.exclude_patterns,
+            request.max_matches
+        );
+    }
     let mut child = provider.spawn(request).map_err(|err| err.to_string())?;
     let child_pid = child.id();
     let stdout = child
@@ -687,6 +702,19 @@ async fn start_search(
 
         if let Ok(mut status) = session.status.lock() {
             status.total_matches = summary.total_matches;
+        }
+        if crate::search::debug_logging_enabled() {
+            eprintln!(
+                "searchmonkey search {search_id}: summary raw_stdout_lines={} raw_match_lines={} remapped_or_plain_matches={} skipped_result_path_filter={} total_matches={} buffered_matches={} skipped_modified={} elapsed={:.2}s",
+                summary.raw_stdout_lines,
+                summary.raw_match_lines,
+                summary.remapped_or_plain_matches,
+                summary.skipped_result_path_filter,
+                summary.total_matches,
+                summary.buffered_matches,
+                summary.skipped_modified,
+                summary.elapsed_secs
+            );
         }
         let current_state = session
             .status
