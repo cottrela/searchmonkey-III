@@ -1,3 +1,4 @@
+pub mod app_auth;
 pub mod plugins;
 pub mod search;
 
@@ -299,15 +300,17 @@ async fn index_file_with_plugin(source_path: String) -> Result<indexer::IndexRes
 #[tauri::command]
 fn get_plugin_index_summary(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
-    Ok(plugin_index.summary())
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
 }
 
 #[tauri::command]
 fn get_plugin_index_status(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
-    Ok(plugin_index.summary())
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
 }
 
 #[tauri::command]
@@ -341,6 +344,7 @@ fn get_plugin_issues(
 #[tauri::command]
 fn queue_plugin_scan(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     path: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
@@ -355,99 +359,117 @@ fn queue_plugin_scan(
                 .map_err(|err| err.to_string())?;
         }
     }
-    Ok(plugin_index.summary())
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
 }
 
 #[tauri::command]
 fn ignore_plugin_issue(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     path: String,
     plugin_id: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
     plugin_index
         .ignore_issue(&path, plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn unignore_plugin_issue(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     path: String,
     plugin_id: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     let path = expand_home_path(path.trim())?;
     plugin_index
         .unignore_issue(&path, plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn retry_plugin_issue_type(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     error_code: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .retry_issue_type(plugin_id.trim(), error_code.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn ignore_plugin_issue_type(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     error_code: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .ignore_issue_type(plugin_id.trim(), error_code.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn set_plugin_issue_type_auto_ignore(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     error_code: String,
     enabled: bool,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_issue_type_auto_ignore(plugin_id.trim(), error_code.trim(), enabled)
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn set_plugin_index_paused(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     paused: bool,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
-    Ok(plugin_index.set_paused(paused))
+    let _ = plugin_index.set_paused(paused);
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
 }
 
 #[tauri::command]
 fn rebuild_plugin_index(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
-    Ok(plugin_index.rebuild())
+    let _ = plugin_index.rebuild();
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
 }
 
 #[tauri::command]
 fn refresh_plugin_supported_files(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .refresh_plugin_supported_files(plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn reset_plugin_cache(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .reset_plugin_cache(plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
@@ -462,50 +484,123 @@ fn plugin_folder_path(plugin_index: State<'_, PluginIndexRuntime>) -> Result<Str
 #[tauri::command]
 fn install_plugin_package(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     archive_path: String,
 ) -> Result<InstallPluginResult, String> {
     let archive_path = expand_home_path(archive_path.trim())?;
-    let (plugin_id, version, status) = plugin_index
+    let (plugin_id, version, _status) = plugin_index
         .install_plugin_archive(&archive_path)
         .map_err(|err| err.to_string())?;
     Ok(InstallPluginResult {
         plugin_id,
         version,
-        status,
+        status: app_auth::decorate_plugin_summary(&plugin_index, &app_auth),
     })
 }
 
 #[tauri::command]
 fn set_active_plugin_version(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     version: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_active_plugin_version(plugin_id.trim(), version.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn set_plugin_enabled(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     enabled: bool,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .set_plugin_enabled(plugin_id.trim(), enabled)
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn uninstall_plugin_version(
     plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
     plugin_id: String,
     version: String,
 ) -> Result<plugins::runtime::PluginIndexSummary, String> {
     plugin_index
         .uninstall_plugin_version(plugin_id.trim(), version.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn refresh_purchase_entitlements(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .refresh_entitlements(&app)
+        .inspect_err(|error| app_auth::reconcile_refresh_failure(&app_auth, error))
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn start_purchase_email_verification(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    email: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .start_email_verification(&app, email.trim())
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn poll_purchase_connection(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .poll_pending_request(&app)
+        .inspect_err(|error| app_auth::reconcile_refresh_failure(&app_auth, error))
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn disconnect_purchase_connection(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth.disconnect(&app).map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn install_purchased_plugin(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+) -> Result<InstallPluginResult, String> {
+    let (plugin_id, version, _status) = app_auth
+        .install_marketplace_plugin(&app, &plugin_index, plugin_id.trim())
+        .map_err(|err| err.to_string())?;
+    Ok(InstallPluginResult {
+        plugin_id,
+        version,
+        status: app_auth::decorate_plugin_summary(&plugin_index, &app_auth),
+    })
 }
 
 #[tauri::command]
@@ -1007,6 +1102,7 @@ pub fn run() {
         })
         .manage(SearchSessions::default())
         .manage(PluginIndexRuntime::default())
+        .manage(app_auth::AppAuthRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -1014,6 +1110,7 @@ pub fn run() {
             cancel_search,
             clear_search,
             copy_text,
+            disconnect_purchase_connection,
             get_plugin_index_summary,
             get_results,
             get_plugin_issue_counts,
@@ -1024,13 +1121,16 @@ pub fn run() {
             ignore_plugin_issue,
             ignore_plugin_issue_type,
             install_plugin_package,
+            install_purchased_plugin,
             index_file_with_plugin,
             list_directory,
             open_file_path,
+            poll_purchase_connection,
             plugin_folder_path,
             queue_plugin_scan,
             read_file_preview,
             rebuild_plugin_index,
+            refresh_purchase_entitlements,
             refresh_plugin_supported_files,
             reveal_file_path,
             reset_plugin_cache,
@@ -1039,6 +1139,7 @@ pub fn run() {
             set_plugin_enabled,
             set_plugin_index_paused,
             set_plugin_issue_type_auto_ignore,
+            start_purchase_email_verification,
             start_search,
             retry_plugin_issue_type,
             uninstall_plugin_version,

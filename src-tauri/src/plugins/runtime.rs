@@ -1,3 +1,4 @@
+use crate::app_auth::{MarketplacePluginSummary, PurchaseConnectionSummary};
 use crate::plugins::cache::{self, CacheStatus};
 use crate::plugins::classifier::{FileClassifier, FileKind};
 use crate::plugins::failure_state::{classify_failure, remove_failure_state, FailureDisplay};
@@ -46,6 +47,8 @@ pub struct PluginIndexSummary {
     pub worker_running: bool,
     pub plugin_summaries: Vec<PluginHealthSummary>,
     pub auto_ignored_issue_types: Vec<PluginIssuePreferenceSummary>,
+    pub purchase_connection: PurchaseConnectionSummary,
+    pub marketplace_plugins: Vec<MarketplacePluginSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -352,6 +355,17 @@ impl PluginIndexRuntime {
                 .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
                 .collect(),
             auto_ignored_issue_types,
+            purchase_connection: PurchaseConnectionSummary {
+                state: "not_connected".to_string(),
+                email: None,
+                pending_email: None,
+                pending_expires_at: None,
+                last_synced_at: None,
+                has_cached_entitlements: false,
+                status_message: None,
+                storage_warning: None,
+            },
+            marketplace_plugins: Vec::new(),
         }
     }
 

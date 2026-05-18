@@ -27,7 +27,9 @@ async-trait = "0.1"
 globset = "0.4"
 grep = "0.3"
 ignore = "0.4"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 semver = "1"
 sha2 = "0.10"

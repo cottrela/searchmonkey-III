@@ -88,7 +88,10 @@ where
             continue;
         };
         remapped_or_plain_matches += 1;
-        if !options.result_path_filter.matches_path(std::path::Path::new(&result.path)) {
+        if !options
+            .result_path_filter
+            .matches_path(std::path::Path::new(&result.path))
+        {
             skipped_result_path_filter += 1;
             continue;
         }

@@ -606,12 +606,8 @@ mod tests {
             ignore_build_artifacts: false,
         });
 
-        assert!(filter.matches_path(Path::new(
-            "/Users/acottrell/ocr-test/invoices/page-1.jpg"
-        )));
-        assert!(!filter.matches_path(Path::new(
-            "/Users/acottrell/ocr-test/invoices/page-1.png"
-        )));
+        assert!(filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.jpg")));
+        assert!(!filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.png")));
     }
 
     #[test]
@@ -638,11 +634,7 @@ mod tests {
             ignore_build_artifacts: false,
         });
 
-        assert!(!filter.matches_path(Path::new(
-            "/Users/acottrell/ocr-test/invoices/page-1.jpg"
-        )));
-        assert!(filter.matches_path(Path::new(
-            "/Users/acottrell/ocr-test/invoices/page-1.png"
-        )));
+        assert!(!filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.jpg")));
+        assert!(filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.png")));
     }
 }
