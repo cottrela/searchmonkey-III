@@ -649,7 +649,7 @@
   }
 
   function shouldPollPurchaseConnection() {
-    return pluginDialogOpen && appVisible && pluginStatus?.purchase_connection.state === 'pending';
+    return pluginDialogOpen && pluginStatus?.purchase_connection.state === 'pending';
   }
 
   function clearPurchasePollTimer() {
@@ -664,7 +664,7 @@
     purchasePollTimer = setTimeout(() => {
       purchasePollTimer = null;
       void pollPendingPurchaseConnection();
-    }, 2000);
+    }, 1000);
   }
 
   function scheduleStartupPluginScan() {
@@ -807,7 +807,7 @@
       pluginStatus = await startPurchaseEmailVerification(email);
       pluginStatusError = '';
       pluginDialogOpen = true;
-      startPurchasePollTimer();
+      void pollPendingPurchaseConnection();
     } catch (error) {
       pluginStatusError = normalizeError(error);
       throw error;
