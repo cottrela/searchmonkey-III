@@ -69,6 +69,8 @@ struct PersistedAppAuthState {
     #[serde(default)]
     connection_state: ConnectionState,
     email: Option<String>,
+    #[serde(default)]
+    has_session_token: bool,
     pending_email: Option<String>,
     pending_request_id: Option<String>,
     pending_expires_at: Option<String>,
@@ -128,6 +130,16 @@ impl AppAuthRuntime {
         installed_plugins: &[InstalledPluginInfo],
     ) -> (PurchaseConnectionSummary, Vec<MarketplacePluginSummary>) {
         let state = self.load_state().unwrap_or_default();
+        let effective_state = if state.connection_state == ConnectionState::Connected && !state.has_session_token {
+            ConnectionState::Expired
+        } else {
+            state.connection_state
+        };
+        let effective_status_message = if state.connection_state == ConnectionState::Connected && !state.has_session_token {
+            Some("Reconnect purchases to restore the secure session for refresh and install actions.".to_string())
+        } else {
+            state.last_error.clone()
+        };
         let installed_names = installed_plugins
             .iter()
             .map(|plugin| (plugin.id.clone(), plugin.name.clone()))
@@ -152,13 +164,13 @@ impl AppAuthRuntime {
 
         (
             PurchaseConnectionSummary {
-                state: state.connection_state.as_str().to_string(),
+                state: effective_state.as_str().to_string(),
                 email: state.email,
                 pending_email: state.pending_email,
                 pending_expires_at: state.pending_expires_at,
                 last_synced_at: state.last_synced_at,
                 has_cached_entitlements: !state.entitlements.is_empty(),
-                status_message: state.last_error,
+                status_message: effective_status_message,
                 storage_warning: state.storage_warning,
             },
             marketplace_plugins,
@@ -174,6 +186,7 @@ impl AppAuthRuntime {
         let response = start_app_auth_request(email, app)?;
         let mut state = self.load_state().unwrap_or_default();
         state.connection_state = ConnectionState::Pending;
+        state.has_session_token = false;
         state.pending_email = Some(email.to_string());
         state.pending_request_id = Some(response.request_id);
         state.pending_expires_at = Some(response.expires_at);
@@ -226,6 +239,7 @@ impl AppAuthRuntime {
         let mut state = self.load_state().unwrap_or_default();
         state.connection_state = ConnectionState::NotConnected;
         state.email = None;
+        state.has_session_token = false;
         state.pending_email = None;
         state.pending_request_id = None;
         state.pending_expires_at = None;
@@ -287,6 +301,7 @@ impl AppAuthRuntime {
         state.pending_expires_at = None;
         state.last_synced_at = Some(now_rfc3339());
         state.last_error = None;
+        state.has_session_token = true;
         state.storage_warning = if cfg!(target_os = "linux") && self.store_mode_is_plaintext()? {
             Some(LINUX_PLAIN_TOKEN_WARNING.to_string())
         } else {
@@ -299,6 +314,7 @@ impl AppAuthRuntime {
     fn mark_expired(&self, message: &str) -> Result<()> {
         let mut state = self.load_state().unwrap_or_default();
         state.connection_state = ConnectionState::Expired;
+        state.has_session_token = false;
         state.pending_email = None;
         state.pending_request_id = None;
         state.pending_expires_at = None;
@@ -354,6 +370,7 @@ impl AppAuthRuntime {
                     }
                     fs::write(&self.linux_plaintext_token_path, token)?;
                     let mut state = self.load_state().unwrap_or_default();
+                    state.has_session_token = true;
                     state.storage_warning = Some(LINUX_PLAIN_TOKEN_WARNING.to_string());
                     state.last_error = Some(format!(
                         "Secure storage is unavailable on Linux; using a plain-text fallback ({err})."
@@ -628,7 +645,7 @@ pub fn decorate_plugin_summary(
 
 pub fn reconcile_refresh_failure(runtime: &AppAuthRuntime, error: &anyhow::Error) {
     let message = error.to_string();
-    if message.contains("expired") || message.contains("401") {
+    if message.contains("expired") || message.contains("401") || message.contains("Connect purchases before") {
         let _ = runtime.mark_expired(&message);
         return;
     }
