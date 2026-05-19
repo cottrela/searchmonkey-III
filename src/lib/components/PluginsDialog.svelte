@@ -14,9 +14,10 @@
   } from '$lib/types';
 
   const WEBSITE_URL = 'https://searchmonkey.dev';
+  const PLUGINS_URL = `${WEBSITE_URL}/plugins`;
 
   type PluginDialogPage = 'installed' | 'available' | 'updates' | 'install';
-  type MarketplaceBadgeTone = 'owned' | 'installed' | 'update';
+  type MarketplaceBadgeTone = 'owned' | 'installed' | 'update' | 'development' | 'neutral';
   type IssueCategory = {
     code: string;
     label: string;
@@ -677,8 +678,7 @@
   }
 
   function marketplaceAction(plugin: MarketplacePluginSummary) {
-    const installedVersions = installedVersionsForMarketplacePlugin(plugin.plugin_id);
-    const activeInstalled = installedVersions.find((item) => item.is_active) ?? installedVersions[0] ?? null;
+    const activeInstalled = activeInstalledMarketplaceVersion(plugin);
     if (purchaseConnection.state === 'expired') {
       return { action: 'reconnect', label: 'Reconnect purchases' } as const;
     }
@@ -692,7 +692,7 @@
       return { action: 'buy', label: 'Buy' } as const;
     }
     if (!plugin.download_url) {
-      return { action: 'owned', label: 'Owned' } as const;
+      return { action: 'website', label: 'Open website' } as const;
     }
     if (!activeInstalled) {
       return { action: 'install', label: 'Install' } as const;
@@ -715,9 +715,13 @@
   function marketplaceBadges(plugin: MarketplacePluginSummary) {
     const badges: Array<{ label: string; tone: MarketplaceBadgeTone }> = [];
     const installed = activeInstalledMarketplaceVersion(plugin);
+    const relation = marketplaceVersionRelation(plugin);
     if (plugin.owned) badges.push({ label: 'Owned', tone: 'owned' });
     if (installed) badges.push({ label: 'Installed', tone: 'installed' });
-    if (marketplaceAction(plugin).action === 'update') badges.push({ label: 'Update available', tone: 'update' });
+    if (plugin.owned && !installed) badges.push({ label: 'Not installed', tone: 'neutral' });
+    if (relation === 'behind') badges.push({ label: 'Update available', tone: 'update' });
+    if (relation === 'ahead') badges.push({ label: 'Ahead of catalog', tone: 'development' });
+    if (installed && isDevelopmentVersion(installed.version)) badges.push({ label: 'Development build', tone: 'development' });
     return badges;
   }
 
@@ -728,7 +732,35 @@
 
   function marketplaceActionIsDisabled(plugin: MarketplacePluginSummary) {
     const action = marketplaceAction(plugin).action;
-    return action === 'owned' || action === 'pending';
+    return action === 'pending';
+  }
+
+  function compareVersions(installedVersion: string, catalogVersion: string) {
+    return installedVersion.localeCompare(catalogVersion, undefined, { numeric: true });
+  }
+
+  function isDevelopmentVersion(version: string) {
+    return /(?:^|[.-])(dev|alpha|beta|rc|preview)(?:[.-]|$)/i.test(version);
+  }
+
+  function marketplaceVersionRelation(plugin: MarketplacePluginSummary) {
+    const installed = activeInstalledMarketplaceVersion(plugin);
+    if (!installed) return 'not_installed' as const;
+    if (!plugin.latest_version) return 'no_catalog' as const;
+    const compare = compareVersions(installed.version, plugin.latest_version);
+    if (compare > 0) return 'ahead' as const;
+    if (compare < 0) return 'behind' as const;
+    return 'current' as const;
+  }
+
+  function installedVersionLabel(plugin: MarketplacePluginSummary) {
+    const installed = activeInstalledMarketplaceVersion(plugin);
+    if (!installed) return null;
+    return installed.version;
+  }
+
+  function catalogVersionLabel(plugin: MarketplacePluginSummary) {
+    return plugin.latest_version;
   }
 
   function purchaseStatusTitle() {
@@ -768,7 +800,11 @@
   }
 
   async function openPurchaseLink(plugin: MarketplacePluginSummary) {
-    await openUrl(plugin.buy_url ?? plugin.homepage_url ?? WEBSITE_URL);
+    await openUrl(plugin.buy_url ?? plugin.homepage_url ?? PLUGINS_URL);
+  }
+
+  async function openPluginCatalog() {
+    await openUrl(PLUGINS_URL);
   }
 
   async function runPurchaseRefresh() {
@@ -810,7 +846,11 @@
       await openPurchaseLink(plugin);
       return;
     }
-    if (decision.action === 'pending' || decision.action === 'owned' || !onInstallMarketplacePlugin) return;
+    if (decision.action === 'website') {
+      await openPurchaseLink(plugin);
+      return;
+    }
+    if (decision.action === 'pending' || !onInstallMarketplacePlugin) return;
     if (pendingMarketplaceInstalls[plugin.plugin_id]) return;
     pendingMarketplaceInstalls = { ...pendingMarketplaceInstalls, [plugin.plugin_id]: true };
     try {
@@ -988,30 +1028,32 @@
           <header class="detail-header">
             <div>
               <h3>Library</h3>
-              <p class="muted">Purchased plugins you can install or update from searchmonkey.dev.</p>
+              <p class="muted">Browse, install and update plugins connected to your Searchmonkey purchases.</p>
             </div>
           </header>
 
           <section class:compact={purchaseConnection.state === 'connected'} class="panel purchase-panel">
             <div class="purchase-copy">
-              <strong>{purchaseStatusTitle()}</strong>
               {#if purchaseConnection.state === 'connected'}
-                <span class="purchase-email-display">{purchaseConnection.email ?? 'your account'}</span>
+                <strong>Connected as {purchaseConnection.email ?? 'your account'}</strong>
                 <div class="purchase-meta">
-                  <span>Secure purchase verification via searchmonkey.dev</span>
                   {#if formatRelativeConnectionDate(purchaseConnection.last_synced_at)}
                     <span>Last synced {formatRelativeConnectionDate(purchaseConnection.last_synced_at)}</span>
                   {/if}
+                  <span>Secure purchase verification via searchmonkey.dev</span>
                 </div>
               {:else if purchaseConnection.state === 'pending' && !editingPendingPurchaseEmail}
+                <strong>{purchaseStatusTitle()}</strong>
                 <span class="purchase-email-display">{purchaseConnection.pending_email ?? purchaseEmail}</span>
                 <p class="muted">Check your inbox and click the verification link.</p>
                 <p class="purchase-trust">Secure purchase verification via searchmonkey.dev</p>
               {:else if purchaseConnection.state === 'expired'}
+                <strong>{purchaseStatusTitle()}</strong>
                 <p class="muted">The verification link expired. Enter the checkout email to send a new one.</p>
                 <p class="purchase-trust">Secure purchase verification via searchmonkey.dev</p>
               {:else}
-                <p class="muted">Connect your Searchmonkey purchases to install plugins bought on the website.</p>
+                <strong>{purchaseStatusTitle()}</strong>
+                <p class="muted">Connect your Searchmonkey purchases to install and update linked plugins in the app.</p>
                 <p class="purchase-trust">Secure purchase verification via searchmonkey.dev</p>
               {/if}
               {#if purchaseConnection.status_message}
@@ -1026,6 +1068,7 @@
                 <button type="button" class="secondary" disabled={purchasesActionPending !== null} onclick={runPurchaseRefresh}>
                   {purchasesActionPending === 'refresh' ? 'Refreshing…' : 'Refresh'}
                 </button>
+                <button type="button" class="secondary" onclick={openPluginCatalog}>Browse plugins</button>
                 <button type="button" class="tertiary" disabled={purchasesActionPending !== null} onclick={runPurchaseDisconnect}>
                   {purchasesActionPending === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
                 </button>
@@ -1065,15 +1108,18 @@
                     <div class="marketplace-heading">
                       <h4>{plugin.name}</h4>
                     </div>
-                    <div class="marketplace-meta">
-                      {#if plugin.latest_version}
-                        <span>Version {plugin.latest_version}</span>
+                    <div class="marketplace-version-list">
+                      {#if installedVersionLabel(plugin)}
+                        <div class="marketplace-version-row">
+                          <span class="marketplace-version-label">Installed locally</span>
+                          <span>{installedVersionLabel(plugin)}</span>
+                        </div>
                       {/if}
-                      {#if activeInstalledMarketplaceVersion(plugin)}
-                        <span>Installed {activeInstalledMarketplaceVersion(plugin)?.version}</span>
-                      {/if}
-                      {#if !plugin.owned}
-                        <span>Available on searchmonkey.dev</span>
+                      {#if catalogVersionLabel(plugin)}
+                        <div class="marketplace-version-row">
+                          <span class="marketplace-version-label">Catalog version</span>
+                          <span>{catalogVersionLabel(plugin)}</span>
+                        </div>
                       {/if}
                     </div>
                     <div class="marketplace-badges">
@@ -1085,7 +1131,7 @@
                   <div class="marketplace-actions">
                     <button
                       type="button"
-                      class:secondary={marketplaceAction(plugin).action === 'buy'}
+                      class:secondary={!marketplaceActionIsPrimary(plugin)}
                       class:primary-action={marketplaceActionIsPrimary(plugin)}
                       disabled={pendingMarketplaceInstalls[plugin.plugin_id] || marketplaceActionIsDisabled(plugin)}
                       onclick={() => runMarketplaceAction(plugin)}
@@ -1102,17 +1148,20 @@
                 <span class="empty-glyph">◎</span>
               </div>
               <h3>Connect your Searchmonkey purchases</h3>
-              <p>Install plugins bought on the website directly in Searchmonkey.</p>
+              <p>Install and update plugins linked to your Searchmonkey purchases.</p>
               <ol class="empty-steps">
                 <li>Enter the email used at checkout</li>
                 <li>Verify the email link</li>
                 <li>Install plugins directly in Searchmonkey</li>
               </ol>
+              <div class="empty-actions">
+                <button type="button" class="secondary" onclick={openPluginCatalog}>Browse plugins</button>
               {#if purchaseConnection.state !== 'connected' && purchaseConnection.state !== 'pending'}
                 <button type="button" class="primary-action empty-cta" disabled={purchasesActionPending !== null || !purchaseEmail.trim()} onclick={startEmailVerification}>
                   {purchasesActionPending === 'start' ? 'Sending…' : 'Connect purchases'}
                 </button>
               {/if}
+              </div>
             </div>
           {/if}
         </div>
@@ -1128,13 +1177,12 @@
           <section class="panel purchase-panel compact">
             <div class="purchase-copy">
               {#if purchaseConnection.state === 'connected'}
-                <strong>Purchases connected</strong>
-                <span class="purchase-email-display">{purchaseConnection.email ?? 'your account'}</span>
+                <strong>Connected as {purchaseConnection.email ?? 'your account'}</strong>
                 <div class="purchase-meta">
-                  <span>Secure purchase verification via searchmonkey.dev</span>
                   {#if formatRelativeConnectionDate(purchaseConnection.last_synced_at)}
                     <span>Last synced {formatRelativeConnectionDate(purchaseConnection.last_synced_at)}</span>
                   {/if}
+                  <span>Secure purchase verification via searchmonkey.dev</span>
                 </div>
               {:else if purchaseConnection.state === 'pending'}
                 <strong>Verification email sent</strong>
@@ -1150,6 +1198,7 @@
                 <button type="button" class="secondary" disabled={purchasesActionPending !== null} onclick={runPurchaseRefresh}>
                   {purchasesActionPending === 'refresh' ? 'Refreshing…' : 'Refresh'}
                 </button>
+                <button type="button" class="secondary" onclick={openPluginCatalog}>Browse plugins</button>
                 <button type="button" class="tertiary" disabled={purchasesActionPending !== null} onclick={runPurchaseDisconnect}>
                   {purchasesActionPending === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
                 </button>
@@ -1202,10 +1251,18 @@
                     <div class="marketplace-heading">
                       <h4>{plugin.name}</h4>
                     </div>
-                    <div class="marketplace-meta">
-                      <span>Installed {installedVersionsForMarketplacePlugin(plugin.plugin_id)[0]?.version ?? 'plugin'}</span>
-                      {#if plugin.latest_version}
-                        <span>Latest {plugin.latest_version}</span>
+                    <div class="marketplace-version-list">
+                      {#if installedVersionLabel(plugin)}
+                        <div class="marketplace-version-row">
+                          <span class="marketplace-version-label">Installed locally</span>
+                          <span>{installedVersionLabel(plugin)}</span>
+                        </div>
+                      {/if}
+                      {#if catalogVersionLabel(plugin)}
+                        <div class="marketplace-version-row">
+                          <span class="marketplace-version-label">Catalog version</span>
+                          <span>{catalogVersionLabel(plugin)}</span>
+                        </div>
                       {/if}
                     </div>
                     <div class="marketplace-badges">
@@ -1875,12 +1932,26 @@
     margin: 0;
   }
 
-  .marketplace-meta {
+  .marketplace-version-list {
+    display: grid;
+    gap: 4px;
+  }
+
+  .marketplace-version-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 12px;
-    color: #69737d;
+    gap: 8px;
+    align-items: baseline;
+    color: #44515c;
     font-size: 13px;
+  }
+
+  .marketplace-version-label {
+    color: #6c7782;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
 
   .marketplace-badges {
@@ -1917,6 +1988,18 @@
     border: 1px solid #e8d2a8;
     background: #fff6e6;
     color: #8d5a00;
+  }
+
+  .state-badge.development {
+    border: 1px solid #dbc8f2;
+    background: #f6f0ff;
+    color: #69439b;
+  }
+
+  .state-badge.neutral {
+    border: 1px solid #d9dee3;
+    background: #f5f7f8;
+    color: #5f6a74;
   }
 
   .sidebar h2 {
