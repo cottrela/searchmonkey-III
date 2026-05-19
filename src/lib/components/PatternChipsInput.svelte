@@ -190,6 +190,7 @@
       bind:this={inputElement}
       bind:value={draft}
       {placeholder}
+      onblur={commitDraft}
       onkeydown={handleInputKeydown}
       onpaste={handlePaste}
       onfocus={() => (selectedIndex = null)}
