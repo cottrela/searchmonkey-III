@@ -118,6 +118,30 @@ struct PluginJob {
     run_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PluginSchedulerPolicy {
+    weight: usize,
+    max_consecutive_jobs: usize,
+}
+
+impl PluginSchedulerPolicy {
+    fn burst_limit(self) -> usize {
+        self.weight.max(1).min(self.max_consecutive_jobs.max(1))
+    }
+}
+
+#[derive(Debug, Default)]
+struct DefaultPluginQueue {
+    jobs: VecDeque<PluginJob>,
+    policy: Option<PluginSchedulerPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveDefaultPluginBurst {
+    plugin_id: String,
+    remaining: usize,
+}
+
 #[derive(Debug, Clone)]
 struct PluginRefresh {
     root: PathBuf,
@@ -141,14 +165,19 @@ struct RuntimeState {
     pending_refreshes: VecDeque<PluginRefresh>,
     queued_refreshes: HashSet<String>,
     active_refreshes: HashSet<String>,
-    user_jobs: VecDeque<PluginJob>,
-    default_jobs: VecDeque<PluginJob>,
+    user_immediate_jobs: VecDeque<PluginJob>,
+    user_jobs_by_plugin: HashMap<String, DefaultPluginQueue>,
+    user_plugin_order: VecDeque<String>,
+    active_user_plugin_burst: Option<ActiveDefaultPluginBurst>,
+    default_jobs_by_plugin: HashMap<String, DefaultPluginQueue>,
+    default_plugin_order: VecDeque<String>,
+    active_default_plugin_burst: Option<ActiveDefaultPluginBurst>,
     queued_user_jobs: HashSet<String>,
     queued_default_jobs: HashSet<String>,
     processing_jobs: HashSet<String>,
     paused: bool,
     scanner_running: bool,
-    worker_running: bool,
+    active_workers: usize,
 }
 
 struct RuntimeInner {
@@ -159,6 +188,7 @@ struct RuntimeInner {
     state_db: StateDb,
     search_active: AtomicUsize,
     run_counter: AtomicU64,
+    worker_count: usize,
 }
 
 #[derive(Clone)]
@@ -176,6 +206,7 @@ impl PluginIndexRuntime {
     pub fn new(plugin_roots: Vec<PathBuf>, index_roots: Vec<PathBuf>) -> Self {
         let state_db =
             StateDb::new(&index_roots).expect("plugin sqlite state database should initialize");
+        let worker_count = default_plugin_worker_count();
         let inner = Arc::new(RuntimeInner {
             state: Mutex::new(RuntimeState::default()),
             wake: Condvar::new(),
@@ -184,11 +215,12 @@ impl PluginIndexRuntime {
             state_db,
             search_active: AtomicUsize::new(0),
             run_counter: AtomicU64::new(RUN_COUNTER_START),
+            worker_count,
         });
 
         recover_queued_jobs(inner.clone());
         spawn_scanner_thread(inner.clone());
-        spawn_worker_thread(inner.clone());
+        spawn_worker_threads(inner.clone());
 
         Self { inner }
     }
@@ -199,6 +231,17 @@ impl PluginIndexRuntime {
 
     pub fn request_user_scan(&self, root: &Path) -> Result<()> {
         self.request_scan_in_lane(root, QueueLane::User)
+    }
+
+    fn request_all_scan_roots_in_lane(&self, lane: QueueLane) -> Result<()> {
+        let roots = self.inner.state_db.list_scan_roots()?;
+        for root in roots {
+            if !root.exists() {
+                continue;
+            }
+            self.request_scan_in_lane(&root, lane)?;
+        }
+        Ok(())
     }
 
     fn request_scan_in_lane(&self, root: &Path, lane: QueueLane) -> Result<()> {
@@ -311,10 +354,11 @@ impl PluginIndexRuntime {
             .expect("plugin runtime lock poisoned");
         let indexing_state = if state.paused {
             "paused"
-        } else if state.worker_running || state.scanner_running {
+        } else if state.active_workers > 0 || state.scanner_running {
             "running"
-        } else if !state.user_jobs.is_empty()
-            || !state.default_jobs.is_empty()
+        } else if !state.user_immediate_jobs.is_empty()
+            || has_default_jobs(state.user_jobs_by_plugin.values())
+            || has_default_jobs(state.default_jobs_by_plugin.values())
             || !state.pending_user_roots.is_empty()
             || !state.pending_default_roots.is_empty()
             || !state.pending_refreshes.is_empty()
@@ -324,10 +368,11 @@ impl PluginIndexRuntime {
             "idle"
         };
         let plugin_state = if state.paused
-            || (!state.worker_running
+            || (state.active_workers == 0
                 && !state.scanner_running
-                && state.user_jobs.is_empty()
-                && state.default_jobs.is_empty()
+                && state.user_immediate_jobs.is_empty()
+                && !has_default_jobs(state.user_jobs_by_plugin.values())
+                && !has_default_jobs(state.default_jobs_by_plugin.values())
                 && state.pending_user_roots.is_empty()
                 && state.pending_default_roots.is_empty()
                 && state.pending_refreshes.is_empty())
@@ -349,7 +394,7 @@ impl PluginIndexRuntime {
             paused: state.paused,
             search_active: self.inner.search_active.load(Ordering::SeqCst) > 0,
             scanner_running: state.scanner_running,
-            worker_running: state.worker_running,
+            worker_running: state.active_workers > 0,
             plugin_summaries: installed_plugins
                 .iter()
                 .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
@@ -424,8 +469,13 @@ impl PluginIndexRuntime {
             .state
             .lock()
             .expect("plugin runtime lock poisoned");
-        state.user_jobs.clear();
-        state.default_jobs.clear();
+        state.user_immediate_jobs.clear();
+        state.user_jobs_by_plugin.clear();
+        state.user_plugin_order.clear();
+        state.active_user_plugin_burst = None;
+        state.default_jobs_by_plugin.clear();
+        state.default_plugin_order.clear();
+        state.active_default_plugin_burst = None;
         state.queued_user_jobs.clear();
         state.queued_default_jobs.clear();
         state.processing_jobs.clear();
@@ -465,14 +515,14 @@ impl PluginIndexRuntime {
                 .state
                 .lock()
                 .expect("plugin runtime lock poisoned");
-            state.user_jobs.retain(|job| job.plugin_id != plugin_id);
-            state.default_jobs.retain(|job| job.plugin_id != plugin_id);
             state
                 .queued_user_jobs
                 .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
             state
                 .queued_default_jobs
                 .retain(|key| !key.ends_with(&format!("\0{plugin_id}")));
+            remove_user_jobs_for_plugin(&mut state, plugin_id);
+            remove_default_jobs_for_plugin(&mut state, plugin_id);
         }
 
         for row in &rows {
@@ -627,7 +677,7 @@ impl PluginIndexRuntime {
 
         self.inner.state_db.set_plugin_enabled(plugin_id, enabled)?;
         if enabled {
-            self.request_plugin_refresh(plugin_id)?;
+            self.request_all_scan_roots_in_lane(QueueLane::Default)?;
         } else {
             drop_runtime_jobs_for_plugin(&self.inner, plugin_id);
             self.reset_plugin_cache(plugin_id)?;
@@ -701,11 +751,12 @@ impl PluginIndexRuntime {
                 && state.active_roots.is_empty()
                 && state.pending_refreshes.is_empty()
                 && state.active_refreshes.is_empty()
-                && state.user_jobs.is_empty()
-                && state.default_jobs.is_empty()
+                && state.user_immediate_jobs.is_empty()
+                && !has_default_jobs(state.user_jobs_by_plugin.values())
+                && !has_default_jobs(state.default_jobs_by_plugin.values())
                 && state.processing_jobs.is_empty()
                 && !state.scanner_running
-                && !state.worker_running
+                && state.active_workers == 0
                 && !search_active;
             if idle {
                 return true;
@@ -857,19 +908,27 @@ fn recover_queued_jobs(inner: Arc<RuntimeInner>) {
     inner.wake.notify_all();
 }
 
-fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
-    thread::spawn(move || loop {
+fn spawn_worker_threads(inner: Arc<RuntimeInner>) {
+    for _ in 0..inner.worker_count {
+        let worker_inner = inner.clone();
+        thread::spawn(move || worker_loop(worker_inner));
+    }
+}
+
+fn worker_loop(inner: Arc<RuntimeInner>) {
+    loop {
         let job = {
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
             loop {
                 enqueue_due_retries(&inner, &mut state);
-                if (!state.user_jobs.is_empty() || !state.default_jobs.is_empty())
+                if (!state.user_immediate_jobs.is_empty()
+                    || has_default_jobs(state.user_jobs_by_plugin.values())
+                    || has_default_jobs(state.default_jobs_by_plugin.values()))
                     && !state.paused
                     && inner.search_active.load(Ordering::SeqCst) == 0
                 {
                     break;
                 }
-                state.worker_running = false;
                 let (next_state, _) = inner
                     .wake
                     .wait_timeout(state, RETRY_SWEEP_INTERVAL)
@@ -877,21 +936,22 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
                 state = next_state;
             }
 
-            let (job, key) = if let Some(job) = state.user_jobs.pop_front() {
+            let (job, key) = if let Some(job) = state.user_immediate_jobs.pop_front() {
+                let key = job_key(&job.source_path, &job.plugin_id);
+                state.queued_user_jobs.remove(&key);
+                (job, key)
+            } else if let Some(job) = pop_weighted_user_job(&mut state) {
                 let key = job_key(&job.source_path, &job.plugin_id);
                 state.queued_user_jobs.remove(&key);
                 (job, key)
             } else {
-                let job = state
-                    .default_jobs
-                    .pop_front()
-                    .expect("queued job disappeared");
+                let job = pop_weighted_default_job(&mut state).expect("queued job disappeared");
                 let key = job_key(&job.source_path, &job.plugin_id);
                 state.queued_default_jobs.remove(&key);
                 (job, key)
             };
             state.processing_jobs.insert(key);
-            state.worker_running = true;
+            state.active_workers += 1;
             job
         };
 
@@ -912,7 +972,7 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
 
             let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
             state.processing_jobs.remove(&job_key_value);
-            state.worker_running = false;
+            state.active_workers = state.active_workers.saturating_sub(1);
             inner.wake.notify_all();
             drop(state);
             thread::sleep(WORKER_DELAY);
@@ -992,11 +1052,11 @@ fn spawn_worker_thread(inner: Arc<RuntimeInner>) {
             }
         }
 
-        state.worker_running = false;
+        state.active_workers = state.active_workers.saturating_sub(1);
         inner.wake.notify_all();
         drop(state);
         thread::sleep(WORKER_DELAY);
-    });
+    }
 }
 
 fn enqueue_due_retries(inner: &Arc<RuntimeInner>, state: &mut RuntimeState) {
@@ -1038,7 +1098,7 @@ fn enqueue_pending_job(
         );
         return;
     };
-    let plugin_version = plugin.version;
+    let plugin_version = plugin.version.clone();
     let source_size = fs::metadata(&job.source_path)
         .map(|value| value.len() as i64)
         .unwrap_or(0);
@@ -1071,7 +1131,13 @@ fn enqueue_pending_job(
             job.attempts.saturating_sub(1),
         )
     };
-    enqueue_job_in_lane(state, job, key, lane);
+    enqueue_job_in_lane(
+        state,
+        job,
+        key,
+        lane,
+        Some(scheduler_policy_for_plugin(&plugin)),
+    );
 }
 
 fn scan_root(inner: &Arc<RuntimeInner>, root: &Path, lane: QueueLane) -> Result<usize> {
@@ -1366,8 +1432,11 @@ fn registered_plugin(
 fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
     let suffix = format!("\0{plugin_id}");
     let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
-    state.user_jobs.retain(|job| job.plugin_id != plugin_id);
-    state.default_jobs.retain(|job| job.plugin_id != plugin_id);
+    state
+        .user_immediate_jobs
+        .retain(|job| job.plugin_id != plugin_id);
+    remove_user_jobs_for_plugin(&mut state, plugin_id);
+    remove_default_jobs_for_plugin(&mut state, plugin_id);
     state.queued_user_jobs.retain(|key| !key.ends_with(&suffix));
     state
         .queued_default_jobs
@@ -1415,7 +1484,13 @@ fn remove_root_from_queue(queue: &mut VecDeque<PathBuf>, root: &Path) {
     }
 }
 
-fn enqueue_job_in_lane(state: &mut RuntimeState, job: PluginJob, key: String, lane: QueueLane) {
+fn enqueue_job_in_lane(
+    state: &mut RuntimeState,
+    job: PluginJob,
+    key: String,
+    lane: QueueLane,
+    policy: Option<PluginSchedulerPolicy>,
+) {
     match lane {
         QueueLane::UserImmediate => {
             if state.queued_user_jobs.contains(&key) {
@@ -1423,11 +1498,11 @@ fn enqueue_job_in_lane(state: &mut RuntimeState, job: PluginJob, key: String, la
             }
 
             if state.queued_default_jobs.remove(&key) {
-                remove_job_from_queue(&mut state.default_jobs, &key);
+                remove_default_job_from_queues(state, &key);
             }
 
             state.queued_user_jobs.insert(key);
-            state.user_jobs.push_front(job);
+            state.user_immediate_jobs.push_front(job);
         }
 
         QueueLane::User => {
@@ -1436,11 +1511,22 @@ fn enqueue_job_in_lane(state: &mut RuntimeState, job: PluginJob, key: String, la
             }
 
             if state.queued_default_jobs.remove(&key) {
-                remove_job_from_queue(&mut state.default_jobs, &key);
+                remove_default_job_from_queues(state, &key);
             }
 
             state.queued_user_jobs.insert(key);
-            state.user_jobs.push_back(job);
+            let plugin_id = job.plugin_id.clone();
+            let queue = state
+                .user_jobs_by_plugin
+                .entry(plugin_id.clone())
+                .or_default();
+            if queue.policy.is_none() {
+                queue.policy = policy.or_else(|| Some(default_scheduler_policy()));
+            }
+            queue.jobs.push_back(job);
+            if !state.user_plugin_order.iter().any(|entry| entry == &plugin_id) {
+                state.user_plugin_order.push_back(plugin_id);
+            }
         }
 
         QueueLane::Default => {
@@ -1449,7 +1535,18 @@ fn enqueue_job_in_lane(state: &mut RuntimeState, job: PluginJob, key: String, la
             }
 
             state.queued_default_jobs.insert(key);
-            state.default_jobs.push_back(job);
+            let plugin_id = job.plugin_id.clone();
+            let queue = state
+                .default_jobs_by_plugin
+                .entry(plugin_id.clone())
+                .or_default();
+            if queue.policy.is_none() {
+                queue.policy = policy.or_else(|| Some(default_scheduler_policy()));
+            }
+            queue.jobs.push_back(job);
+            if !state.default_plugin_order.iter().any(|entry| entry == &plugin_id) {
+                state.default_plugin_order.push_back(plugin_id);
+            }
         }
     }
 }
@@ -1458,19 +1555,236 @@ fn has_user_work(inner: &Arc<RuntimeInner>) -> bool {
     let state = inner.state.lock().expect("plugin runtime lock poisoned");
 
     !state.pending_user_roots.is_empty()
-        || !state.user_jobs.is_empty()
+        || !state.user_immediate_jobs.is_empty()
+        || has_default_jobs(state.user_jobs_by_plugin.values())
         || state
             .active_roots
             .values()
             .any(|lane| matches!(lane, QueueLane::User | QueueLane::UserImmediate))
 }
 
-fn remove_job_from_queue(queue: &mut VecDeque<PluginJob>, key: &str) {
-    if let Some(index) = queue
-        .iter()
-        .position(|job| job_key(&job.source_path, &job.plugin_id) == key)
+fn has_default_jobs<'a>(queues: impl IntoIterator<Item = &'a DefaultPluginQueue>) -> bool {
+    queues.into_iter().any(|queue| !queue.jobs.is_empty())
+}
+
+fn default_scheduler_policy() -> PluginSchedulerPolicy {
+    PluginSchedulerPolicy {
+        weight: 4,
+        max_consecutive_jobs: 8,
+    }
+}
+
+fn scheduler_policy_for_plugin(
+    plugin: &crate::plugins::registry::RegisteredPlugin,
+) -> PluginSchedulerPolicy {
+    if plugin.capabilities.ocr {
+        PluginSchedulerPolicy {
+            weight: 1,
+            max_consecutive_jobs: 1,
+        }
+    } else {
+        default_scheduler_policy()
+    }
+}
+
+fn remove_user_jobs_for_plugin(state: &mut RuntimeState, plugin_id: &str) {
+    remove_plugin_queue(
+        &mut state.user_jobs_by_plugin,
+        &mut state.user_plugin_order,
+        &mut state.active_user_plugin_burst,
+        plugin_id,
+    );
+}
+
+fn remove_default_job_from_queues(state: &mut RuntimeState, key: &str) {
+    remove_job_from_plugin_queues(&mut state.default_jobs_by_plugin, key);
+    prune_empty_plugin_queues(
+        &mut state.default_jobs_by_plugin,
+        &mut state.default_plugin_order,
+        &mut state.active_default_plugin_burst,
+    );
+}
+
+fn remove_default_jobs_for_plugin(state: &mut RuntimeState, plugin_id: &str) {
+    remove_plugin_queue(
+        &mut state.default_jobs_by_plugin,
+        &mut state.default_plugin_order,
+        &mut state.active_default_plugin_burst,
+        plugin_id,
+    );
+}
+
+fn remove_job_from_plugin_queues(
+    queues: &mut HashMap<String, DefaultPluginQueue>,
+    key: &str,
+) {
+    for queue in queues.values_mut() {
+        if let Some(index) = queue
+            .jobs
+            .iter()
+            .position(|job| job_key(&job.source_path, &job.plugin_id) == key)
+        {
+            queue.jobs.remove(index);
+            break;
+        }
+    }
+}
+
+fn remove_plugin_queue(
+    queues: &mut HashMap<String, DefaultPluginQueue>,
+    order: &mut VecDeque<String>,
+    active_burst: &mut Option<ActiveDefaultPluginBurst>,
+    plugin_id: &str,
+) {
+    queues.remove(plugin_id);
+    order.retain(|entry| entry != plugin_id);
+    if active_burst
+        .as_ref()
+        .is_some_and(|burst| burst.plugin_id == plugin_id)
     {
-        queue.remove(index);
+        *active_burst = None;
+    }
+}
+
+fn prune_empty_plugin_queues(
+    queues: &mut HashMap<String, DefaultPluginQueue>,
+    order: &mut VecDeque<String>,
+    active_burst: &mut Option<ActiveDefaultPluginBurst>,
+) {
+    let empty_plugins = queues
+        .iter()
+        .filter_map(|(plugin_id, queue)| {
+            if queue.jobs.is_empty() {
+                Some(plugin_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    for plugin_id in empty_plugins {
+        remove_plugin_queue(queues, order, active_burst, &plugin_id);
+    }
+}
+
+fn pop_weighted_plugin_job(
+    queues: &mut HashMap<String, DefaultPluginQueue>,
+    order: &mut VecDeque<String>,
+    active_burst: &mut Option<ActiveDefaultPluginBurst>,
+) -> Option<PluginJob> {
+    loop {
+        if let Some(active) = active_burst.clone() {
+            let plugin_id = active.plugin_id.clone();
+            let remaining = active.remaining.saturating_sub(1);
+            let (job, queue_empty) = if let Some(queue) = queues.get_mut(&plugin_id) {
+                if let Some(job) = queue.jobs.pop_front() {
+                    (Some(job), queue.jobs.is_empty())
+                } else {
+                    (None, true)
+                }
+            } else {
+                (None, true)
+            };
+
+            if let Some(job) = job {
+                if queue_empty {
+                    remove_plugin_queue(queues, order, active_burst, &plugin_id);
+                } else if remaining > 0 {
+                    *active_burst = Some(ActiveDefaultPluginBurst {
+                        plugin_id,
+                        remaining,
+                    });
+                } else {
+                    *active_burst = None;
+                    order.retain(|entry| entry != &plugin_id);
+                    order.push_back(plugin_id);
+                }
+
+                return Some(job);
+            }
+
+            *active_burst = None;
+            remove_plugin_queue(queues, order, active_burst, &plugin_id);
+        }
+
+        let plugin_id = order.pop_front()?;
+        let Some((queue_empty, burst_limit)) = queues
+            .get(&plugin_id)
+            .map(|queue| {
+                (
+                    queue.jobs.is_empty(),
+                    queue.policy
+                        .unwrap_or_else(default_scheduler_policy)
+                        .burst_limit(),
+                )
+            })
+        else {
+            continue;
+        };
+        if queue_empty {
+            remove_plugin_queue(queues, order, active_burst, &plugin_id);
+            continue;
+        }
+
+        *active_burst = Some(ActiveDefaultPluginBurst {
+            plugin_id,
+            remaining: burst_limit,
+        });
+    }
+}
+
+fn pop_weighted_default_job(state: &mut RuntimeState) -> Option<PluginJob> {
+    pop_weighted_plugin_job(
+        &mut state.default_jobs_by_plugin,
+        &mut state.default_plugin_order,
+        &mut state.active_default_plugin_burst,
+    )
+}
+
+fn pop_weighted_user_job(state: &mut RuntimeState) -> Option<PluginJob> {
+    pop_weighted_plugin_job(
+        &mut state.user_jobs_by_plugin,
+        &mut state.user_plugin_order,
+        &mut state.active_user_plugin_burst,
+    )
+}
+
+fn default_plugin_worker_count() -> usize {
+    #[cfg(target_os = "macos")]
+    if let Some(performance_cores) = macos_sysctl_usize("hw.perflevel0.physicalcpu") {
+        if performance_cores > 0 {
+            return performance_cores;
+        }
+    }
+
+    thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .max(1)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sysctl_usize(name: &str) -> Option<usize> {
+    use std::ffi::CString;
+    use std::mem::size_of;
+    use std::ptr::null_mut;
+
+    let name = CString::new(name).ok()?;
+    let mut value: u32 = 0;
+    let mut size = size_of::<u32>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+            null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && size == size_of::<u32>() {
+        Some(value as usize)
+    } else {
+        None
     }
 }
 
@@ -1640,14 +1954,23 @@ mod tests {
         let mut state = RuntimeState::default();
         let default = test_job("/tmp/default.pdf", "ocr");
         let default_key = job_key(&default.source_path, &default.plugin_id);
-        enqueue_job_in_lane(&mut state, default, default_key.clone(), QueueLane::Default);
+        enqueue_job_in_lane(
+            &mut state,
+            default,
+            default_key.clone(),
+            QueueLane::Default,
+            Some(PluginSchedulerPolicy {
+                weight: 1,
+                max_consecutive_jobs: 1,
+            }),
+        );
 
         let user = test_job("/tmp/user.pdf", "ocr");
         let user_key = job_key(&user.source_path, &user.plugin_id);
-        enqueue_job_in_lane(&mut state, user.clone(), user_key.clone(), QueueLane::User);
+        enqueue_job_in_lane(&mut state, user.clone(), user_key.clone(), QueueLane::User, None);
 
         assert_eq!(
-            state.user_jobs.front().map(|job| job.source_path.clone()),
+            pop_weighted_user_job(&mut state).map(|job| job.source_path),
             Some(user.source_path)
         );
         assert!(state.queued_user_jobs.contains(&user_key));
@@ -1660,15 +1983,24 @@ mod tests {
         let path = "/tmp/promoted.pdf";
         let default = test_job(path, "ocr");
         let key = job_key(&default.source_path, &default.plugin_id);
-        enqueue_job_in_lane(&mut state, default, key.clone(), QueueLane::Default);
+        enqueue_job_in_lane(
+            &mut state,
+            default,
+            key.clone(),
+            QueueLane::Default,
+            Some(PluginSchedulerPolicy {
+                weight: 1,
+                max_consecutive_jobs: 1,
+            }),
+        );
 
         let user = test_job(path, "ocr");
-        enqueue_job_in_lane(&mut state, user.clone(), key.clone(), QueueLane::User);
+        enqueue_job_in_lane(&mut state, user.clone(), key.clone(), QueueLane::User, None);
 
-        assert!(state.default_jobs.is_empty());
+        assert!(!has_default_jobs(state.default_jobs_by_plugin.values()));
         assert!(state.queued_default_jobs.is_empty());
         assert_eq!(
-            state.user_jobs.front().map(|job| job.source_path.clone()),
+            pop_weighted_user_job(&mut state).map(|job| job.source_path),
             Some(user.source_path)
         );
         assert!(state.queued_user_jobs.contains(&key));
@@ -1688,6 +2020,114 @@ mod tests {
     }
 
     #[test]
+    fn default_jobs_are_scheduled_in_weighted_plugin_bursts() {
+        let mut state = RuntimeState::default();
+        for index in 0..6 {
+            let job = test_job(&format!("/tmp/pdf-{index}.pdf"), "sm.plugin.pdf");
+            let key = job_key(&job.source_path, &job.plugin_id);
+            enqueue_job_in_lane(
+                &mut state,
+                job,
+                key,
+                QueueLane::Default,
+                Some(PluginSchedulerPolicy {
+                    weight: 4,
+                    max_consecutive_jobs: 8,
+                }),
+            );
+        }
+        for index in 0..2 {
+            let job = test_job(&format!("/tmp/ocr-{index}.png"), "sm.plugin.ocr");
+            let key = job_key(&job.source_path, &job.plugin_id);
+            enqueue_job_in_lane(
+                &mut state,
+                job,
+                key,
+                QueueLane::Default,
+                Some(PluginSchedulerPolicy {
+                    weight: 1,
+                    max_consecutive_jobs: 1,
+                }),
+            );
+        }
+
+        let actual = (0..7)
+            .map(|_| {
+                pop_weighted_default_job(&mut state)
+                    .expect("job should be queued")
+                    .plugin_id
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            actual,
+            vec![
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.ocr",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+            ]
+        );
+    }
+
+    #[test]
+    fn user_jobs_are_scheduled_in_weighted_plugin_bursts() {
+        let mut state = RuntimeState::default();
+        for index in 0..6 {
+            let job = test_job(&format!("/tmp/user-pdf-{index}.pdf"), "sm.plugin.pdf");
+            let key = job_key(&job.source_path, &job.plugin_id);
+            enqueue_job_in_lane(
+                &mut state,
+                job,
+                key,
+                QueueLane::User,
+                Some(PluginSchedulerPolicy {
+                    weight: 4,
+                    max_consecutive_jobs: 8,
+                }),
+            );
+        }
+        for index in 0..2 {
+            let job = test_job(&format!("/tmp/user-ocr-{index}.png"), "sm.plugin.ocr");
+            let key = job_key(&job.source_path, &job.plugin_id);
+            enqueue_job_in_lane(
+                &mut state,
+                job,
+                key,
+                QueueLane::User,
+                Some(PluginSchedulerPolicy {
+                    weight: 1,
+                    max_consecutive_jobs: 1,
+                }),
+            );
+        }
+
+        let actual = (0..7)
+            .map(|_| {
+                pop_weighted_user_job(&mut state)
+                    .expect("job should be queued")
+                    .plugin_id
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            actual,
+            vec![
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+                "sm.plugin.ocr",
+                "sm.plugin.pdf",
+                "sm.plugin.pdf",
+            ]
+        );
+    }
+
+    #[test]
     fn prune_missing_source_removes_db_row_and_cached_artifacts() {
         let temp = tempdir().unwrap();
         let index_root = temp.path().join("index");
@@ -1704,6 +2144,7 @@ mod tests {
             state_db: StateDb::new_with_path(&[index_root.clone()], state_db_path).unwrap(),
             search_active: AtomicUsize::new(0),
             run_counter: AtomicU64::new(RUN_COUNTER_START),
+            worker_count: 1,
         });
         let source_path = temp.path().join("missing.pdf");
 

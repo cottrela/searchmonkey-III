@@ -23,6 +23,13 @@
     pluginId: string;
     autoIgnored: boolean;
   };
+  type PendingConfirmation = {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    confirmTone?: 'danger' | 'default';
+    resolve: (confirmed: boolean) => void;
+  };
   let {
     status,
     selectedPluginId = null,
@@ -107,6 +114,7 @@
   let pendingMarketplaceInstalls = $state<Record<string, boolean>>({});
   let purchasesActionPending = $state<'start' | 'poll' | 'refresh' | 'disconnect' | null>(null);
   let purchaseEmail = $state('');
+  let pendingConfirmation = $state<PendingConfirmation | null>(null);
   let issueCountsRequestId = 0;
   let attentionIssuesRequestId = 0;
   let ignoredIssuesRequestId = 0;
@@ -608,7 +616,13 @@
 
   async function uninstallVersion(pluginId: string, version: string) {
     if (!onUninstallVersion) return;
-    if (!window.confirm(`Uninstall plugin version ${version}?`)) return;
+    const confirmed = await requestConfirmation({
+      title: 'Uninstall plugin version',
+      message: `Uninstall plugin version ${version}?`,
+      confirmLabel: 'Uninstall',
+      confirmTone: 'danger'
+    });
+    if (!confirmed) return;
     const key = versionKey(pluginId, version);
     if (pendingVersionUninstalls[key]) return;
     pendingVersionUninstalls = markPending(pendingVersionUninstalls, key, true);
@@ -757,7 +771,13 @@
 
   async function resetSelectedPlugin() {
     if (!selectedPlugin || !onResetPlugin) return;
-    if (!window.confirm(`Reset cached output for ${selectedPlugin.name}?`)) return;
+    const confirmed = await requestConfirmation({
+      title: 'Reset plugin cache',
+      message: `Reset cached output for ${selectedPlugin.name}?`,
+      confirmLabel: 'Reset',
+      confirmTone: 'danger'
+    });
+    if (!confirmed) return;
     await onResetPlugin(selectedPlugin.id);
   }
 
@@ -765,9 +785,12 @@
     if (!selectedPlugin || !onSetPluginEnabled) return;
     const nextEnabled = !selectedPlugin.enabled;
     if (!nextEnabled) {
-      const confirmed = window.confirm(
-        `Disable ${selectedPlugin.name}? This also clears its cached output so it stops affecting search results.`
-      );
+      const confirmed = await requestConfirmation({
+        title: 'Disable plugin',
+        message: `Disable ${selectedPlugin.name}? This also clears its cached output so it stops affecting search results.`,
+        confirmLabel: 'Disable',
+        confirmTone: 'danger'
+      });
       if (!confirmed) return;
     }
 
@@ -821,6 +844,24 @@
       document.removeEventListener('pointerdown', handlePointerDown, true);
     };
   });
+
+  function requestConfirmation(
+    options: Omit<PendingConfirmation, 'resolve'>
+  ): Promise<boolean> {
+    if (pendingConfirmation) {
+      pendingConfirmation.resolve(false);
+    }
+    return new Promise((resolve) => {
+      pendingConfirmation = { ...options, resolve };
+    });
+  }
+
+  function closeConfirmation(confirmed: boolean) {
+    if (!pendingConfirmation) return;
+    const { resolve } = pendingConfirmation;
+    pendingConfirmation = null;
+    resolve(confirmed);
+  }
 </script>
 
 <div class="modal-layer" role="presentation">
@@ -1484,6 +1525,27 @@
       {/if}
 
     </section>
+
+    {#if pendingConfirmation}
+      <div class="confirm-overlay" role="presentation">
+        <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="plugin-confirm-title">
+          <div class="confirm-copy">
+            <h3 id="plugin-confirm-title">{pendingConfirmation.title}</h3>
+            <p>{pendingConfirmation.message}</p>
+          </div>
+          <div class="confirm-actions">
+            <button type="button" class="secondary" onclick={() => closeConfirmation(false)}>Cancel</button>
+            <button
+              type="button"
+              class:danger={pendingConfirmation.confirmTone === 'danger'}
+              onclick={() => closeConfirmation(true)}
+            >
+              {pendingConfirmation.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -1517,6 +1579,49 @@
     background: #ffffff;
     box-shadow: 0 22px 44px rgba(27, 35, 42, 0.16);
     overflow: hidden;
+  }
+
+  .confirm-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(247, 250, 247, 0.68);
+    backdrop-filter: blur(2px);
+  }
+
+  .confirm-dialog {
+    display: grid;
+    gap: 18px;
+    width: min(420px, 100%);
+    padding: 22px;
+    border: 1px solid #d9e0d9;
+    border-radius: 14px;
+    background: #ffffff;
+    box-shadow: 0 18px 36px rgba(27, 35, 42, 0.16);
+  }
+
+  .confirm-copy {
+    display: grid;
+    gap: 8px;
+  }
+
+  .confirm-copy h3,
+  .confirm-copy p {
+    margin: 0;
+  }
+
+  .confirm-copy p {
+    color: #52606b;
+    line-height: 1.5;
+  }
+
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
   }
 
   .sidebar {
@@ -1791,7 +1896,8 @@
   }
 
   .linkish,
-  .secondary {
+  .secondary,
+  .confirm-actions button {
     border: 1px solid #d2dcd2;
     border-radius: 8px;
     padding: 8px 12px;
@@ -1809,6 +1915,12 @@
     text-decoration: underline;
     text-decoration-color: rgba(15, 107, 59, 0.35);
     text-underline-offset: 0.14em;
+  }
+
+  .confirm-actions .danger {
+    border-color: #d9b9b9;
+    background: #7d1f1f;
+    color: #fff;
   }
 
   .plugin-versions,
