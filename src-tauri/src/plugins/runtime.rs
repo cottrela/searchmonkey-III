@@ -244,6 +244,30 @@ impl PluginIndexRuntime {
         Ok(())
     }
 
+    fn restart_queued_work_from_scan_roots(&self, lane: QueueLane) -> Result<()> {
+        let roots = self.inner.state_db.list_scan_roots()?;
+        let canonical_roots = roots
+            .into_iter()
+            .filter(|root| root.exists())
+            .filter_map(|root| root.canonicalize().ok())
+            .collect::<Vec<_>>();
+
+        {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("plugin runtime lock poisoned");
+            clear_pending_runtime_work(&mut state);
+            for root in canonical_roots {
+                enqueue_root_restart(&mut state, root, lane);
+            }
+        }
+
+        self.inner.wake.notify_all();
+        Ok(())
+    }
+
     fn request_scan_in_lane(&self, root: &Path, lane: QueueLane) -> Result<()> {
         let root = root.canonicalize()?;
         self.inner.state_db.upsert_scan_root(&root)?;
@@ -660,7 +684,7 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
-        self.request_plugin_refresh(&installed.plugin_id)?;
+        self.restart_queued_work_from_scan_roots(QueueLane::Default)?;
         Ok((installed.plugin_id, installed.version, self.summary()))
     }
 
@@ -700,6 +724,7 @@ impl PluginIndexRuntime {
         self.inner
             .state_db
             .set_preferred_plugin_version(plugin_id, version)?;
+        self.restart_queued_work_from_scan_roots(QueueLane::Default)?;
         Ok(self.summary())
     }
 
@@ -1445,6 +1470,46 @@ fn drop_runtime_jobs_for_plugin(inner: &Arc<RuntimeInner>, plugin_id: &str) {
     inner.wake.notify_all();
 }
 
+fn clear_pending_runtime_work(state: &mut RuntimeState) {
+    state.user_immediate_jobs.clear();
+    state.user_jobs_by_plugin.clear();
+    state.user_plugin_order.clear();
+    state.active_user_plugin_burst = None;
+    state.default_jobs_by_plugin.clear();
+    state.default_plugin_order.clear();
+    state.active_default_plugin_burst = None;
+    state.queued_user_jobs.clear();
+    state.queued_default_jobs.clear();
+    state.pending_user_roots.clear();
+    state.pending_default_roots.clear();
+    state.queued_user_roots.clear();
+    state.queued_default_roots.clear();
+    state.pending_refreshes.clear();
+    state.queued_refreshes.clear();
+}
+
+fn enqueue_root_restart(state: &mut RuntimeState, root: PathBuf, lane: QueueLane) {
+    if state.active_roots.contains_key(&root) {
+        match lane {
+            QueueLane::UserImmediate | QueueLane::User => {
+                if state.queued_user_roots.insert(root.clone()) {
+                    state.pending_user_roots.push_back(root);
+                }
+            }
+            QueueLane::Default => {
+                if !state.queued_user_roots.contains(&root)
+                    && state.queued_default_roots.insert(root.clone())
+                {
+                    state.pending_default_roots.push_back(root);
+                }
+            }
+        }
+        return;
+    }
+
+    enqueue_root(state, root, lane);
+}
+
 fn enqueue_root(state: &mut RuntimeState, root: PathBuf, lane: QueueLane) {
     if let Some(active_lane) = state.active_roots.get(&root).copied() {
         if active_lane == QueueLane::Default
@@ -2017,6 +2082,18 @@ mod tests {
         assert!(state.queued_default_roots.is_empty());
         assert_eq!(state.pending_user_roots.front(), Some(&root));
         assert!(state.queued_user_roots.contains(&root));
+    }
+
+    #[test]
+    fn restart_scan_requeues_active_root_for_followup_pass() {
+        let mut state = RuntimeState::default();
+        let root = PathBuf::from("/tmp/restart-root");
+        state.active_roots.insert(root.clone(), QueueLane::Default);
+
+        enqueue_root_restart(&mut state, root.clone(), QueueLane::Default);
+
+        assert_eq!(state.pending_default_roots.front(), Some(&root));
+        assert!(state.queued_default_roots.contains(&root));
     }
 
     #[test]
