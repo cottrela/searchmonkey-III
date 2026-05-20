@@ -1,6 +1,6 @@
 use crate::app_auth::{MarketplacePluginSummary, PurchaseConnectionSummary};
 use crate::plugins::cache::{self, CacheStatus};
-use crate::plugins::classifier::{FileClassifier, FileKind};
+use crate::plugins::classifier::{has_ignored_path_component, FileClassifier, FileKind};
 use crate::plugins::failure_state::{classify_failure, remove_failure_state, FailureDisplay};
 use crate::plugins::index_paths::{
     default_index_roots, mirror_meta_path, mirror_meta_tmp_path, mirror_text_path,
@@ -1265,6 +1265,10 @@ fn mark_missing_for_root(inner: &Arc<RuntimeInner>, root: &Path, seen: &HashSet<
             continue;
         }
         let source_path = PathBuf::from(&row.source_path);
+        if has_ignored_path_component(&source_path) {
+            prune_missing_source(inner, &source_path, &row.plugin_id);
+            continue;
+        }
         if source_path.exists() {
             continue;
         }
@@ -1286,6 +1290,10 @@ fn prune_missing_source(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id
 
 fn scan_entry_allowed(entry: &DirEntry, plugin_roots: &[PathBuf], index_roots: &[PathBuf]) -> bool {
     let path = entry.path();
+
+    if has_ignored_path_component(path) {
+        return false;
+    }
 
     if plugin_roots.iter().any(|root| path.starts_with(root)) {
         return false;

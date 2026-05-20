@@ -27,6 +27,16 @@ pub struct FileClassifier {
     registered_extensions: std::collections::HashMap<String, String>,
 }
 
+pub fn has_ignored_path_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".noindex")
+    })
+}
+
 impl FileClassifier {
     pub fn new(registry: &PluginRegistry) -> Self {
         Self::with_known_text_extensions(
@@ -60,6 +70,10 @@ impl FileClassifier {
     }
 
     pub fn classify(&self, path: &Path) -> FileKind {
+        if has_ignored_path_component(path) {
+            return FileKind::Ignored;
+        }
+
         if self.is_in_plugin_root(path) {
             return self.classify_plugin_internal(path);
         }
@@ -154,7 +168,10 @@ pub fn meta_for_sm_text(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sm_text, meta_for_sm_text, source_for_sm_text, FileClassifier, FileKind};
+    use super::{
+        has_ignored_path_component, is_sm_text, meta_for_sm_text, source_for_sm_text,
+        FileClassifier, FileKind,
+    };
     use crate::plugins::registry::PluginRegistry;
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
@@ -228,5 +245,22 @@ mod tests {
             meta_for_sm_text(&path).unwrap(),
             PathBuf::from("/docs/report.pdf.sm.meta")
         );
+    }
+
+    #[test]
+    fn ignores_paths_inside_noindex_directories() {
+        let registry = PluginRegistry {
+            by_id: HashMap::new(),
+            versions_by_id: HashMap::new(),
+            by_extension: HashMap::from([(".jpg".to_string(), vec!["sm.plugin.jpg".to_string()])]),
+            ignored_paths: HashSet::new(),
+        };
+        let classifier = FileClassifier::new(&registry);
+        let path = PathBuf::from(
+            "/Users/acottrell/Library/Group Containers/vendor/OneDrive.noindex/photos/test.JPG",
+        );
+
+        assert!(has_ignored_path_component(&path));
+        assert_eq!(classifier.classify(&path), FileKind::Ignored);
     }
 }
