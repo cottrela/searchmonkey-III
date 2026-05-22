@@ -811,12 +811,16 @@
   }
 
   .preview-body {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-height: 0;
     padding: 14px;
     overflow: hidden;
   }
 
   .preview-scroll {
+    display: grid;
+    min-width: 0;
     min-height: 0;
   }
 
