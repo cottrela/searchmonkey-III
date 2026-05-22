@@ -1,18 +1,22 @@
 <script lang="ts">
-  import type { SearchState } from '$lib/types';
+  import type { PluginIndexSummary, SearchState } from '$lib/types';
 
   let {
     state,
     totalMatches,
     filesWithMatches,
     elapsedMs = 0,
-    errorMessage = ''
+    errorMessage = '',
+    pluginStatus = null,
+    onManagePlugins
   }: {
     state: SearchState;
     totalMatches: number;
     filesWithMatches: number;
     elapsedMs?: number;
     errorMessage?: string;
+    pluginStatus?: PluginIndexSummary | null;
+    onManagePlugins?: () => void;
   } = $props();
 
   const labels: Record<SearchState, string> = {
@@ -38,6 +42,24 @@
 
     return labels[state];
   });
+  const pluginSummary = $derived.by(() => {
+    if (!pluginStatus) return null;
+    const totals = pluginStatus.plugin_summaries.reduce(
+      (acc, summary) => {
+        acc.attention += summary.attention_count;
+        acc.processing += summary.processing_count;
+        acc.queued += summary.queued_count;
+        acc.blocked += summary.blocked_count;
+        return acc;
+      },
+      { attention: 0, processing: 0, queued: 0, blocked: 0 }
+    );
+    const tone = totals.blocked > 0 ? 'blocked' : totals.attention > 0 ? 'warning' : 'none';
+    return {
+      label: pluginStatus.paused ? 'Plugins: paused' : `Plugins: ${pluginStatus.plugin_state}`,
+      tone
+    };
+  });
 </script>
 
 <footer
@@ -57,10 +79,25 @@
   <div class="metrics">
     <span>{matchLabel}</span>
     <span>{filesWithMatches} files</span>
+    {#if pluginSummary}
+      <button type="button" class="plugin-summary" onclick={onManagePlugins}>
+        <span>{pluginSummary.label}</span>
+        {#if pluginSummary.tone !== 'none'}
+          <span
+            class:warning={pluginSummary.tone === 'warning'}
+            class:blocked={pluginSummary.tone === 'blocked'}
+            class="plugin-triangle"
+            aria-hidden="true"
+          >
+            ▲
+          </span>
+        {/if}
+      </button>
+    {/if}
     {#if state === 'starting' || state === 'running' || state === 'cancelling'}
       <span>Scanning current files</span>
     {/if}
-    <span class="tagline">No index. No daemon. No stale results.</span>
+    <span class="tagline">Fast local search powered by rigrep.</span>
   </div>
 </footer>
 
@@ -96,9 +133,47 @@
     padding-left: 8px;
   }
 
+  .metrics > * + * {
+    border-left: 1px solid var(--border);
+    padding-left: 8px;
+  }
+
   .metrics span {
     color: #7d8790;
     font-weight: 550;
+  }
+
+  .plugin-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    padding: 0 0 0 8px;
+    color: #7d8790;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 550;
+    transition: color 120ms ease;
+  }
+
+  .plugin-summary:hover {
+    color: var(--accent-strong);
+  }
+
+  .plugin-triangle {
+    font-size: 10px;
+    line-height: 1;
+    opacity: 0.8;
+  }
+
+  .plugin-triangle.warning {
+    color: #c27a15;
+  }
+
+  .plugin-triangle.blocked {
+    color: #c24b3a;
   }
 
   .tagline {

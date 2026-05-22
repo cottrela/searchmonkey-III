@@ -5,6 +5,7 @@
   import { filename, parentPath } from '$lib/paths';
 
   type Segment = {
+    kind: 'text';
     text: string;
     match: boolean;
     active: boolean;
@@ -16,11 +17,21 @@
     isMatch: boolean;
     isActive: boolean;
     matchRanges: Array<{ start: number; end: number }>;
+    pageBreaks: Array<{ page?: number | null; label?: string | null }>;
   };
 
-  type RenderLine = SourceLine & {
-    segments: Segment[];
-  };
+  type RenderLine =
+    | (SourceLine & {
+        key: string;
+        kind: 'text';
+        segments: Segment[];
+      })
+    | {
+        key: string;
+        kind: 'page-break';
+        pageNumber: number;
+        label: string;
+      };
 
   const WRAP_LIMIT = 50_000;
 
@@ -30,6 +41,7 @@
     activeFileMatchNumber,
     activeFileMatchTotal,
     canNavigateFiles,
+    reindexingPaths,
     drilldown = false,
     onPrevious,
     onNext,
@@ -38,6 +50,7 @@
     onSelect,
     onOpen,
     onReveal,
+    onReindex,
     onClose
   }: {
     preview: PreviewState;
@@ -45,6 +58,7 @@
     activeFileMatchNumber: number;
     activeFileMatchTotal: number;
     canNavigateFiles: boolean;
+    reindexingPaths: Set<string>;
     drilldown?: boolean;
     onPrevious: () => void;
     onNext: () => void;
@@ -53,6 +67,7 @@
     onSelect: (match: PreviewState['matches'][number]) => void;
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
+    onReindex: (match: PreviewState['matches'][number]) => void;
     onClose: () => void;
   } = $props();
 
@@ -60,6 +75,20 @@
   let previewPanelElement = $state<HTMLElement>();
   let lastScrolledTarget = '';
   let wrapLines = $state(false);
+
+  const IMAGE_EXTENSIONS = new Set([
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+    'tif',
+    'tiff',
+    'avif',
+    'heic',
+    'heif'
+  ]);
 
   const canNavigateMatches = $derived(activeFileMatchTotal > 1);
 
@@ -71,18 +100,20 @@
   );
   const canWrap = $derived(previewTextLength < WRAP_LIMIT);
   const effectiveWrap = $derived(wrapLines && canWrap);
-  const renderLines = $derived.by(() =>
-    sourceLines.map((line) => ({
-      ...line,
-      segments: splitLine(line.text, line.matchRanges, line.isActive)
-    }))
-  );
+  const renderLines = $derived.by(() => buildRenderLines(sourceLines));
   const activeMatchText = $derived(preview.activeMatch?.line_text ?? '');
+  const activeMatchReindexing = $derived(Boolean(preview.activeMatch && reindexingPaths.has(preview.activeMatch.path)));
+  const previewIsImage = $derived.by(() => isImagePath(preview.thumbnailPath));
   const activeMatchOnly = $derived.by(() => {
     const match = preview.activeMatch;
     if (!match?.submatches.length) return activeMatchText;
     return match.submatches.map((range) => match.line_text.slice(range.start, range.end)).join(' ');
   });
+
+  function isImagePath(filePath: string) {
+    const extension = filePath.split('.').at(-1)?.toLowerCase() ?? '';
+    return IMAGE_EXTENSIONS.has(extension);
+  }
 
   function buildSourceLines(
     filePreview: PreviewState['filePreview'],
@@ -107,7 +138,8 @@
         text: line.text,
         isMatch: matchesByLine.has(line.number),
         isActive: active?.line_number === line.number,
-        matchRanges: mergeMatchRanges(matchesByLine.get(line.number) ?? [])
+        matchRanges: mergeMatchRanges(matchesByLine.get(line.number) ?? []),
+        pageBreaks: line.page_breaks ?? []
       })) ?? []
     );
   }
@@ -131,12 +163,64 @@
     return merged;
   }
 
-  function splitLine(
+  function buildRenderLines(lines: SourceLine[]): RenderLine[] {
+    const rendered: RenderLine[] = [];
+
+    for (const line of lines) {
+      const { lines: splitLines } = splitLine(line);
+      rendered.push(...splitLines);
+    }
+
+    return rendered;
+  }
+
+  function splitLine(line: SourceLine): { lines: RenderLine[] } {
+    const pieces = line.text.split('\f');
+    const rendered: RenderLine[] = [];
+    let pieceStart = 0;
+
+    for (let index = 0; index < pieces.length; index += 1) {
+      const piece = pieces[index];
+      const pieceEnd = pieceStart + piece.length;
+      rendered.push({
+        ...line,
+        key: `${line.number}:${index}`,
+        kind: 'text',
+        text: piece,
+        segments: splitTextSegment(
+          piece,
+          line.matchRanges
+            .map((range) => ({
+              start: Math.max(range.start, pieceStart) - pieceStart,
+              end: Math.min(range.end, pieceEnd) - pieceStart
+            }))
+            .filter((range) => range.start < range.end),
+          line.isActive
+        )
+      });
+
+      if (index < pieces.length - 1) {
+        const pageBreak = line.pageBreaks[index];
+        rendered.push({
+          key: `${line.number}:page:${index}`,
+          kind: 'page-break',
+          pageNumber: pageBreak?.page ?? 0,
+          label: pageBreak?.label ?? (pageBreak?.page ? `Page ${pageBreak.page}` : 'Page break')
+        });
+      }
+
+      pieceStart = pieceEnd + 1;
+    }
+
+    return { lines: rendered };
+  }
+
+  function splitTextSegment(
     text: string,
     matchRanges: Array<{ start: number; end: number }>,
     active: boolean
   ): Segment[] {
-    if (!matchRanges.length) return [{ text, match: false, active }];
+    if (!matchRanges.length) return [{ kind: 'text', text, match: false, active }];
 
     const segments: Segment[] = [];
     let cursor = 0;
@@ -150,10 +234,11 @@
       }
 
       if (start > cursor) {
-        segments.push({ text: text.slice(cursor, start), match: false, active });
+        segments.push({ kind: 'text', text: text.slice(cursor, start), match: false, active });
       }
 
       segments.push({
+        kind: 'text',
         text: text.slice(Math.max(start, cursor), end),
         match: true,
         active
@@ -162,10 +247,10 @@
     }
 
     if (cursor < text.length) {
-      segments.push({ text: text.slice(cursor), match: false, active });
+      segments.push({ kind: 'text', text: text.slice(cursor), match: false, active });
     }
 
-    return segments.length ? segments : [{ text, match: false, active }];
+    return segments.length ? segments : [{ kind: 'text', text, match: false, active }];
   }
 
   function selectLineMatch(lineNumber: number) {
@@ -258,6 +343,7 @@
       activeLine.scrollIntoView({ block: 'center' });
     });
   });
+
 </script>
 
 <aside bind:this={previewPanelElement} class="preview-panel" class:drilldown aria-label="Match preview">
@@ -329,6 +415,17 @@
       <div class="desktop-preview-file">
         <div class="desktop-preview-title">
           <h2 title={preview.filePath}>{filename(preview.filePath)}</h2>
+          {#if preview.activeMatch && (preview.activeMatch.meta_outdated || activeMatchReindexing)}
+            <button
+              type="button"
+              class="meta-hint"
+              onclick={() => preview.activeMatch && onReindex(preview.activeMatch)}
+              disabled={activeMatchReindexing}
+              title={activeMatchReindexing ? 'Re-index request queued' : 'Re-index this file'}
+            >
+              {activeMatchReindexing ? 'Queued for re-index' : 'Re-index file?'}
+            </button>
+          {/if}
         </div>
         <div class="desktop-preview-path" title={parentPath(preview.filePath)}>
           {parentPath(preview.filePath)}
@@ -374,37 +471,44 @@
       {#if !canWrap}
         <div class="wrap-message">Line wrapping is disabled for previews over 50,000 characters.</div>
       {/if}
-      {#if preview.filePreview}
-        <div
-          bind:this={previewElement}
-          class="preview"
-          class:wrap={effectiveWrap}
-        >
-          {#each renderLines as line (line.number)}
-            {#if line.isMatch}
-              <div
-                class="line"
-                role="button"
-                tabindex="0"
-                data-match="true"
-                data-active-match={line.isActive ? 'true' : undefined}
-                onclick={() => selectLineMatch(line.number)}
-                onkeydown={(event) => handleLineKeydown(event, line.number)}
-              >
-                <span class="gutter">{line.number}</span>
-                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
-              </div>
-            {:else}
-              <div class="line">
-                <span class="gutter">{line.number}</span>
-                <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
-              </div>
-            {/if}
-          {/each}
-        </div>
-      {:else}
-        <div class="empty inline">Reading file...</div>
-      {/if}
+      <div class="preview-scroll">
+        {#if preview.filePreview}
+          <div
+            bind:this={previewElement}
+            class="preview"
+            class:wrap={effectiveWrap}
+          >
+            {#each renderLines as line (line.key)}
+              {#if line.kind === 'page-break'}
+                <div class="page-break-line" aria-hidden="true">
+                  <span class="page-break-gutter"></span>
+                  <code class="source"><span class="page-break">──────── {line.label} ────────</span></code>
+                </div>
+              {:else if line.isMatch}
+                <div
+                  class="line"
+                  role="button"
+                  tabindex="0"
+                  data-match="true"
+                  data-active-match={line.isActive ? 'true' : undefined}
+                  onclick={() => selectLineMatch(line.number)}
+                  onkeydown={(event) => handleLineKeydown(event, line.number)}
+                >
+                  <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
+                  <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+                </div>
+              {:else}
+                <div class="line">
+                  <span class="gutter" aria-hidden="true" data-line-number={line.number}></span>
+                  <code class="source">{#each line.segments as segment}{#if segment.match}<span class:active={segment.active} class="match">{segment.text}</span>{:else}<span>{segment.text}</span>{/if}{/each}</code>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {:else}
+          <div class="empty inline">Reading file...</div>
+        {/if}
+      </div>
 
       <div class="mobile-match-nav">
         <button class="file-nav-button" type="button" onclick={onPreviousFile} disabled={!canNavigateFiles} title="Previous file"><span class="nav-label-full">‹ File</span><span class="nav-label-short">‹</span></button>
@@ -453,8 +557,32 @@
   .desktop-preview-title {
     display: flex;
     min-width: 0;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
+  }
+
+  .meta-hint {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    border: 0;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.18em;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .meta-hint:hover,
+  .meta-hint:focus-visible {
+    color: var(--text);
+    outline: none;
   }
 
   h2 {
@@ -684,9 +812,16 @@
 
   .preview-body {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-height: 0;
     padding: 14px;
+    overflow: hidden;
+  }
+
+  .preview-scroll {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
   }
 
   .wrap-message {
@@ -697,6 +832,8 @@
   }
 
   .preview {
+    flex: 1 1 auto;
+    min-height: 0;
     margin: 12px 0 0;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -732,6 +869,10 @@
     user-select: none;
   }
 
+  .gutter::before {
+    content: attr(data-line-number);
+  }
+
   .line[data-active-match='true'] {
     background: var(--highlight-row);
     outline: 1px solid #c78413;
@@ -754,12 +895,28 @@
     background: var(--highlight-row-soft);
   }
 
+  .page-break-line {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    min-width: max-content;
+    min-height: 17px;
+  }
+
+  .page-break-gutter {
+    border-right: 1px solid var(--border-subtle);
+    background: #edf2f0;
+  }
+
   .source {
     padding: 0 8px;
     overflow-wrap: normal;
     white-space: pre;
     word-break: normal;
     user-select: text;
+  }
+
+  .page-break {
+    color: var(--muted);
   }
 
   .preview.wrap .line {
@@ -908,7 +1065,6 @@
     }
 
     .preview-body {
-      grid-template-rows: minmax(0, 1fr) auto;
       padding: 8px;
     }
 

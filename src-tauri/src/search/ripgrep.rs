@@ -1,10 +1,18 @@
 use super::{debug_logging_enabled, SearchMatch, SearchProvider, SearchRequest, SearchSubmatch};
+use crate::plugins::{
+    index_paths::{default_index_roots, mirror_search_path},
+    registry::PluginRegistry,
+    result_mapper,
+    search_filter::SearchFilter,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use globset::{Glob, GlobMatcher};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 #[cfg(windows)]
@@ -15,16 +23,45 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct RipgrepSidecarProvider {
     _app_handle: tauri::AppHandle,
+    plugin_registry: Arc<PluginRegistry>,
+}
+
+#[derive(Clone, Default)]
+pub struct ResultPathFilter {
+    search_root: PathBuf,
+    include_patterns: Vec<CompiledGlobPattern>,
+    exclude_patterns: Vec<CompiledGlobPattern>,
+}
+
+#[derive(Clone)]
+struct CompiledGlobPattern {
+    matcher: GlobMatcher,
+    basename_only: bool,
 }
 
 impl RipgrepSidecarProvider {
     pub fn new(app_handle: tauri::AppHandle) -> Self {
+        let discovery = PluginRegistry::discover_default().unwrap_or_default();
+        if debug_logging_enabled() {
+            for issue in &discovery.issues {
+                eprintln!(
+                    "searchmonkey plugin discovery issue: {}: {}",
+                    issue.manifest_path.display(),
+                    issue.message
+                );
+            }
+        }
         Self {
             _app_handle: app_handle,
+            plugin_registry: Arc::new(discovery.registry),
         }
     }
 
-    pub fn args(request: SearchRequest) -> Vec<String> {
+    pub fn plugin_registry(&self) -> Arc<PluginRegistry> {
+        self.plugin_registry.clone()
+    }
+
+    pub fn args(request: SearchRequest, plugin_registry: &PluginRegistry) -> Vec<String> {
         let mut args = vec![
             "--json".to_string(),
             "--line-number".to_string(),
@@ -63,15 +100,21 @@ impl RipgrepSidecarProvider {
             ignore_build_artifacts,
             ..
         } = request;
+        let path = expand_search_path(&path);
+        let include_patterns = include_patterns
+            .into_iter()
+            .map(normalize_glob_pattern)
+            .collect::<Vec<_>>();
+        let exclude_patterns = exclude_patterns
+            .into_iter()
+            .map(normalize_glob_pattern)
+            .collect::<Vec<_>>();
 
-        for pattern in include_patterns {
-            args.push("--glob".to_string());
-            args.push(normalize_glob_pattern(pattern));
-        }
+        let plugin_filter = SearchFilter::for_search_root(Path::new(&path), plugin_registry);
 
-        for pattern in exclude_patterns {
+        for pattern in &exclude_patterns {
             args.push("--glob".to_string());
-            args.push(format!("!{}", normalize_glob_pattern(pattern)));
+            args.push(format!("!{pattern}"));
         }
 
         if ignore_node_modules {
@@ -126,15 +169,31 @@ impl RipgrepSidecarProvider {
             args.push("--no-ignore".to_string());
         }
 
+        plugin_filter.apply_to_args(&mut args);
         args.push(query);
-        args.push(path);
+        args.push(path.clone());
+        let mut mirror_paths = Vec::new();
+        for index_root in default_index_roots() {
+            let mirror_path = mirror_search_path(&index_root, Path::new(&path));
+            if mirror_path.exists() {
+                mirror_paths.push(mirror_path.to_string_lossy().to_string());
+                args.push(mirror_path.to_string_lossy().to_string());
+            }
+        }
+
+        if debug_logging_enabled() {
+            eprintln!(
+                "searchmonkey rg request: path={} include_patterns={:?} exclude_patterns={:?} mirror_paths={:?}",
+                path, include_patterns, exclude_patterns, mirror_paths
+            );
+        }
 
         args
     }
 
     pub fn spawn(&self, request: SearchRequest) -> Result<Child> {
         let program = sidecar_path("rg")?;
-        let args = Self::args(request);
+        let args = Self::args(request, &self.plugin_registry);
 
         if debug_logging_enabled() {
             eprintln!(
@@ -189,15 +248,27 @@ impl RipgrepSidecarProvider {
             .as_array()
             .map(|items| parse_submatches(items, &line_text))
             .unwrap_or_default();
+        let first_byte_offset = data["submatches"]
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item["start"].as_u64());
+        let absolute_offset = data["absolute_offset"]
+            .as_u64()
+            .map(|offset| offset + first_byte_offset.unwrap_or(0));
 
         Some(SearchMatch {
             path: data["path"]["text"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
+            preview_path: None,
+            display_context: None,
+            plugin_id: None,
+            meta_outdated: None,
             line_number: data["line_number"].as_u64().unwrap_or(0),
             line_text,
             submatches,
+            absolute_offset,
             file_size: None,
             modified_secs: None,
         })
@@ -323,6 +394,7 @@ where
 impl SearchProvider for RipgrepSidecarProvider {
     async fn search(&self, request: SearchRequest) -> Result<Vec<SearchMatch>> {
         let modified_after = request.modified_after;
+        let result_path_filter = ResultPathFilter::from_request(&request);
         let mut child = self.spawn(request)?;
         let mut matches = Vec::new();
 
@@ -331,7 +403,15 @@ impl SearchProvider for RipgrepSidecarProvider {
 
             for line in reader.split(b'\n') {
                 let line = line?;
-                if let Some(mut result) = Self::parse_match(&line) {
+                if let Some(result) = Self::parse_match(&line) {
+                    let Some(mut result) =
+                        result_mapper::map_search_match(result, &self.plugin_registry)
+                    else {
+                        continue;
+                    };
+                    if !result_path_filter.matches_path(Path::new(&result.path)) {
+                        continue;
+                    }
                     add_file_metadata(&mut result);
                     if !matches_modified_filter(&result, modified_after) {
                         continue;
@@ -378,4 +458,183 @@ pub fn sidecar_path(program: &str) -> Result<PathBuf> {
 
 fn normalize_glob_pattern(pattern: String) -> String {
     pattern.replace('\\', "/")
+}
+
+impl ResultPathFilter {
+    pub fn from_request(request: &SearchRequest) -> Self {
+        let expanded_path = expand_search_path(&request.path);
+        let search_root = filter_root(Path::new(&expanded_path)).to_path_buf();
+
+        Self {
+            search_root,
+            include_patterns: compile_glob_patterns(&request.include_patterns),
+            exclude_patterns: compile_glob_patterns(&request.exclude_patterns),
+        }
+    }
+
+    pub fn matches_path(&self, path: &Path) -> bool {
+        let include_matches = self.include_patterns.is_empty()
+            || self
+                .include_patterns
+                .iter()
+                .any(|pattern| pattern.matches(path, &self.search_root));
+        if !include_matches {
+            return false;
+        }
+
+        !self
+            .exclude_patterns
+            .iter()
+            .any(|pattern| pattern.matches(path, &self.search_root))
+    }
+
+    pub fn debug_summary(&self) -> String {
+        format!(
+            "search_root={} include_count={} exclude_count={}",
+            self.search_root.display(),
+            self.include_patterns.len(),
+            self.exclude_patterns.len()
+        )
+    }
+}
+
+impl CompiledGlobPattern {
+    fn matches(&self, path: &Path, search_root: &Path) -> bool {
+        let absolute = normalize_path_for_matching(path);
+        let basename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.replace('\\', "/"));
+        let relative = path
+            .strip_prefix(search_root)
+            .ok()
+            .map(normalize_path_for_matching);
+
+        if self.basename_only {
+            return basename
+                .as_deref()
+                .is_some_and(|candidate| self.matcher.is_match(candidate));
+        }
+
+        relative
+            .as_deref()
+            .is_some_and(|candidate| self.matcher.is_match(candidate))
+            || self.matcher.is_match(&absolute)
+    }
+}
+
+fn compile_glob_patterns(patterns: &[String]) -> Vec<CompiledGlobPattern> {
+    patterns
+        .iter()
+        .filter_map(|pattern| {
+            let normalized = normalize_glob_pattern(pattern.clone());
+            let matcher = Glob::new(&normalized).ok()?.compile_matcher();
+            Some(CompiledGlobPattern {
+                matcher,
+                basename_only: !normalized.contains('/'),
+            })
+        })
+        .collect()
+}
+
+fn filter_root(path: &Path) -> &Path {
+    if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    }
+}
+
+fn normalize_path_for_matching(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn expand_search_path(path: &str) -> String {
+    if path == "~" {
+        return home_dir().unwrap_or_else(|| path.to_string());
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home_dir()
+            .map(|home| Path::new(&home).join(rest).to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+    }
+
+    path.to_string()
+}
+
+fn home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expand_search_path, ResultPathFilter};
+    use crate::search::SearchRequest;
+    use std::path::Path;
+
+    #[test]
+    fn expands_tilde_search_path() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        assert_eq!(expand_search_path("~"), home);
+        assert!(expand_search_path("~/sm-test").ends_with("/sm-test"));
+    }
+
+    #[test]
+    fn includes_match_source_extension_after_remap() {
+        let filter = ResultPathFilter::from_request(&SearchRequest {
+            query: "needle".to_string(),
+            path: "/Users/acottrell/ocr-test".to_string(),
+            regex: false,
+            case_sensitive: false,
+            hidden: false,
+            include_patterns: vec!["*.jpg".to_string()],
+            exclude_patterns: vec![],
+            follow_symlinks: false,
+            multiline: false,
+            context_lines: 0,
+            min_file_size: String::new(),
+            max_file_size: String::new(),
+            modified_after: None,
+            skip_binary: false,
+            encoding: "auto".to_string(),
+            max_matches: None,
+            respect_gitignore: true,
+            ignore_node_modules: false,
+            ignore_build_artifacts: false,
+        });
+
+        assert!(filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.jpg")));
+        assert!(!filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.png")));
+    }
+
+    #[test]
+    fn excludes_are_applied_to_source_paths() {
+        let filter = ResultPathFilter::from_request(&SearchRequest {
+            query: "needle".to_string(),
+            path: "/Users/acottrell/ocr-test".to_string(),
+            regex: false,
+            case_sensitive: false,
+            hidden: false,
+            include_patterns: vec![],
+            exclude_patterns: vec!["*.jpg".to_string()],
+            follow_symlinks: false,
+            multiline: false,
+            context_lines: 0,
+            min_file_size: String::new(),
+            max_file_size: String::new(),
+            modified_after: None,
+            skip_binary: false,
+            encoding: "auto".to_string(),
+            max_matches: None,
+            respect_gitignore: true,
+            ignore_node_modules: false,
+            ignore_build_artifacts: false,
+        });
+
+        assert!(!filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.jpg")));
+        assert!(filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.png")));
+    }
 }

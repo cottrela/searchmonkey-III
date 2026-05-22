@@ -2,6 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   FilePreview,
+  InstallPluginResult,
+  PluginIndexSummary,
+  PluginIssue,
+  PluginIssueCount,
   SearchBufferUpdatedEvent,
   SearchMatch,
   SearchRequest,
@@ -67,4 +71,105 @@ export async function cancelSearch(searchId: number): Promise<void> {
 
 export async function clearSearch(searchId: number): Promise<void> {
   return invoke<void>('clear_search', { searchId });
+}
+
+export async function getPluginIndexSummary(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('get_plugin_index_summary');
+}
+
+export async function getPluginIssueCounts(pluginId: string): Promise<PluginIssueCount[]> {
+  return invoke<PluginIssueCount[]>('get_plugin_issue_counts', { pluginId });
+}
+
+export async function getPluginIssues(
+  pluginId: string,
+  status?: string | null,
+  errorCode?: string | null,
+  limit = 25
+): Promise<PluginIssue[]> {
+  return invoke<PluginIssue[]>('get_plugin_issues', { pluginId, status, errorCode, limit });
+}
+
+export async function setPluginIndexPaused(paused: boolean): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_index_paused', { paused });
+}
+
+export async function rebuildPluginIndex(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('rebuild_plugin_index');
+}
+
+export async function refreshPluginSupportedFiles(pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('refresh_plugin_supported_files', { pluginId });
+}
+
+export async function pluginFolderPath(): Promise<string> {
+  return invoke<string>('plugin_folder_path');
+}
+
+export async function installPluginPackage(archivePath: string): Promise<InstallPluginResult> {
+  return invoke<InstallPluginResult>('install_plugin_package', { archivePath });
+}
+
+export async function queuePluginScan(path: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('queue_plugin_scan', { path });
+}
+
+export async function resetPluginCache(pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('reset_plugin_cache', { pluginId });
+}
+
+export async function ignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('ignore_plugin_issue', { path, pluginId });
+}
+
+export async function unignorePluginIssue(path: string, pluginId: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('unignore_plugin_issue', { path, pluginId });
+}
+
+export async function retryPluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('retry_plugin_issue_type', { pluginId, errorCode });
+}
+
+export async function ignorePluginIssueType(pluginId: string, errorCode: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('ignore_plugin_issue_type', { pluginId, errorCode });
+}
+
+export async function setPluginIssueTypeAutoIgnore(
+  pluginId: string,
+  errorCode: string,
+  enabled: boolean
+): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_issue_type_auto_ignore', { pluginId, errorCode, enabled });
+}
+
+export async function setActivePluginVersion(pluginId: string, version: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_active_plugin_version', { pluginId, version });
+}
+
+export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('set_plugin_enabled', { pluginId, enabled });
+}
+
+export async function uninstallPluginVersion(pluginId: string, version: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('uninstall_plugin_version', { pluginId, version });
+}
+
+export async function refreshPurchaseEntitlements(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('refresh_purchase_entitlements');
+}
+
+export async function startPurchaseEmailVerification(email: string): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('start_purchase_email_verification', { email });
+}
+
+export async function pollPurchaseConnection(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('poll_purchase_connection');
+}
+
+export async function disconnectPurchaseConnection(): Promise<PluginIndexSummary> {
+  return invoke<PluginIndexSummary>('disconnect_purchase_connection');
+}
+
+export async function installPurchasedPlugin(pluginId: string): Promise<InstallPluginResult> {
+  return invoke<InstallPluginResult>('install_purchased_plugin', { pluginId });
 }

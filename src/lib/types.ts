@@ -22,9 +22,14 @@ export type SearchRequest = {
 
 export type SearchMatch = {
   path: string;
+  preview_path?: string | null;
+  display_context?: string | null;
+  plugin_id?: string | null;
+  meta_outdated?: boolean | null;
   line_number: number;
   line_text: string;
   submatches: SearchSubmatch[];
+  absolute_offset?: number | null;
   file_size: number | null;
   modified_secs: number | null;
 };
@@ -66,6 +71,12 @@ export type FilePreviewLine = {
   text: string;
   is_match: boolean;
   match_ranges: SearchSubmatch[];
+  page_breaks?: FilePreviewPageBreak[];
+};
+
+export type FilePreviewPageBreak = {
+  page?: number | null;
+  label?: string | null;
 };
 
 export type SearchMode = 'literal' | 'regex';
@@ -151,8 +162,116 @@ export type FileResultGroup = {
 
 export type PreviewState = {
   filePath: string;
+  thumbnailPath: string;
   filePreview: FilePreview | null;
   matches: SearchMatch[];
   activeMatchIndex: number;
   activeMatch: SearchMatch | null;
+};
+
+export type PluginCapabilitySummary = {
+  text: boolean;
+  layout: boolean;
+  ocr: boolean;
+};
+
+export type InstalledPluginInfo = {
+  id: string;
+  name: string;
+  version: string;
+  is_active: boolean;
+  enabled: boolean;
+  requires_entitlement: boolean;
+  handles: string[];
+  root_path: string;
+  capabilities: PluginCapabilitySummary;
+};
+
+export type PluginHealthSummary = {
+  plugin_id: string;
+  indexed_count: number;
+  attention_count: number;
+  ignored_count: number;
+  queued_count: number;
+  processing_count: number;
+  blocked_count: number;
+};
+
+export type PluginIssue = {
+  source_path: string;
+  file_name: string;
+  plugin_id: string;
+  status: string;
+  error_code: string;
+  message: string;
+  details: string;
+  attempts: number;
+  retry_after?: string | null;
+  last_reported_at: string;
+};
+
+export type PluginIssuePreference = {
+  plugin_id: string;
+  error_code: string;
+};
+
+export type PurchaseConnectionState = 'not_connected' | 'pending' | 'connected' | 'expired';
+
+export type PurchaseConnectionSummary = {
+  state: PurchaseConnectionState;
+  email: string | null;
+  pending_email: string | null;
+  pending_expires_at: string | null;
+  last_synced_at: string | null;
+  has_cached_entitlements: boolean;
+  status_message: string | null;
+  storage_warning: string | null;
+};
+
+export type MarketplacePluginSummary = {
+  plugin_id: string;
+  name: string;
+  owned: boolean;
+  latest_version: string | null;
+  download_url: string | null;
+  buy_url: string | null;
+  homepage_url: string | null;
+};
+
+export type PluginIssueCount = {
+  plugin_id: string;
+  status: string;
+  error_code: string;
+  count: number;
+};
+
+export type PluginIndexFailure = {
+  source_path: string;
+  plugin_id: string;
+  attempts: number;
+  code: string;
+  message: string;
+  details: string;
+  next_retry_at?: string | null;
+};
+
+export type PluginIndexSummary = {
+  enabled_plugins: string[];
+  installed_plugins: InstalledPluginInfo[];
+  indexing_state: string;
+  plugin_state: string;
+  paused: boolean;
+  search_active: boolean;
+  scanner_running: boolean;
+  worker_running: boolean;
+  plugin_summaries: PluginHealthSummary[];
+  auto_ignored_issue_types: PluginIssuePreference[];
+  purchase_connection: PurchaseConnectionSummary;
+  marketplace_plugins: MarketplacePluginSummary[];
+};
+
+export type InstallPluginResult = {
+  plugin_id: string;
+  version: string;
+  status: PluginIndexSummary;
 };

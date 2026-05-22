@@ -64,11 +64,13 @@
     regex,
     options = $bindable<SearchOptions>(defaultSearchOptions()),
     selected,
+    reindexingPaths,
     state: searchState,
     hasSearched,
     onSelect,
     onOpen,
-    onReveal
+    onReveal,
+    onReindex
   }: {
     groups: FileResultGroup[];
     query: string;
@@ -76,11 +78,13 @@
     regex: boolean;
     options: SearchOptions;
     selected: SearchMatch | null;
+    reindexingPaths: Set<string>;
     state: SearchState;
     hasSearched: boolean;
     onSelect: (match: SearchMatch) => void;
     onOpen: (path: string) => void;
     onReveal: (path: string) => void;
+    onReindex: (match: SearchMatch) => void;
   } = $props();
 
   let resultsElement = $state<HTMLElement | undefined>();
@@ -116,6 +120,8 @@
     if (!options.group_by_file || !fileRows.length) return null;
     return lastFileRowAtOrBefore(scrollTop);
   });
+  const selectedMetaOutdated = $derived(Boolean(selected?.meta_outdated));
+  const selectedReindexing = $derived(Boolean(selected && reindexingPaths.has(selected.path)));
   const currentLandmark = $derived.by(() => landmarkForScrollPosition(scrollTop + Math.max(0, viewportHeight * 0.32)));
 
   onMount(() => {
@@ -173,9 +179,14 @@
     return Boolean(a && a.path === b.path && a.line_number === b.line_number && a.line_text === b.line_text);
   }
 
+  function displayLineText(text: string) {
+    return text.replace(/\f/g, ' ');
+  }
+
   function snippetParts(match: SearchMatch, term: string): SnippetPart[] {
-    const spans = match.submatches?.length ? match.submatches : fallbackSpans(match.line_text, term);
-    const snippet = snippetWindow(match.line_text, spans);
+    const lineText = displayLineText(match.line_text);
+    const spans = match.submatches?.length ? match.submatches : fallbackSpans(lineText, term);
+    const snippet = snippetWindow(lineText, spans);
     const visibleSpans = spans
       .map((span) => ({
         start: Math.max(span.start, snippet.start) - snippet.start,
@@ -183,7 +194,7 @@
       }))
       .filter((span) => span.start < span.end);
 
-    const parts = splitSnippet(match.line_text.slice(snippet.start, snippet.end), visibleSpans);
+    const parts = splitSnippet(lineText.slice(snippet.start, snippet.end), visibleSpans);
 
     if (snippet.clippedStart) {
       parts.unshift({ text: '...', hit: false });
@@ -600,6 +611,17 @@
     <div class="title-block">
       <h2>Results</h2>
       <span>{formatCount(groups.length)} files · {formatCount(matchTotal)} matches</span>
+      {#if (selectedMetaOutdated || selectedReindexing) && selected}
+        <button
+          type="button"
+          class="title-hint"
+          onclick={() => onReindex(selected)}
+          disabled={selectedReindexing}
+          title={selectedReindexing ? 'Re-index request queued' : 'Re-index the selected file'}
+        >
+          {selectedReindexing ? 'Queued for re-index' : 'Re-index file?'}
+        </button>
+      {/if}
     </div>
     <div class="result-controls" aria-label="Result display settings">
       <label>
@@ -629,6 +651,11 @@
             <input type="checkbox" bind:checked={options.show_line_numbers} />
             <span>Show line numbers</span>
           </label>
+          {#if (selectedMetaOutdated || selectedReindexing) && selected}
+            <button type="button" class="menu-link" onclick={() => onReindex(selected)} disabled={selectedReindexing}>
+              {selectedReindexing ? 'Queued for re-index' : 'Re-index file?'}
+            </button>
+          {/if}
         </div>
       </details>
     </div>
@@ -759,6 +786,7 @@
     display: flex;
     gap: 8px;
     align-items: baseline;
+    flex-wrap: wrap;
     min-width: 0;
   }
 
@@ -847,6 +875,35 @@
     padding: 4px;
     background: var(--panel);
     box-shadow: 0 10px 24px rgba(30, 37, 45, 0.16);
+  }
+
+  .title-hint {
+    border: 0;
+    padding: 0;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+  }
+
+  .title-hint:hover,
+  .title-hint:focus-visible,
+  .menu-link:hover,
+  .menu-link:focus-visible {
+    color: var(--text);
+    outline: none;
+  }
+
+  .title-hint:disabled,
+  .menu-link:disabled {
+    cursor: wait;
+    opacity: 0.72;
+    text-decoration: none;
   }
 
   .result-options-menu .toggle-control {
@@ -1145,6 +1202,18 @@
     line-height: 17px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .menu-link {
+    border: 0;
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: left;
   }
 
   mark {

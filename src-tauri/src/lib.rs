@@ -1,3 +1,5 @@
+pub mod app_auth;
+pub mod plugins;
 pub mod search;
 
 use std::io::{BufRead, BufReader, Write};
@@ -7,16 +9,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use plugins::{
+    classifier::meta_for_sm_text,
+    indexer,
+    meta::{SmMeta, SmRangeType},
+    registry::PluginRegistry,
+    runtime::PluginIndexRuntime,
+};
 use search::{
     ripgrep::RipgrepSidecarProvider,
     runner::{run_rg_child, SearchRunOptions},
-    FilePreview, FilePreviewLine, SearchMatch, SearchProvider, SearchRequest, SearchState,
-    SearchStatus,
+    FilePreview, FilePreviewLine, FilePreviewPageBreak, SearchMatch, SearchProvider, SearchRequest,
+    SearchState, SearchStatus,
 };
+use serde::Serialize;
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     Emitter, State,
 };
+use tauri_plugin_opener::OpenerExt;
 
 const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
@@ -28,6 +39,21 @@ const RELEASE_NOTES_MENU_ID: &str = "release-notes";
 const WEBSITE_MENU_ID: &str = "searchmonkey-website";
 const REPORT_ISSUE_MENU_ID: &str = "report-issue";
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
+const BROWSE_PLUGINS_MENU_ID: &str = "browse-plugins";
+const MANAGE_PLUGINS_MENU_ID: &str = "manage-plugins";
+const INSTALL_PLUGIN_MENU_ID: &str = "install-plugin";
+const PAUSE_BACKGROUND_INDEXING_MENU_ID: &str = "pause-background-indexing";
+const REBUILD_PLUGIN_CACHE_MENU_ID: &str = "rebuild-plugin-cache";
+const OPEN_PLUGIN_FOLDER_MENU_ID: &str = "open-plugin-folder";
+const PLUGIN_MENU_ITEM_PREFIX: &str = "plugin-entry:";
+const PLUGINS_URL: &str = "https://searchmonkey.dev/plugins";
+
+#[derive(Debug, Clone, Serialize)]
+struct InstallPluginResult {
+    plugin_id: String,
+    version: String,
+    status: plugins::runtime::PluginIndexSummary,
+}
 
 #[derive(Default)]
 struct SearchSessions {
@@ -60,13 +86,21 @@ impl SearchSession {
 async fn search_files(
     app: tauri::AppHandle,
     request: SearchRequest,
+    plugin_index: State<'_, PluginIndexRuntime>,
 ) -> Result<Vec<SearchMatch>, String> {
+    queue_plugin_scan_for_path(&plugin_index, &request.path);
     let provider = RipgrepSidecarProvider::new(app);
+    plugin_index.search_started();
 
-    provider
+    let result = provider
         .search(request)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string());
+    plugin_index.search_finished();
+    result.map(|results| {
+        prioritize_outdated_search_results(&plugin_index, &results);
+        results
+    })
 }
 
 #[tauri::command]
@@ -92,12 +126,26 @@ fn read_file_preview_range(
     end_line: u64,
 ) -> Result<FilePreview, String> {
     let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
+    let preview_meta = load_preview_meta(Path::new(&path));
     let mut lines = Vec::new();
     let mut saw_after_window = false;
+    let mut buffer = Vec::new();
+    let mut offset = 0u64;
+    let mut number = 0u64;
 
-    for (index, line) in reader.lines().enumerate() {
-        let number = index as u64 + 1;
+    loop {
+        buffer.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut buffer)
+            .map_err(|err| err.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        number += 1;
+        let line_start = offset;
+        offset += bytes_read as u64;
 
         if number > PREVIEW_MAX_SCAN_LINES {
             return Err(
@@ -106,7 +154,6 @@ fn read_file_preview_range(
         }
 
         if number < start_line {
-            line.map_err(|err| err.to_string())?;
             continue;
         }
 
@@ -115,13 +162,18 @@ fn read_file_preview_range(
             break;
         }
 
-        let text = line.map_err(|err| err.to_string())?;
+        let trimmed = trim_line_ending(&buffer);
+        let text = String::from_utf8_lossy(trimmed).to_string();
 
         lines.push(FilePreviewLine {
             number,
             text,
             is_match: false,
             match_ranges: Vec::new(),
+            page_breaks: preview_meta
+                .as_ref()
+                .map(|meta| page_breaks_for_line(meta, line_start, trimmed.len() as u64))
+                .unwrap_or_default(),
         });
     }
 
@@ -134,6 +186,41 @@ fn read_file_preview_range(
         lines,
         truncated: start_line > 1 || saw_after_window,
     })
+}
+
+fn trim_line_ending(bytes: &[u8]) -> &[u8] {
+    if bytes.ends_with(b"\r\n") {
+        &bytes[..bytes.len() - 2]
+    } else if bytes.ends_with(b"\n") {
+        &bytes[..bytes.len() - 1]
+    } else {
+        bytes
+    }
+}
+
+fn load_preview_meta(path: &Path) -> Option<SmMeta> {
+    let meta_path = meta_for_sm_text(path)?;
+    SmMeta::load(meta_path).ok()
+}
+
+fn page_breaks_for_line(
+    meta: &SmMeta,
+    line_start: u64,
+    line_length: u64,
+) -> Vec<FilePreviewPageBreak> {
+    let line_end = line_start + line_length;
+    let mut page_breaks = meta
+        .ranges
+        .iter()
+        .filter(|range| range.kind == SmRangeType::PageBreak)
+        .filter(|range| line_start <= range.start && range.start < line_end)
+        .map(|range| FilePreviewPageBreak {
+            page: range.page,
+            label: range.label.clone(),
+        })
+        .collect::<Vec<_>>();
+    page_breaks.sort_by_key(|page_break| page_break.page.unwrap_or(0));
+    page_breaks
 }
 
 #[tauri::command]
@@ -201,6 +288,322 @@ async fn open_file_path(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || open_path_native(path))
         .await
         .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn index_file_with_plugin(source_path: String) -> Result<indexer::IndexResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source_path = expand_home_path(source_path.trim())?;
+        indexer::index_file_with_plugin(&source_path).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+fn get_plugin_index_summary(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn get_plugin_index_status(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn get_plugin_issue_counts(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+) -> Result<Vec<plugins::runtime::PluginIssueCount>, String> {
+    plugin_index
+        .issue_counts(plugin_id.trim())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn get_plugin_issues(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    plugin_id: String,
+    status: Option<String>,
+    error_code: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<plugins::runtime::PluginIssue>, String> {
+    plugin_index
+        .issues_page(
+            plugin_id.trim(),
+            status.as_deref(),
+            error_code.as_deref(),
+            limit.unwrap_or(25),
+        )
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn queue_plugin_scan(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    path: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    let path = expand_home_path(path.trim())?;
+    if path.exists() {
+        if path.is_file() {
+            plugin_index
+                .request_retry(&path)
+                .map_err(|err| err.to_string())?;
+        } else {
+            plugin_index
+                .request_user_scan(&path)
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn ignore_plugin_issue(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    path: String,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    let path = expand_home_path(path.trim())?;
+    plugin_index
+        .ignore_issue(&path, plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn unignore_plugin_issue(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    path: String,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    let path = expand_home_path(path.trim())?;
+    plugin_index
+        .unignore_issue(&path, plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn retry_plugin_issue_type(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    error_code: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .retry_issue_type(plugin_id.trim(), error_code.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn ignore_plugin_issue_type(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    error_code: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .ignore_issue_type(plugin_id.trim(), error_code.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn set_plugin_issue_type_auto_ignore(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    error_code: String,
+    enabled: bool,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .set_issue_type_auto_ignore(plugin_id.trim(), error_code.trim(), enabled)
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn set_plugin_index_paused(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    paused: bool,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    let _ = plugin_index.set_paused(paused);
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn rebuild_plugin_index(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    let _ = plugin_index.rebuild();
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn refresh_plugin_supported_files(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .refresh_plugin_supported_files(plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn reset_plugin_cache(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .reset_plugin_cache(plugin_id.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn plugin_folder_path(plugin_index: State<'_, PluginIndexRuntime>) -> Result<String, String> {
+    plugin_index
+        .default_plugin_folder()
+        .map(|path| path.display().to_string())
+        .ok_or_else(|| "Could not resolve the plugin folder.".to_string())
+}
+
+#[tauri::command]
+fn install_plugin_package(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    archive_path: String,
+) -> Result<InstallPluginResult, String> {
+    let archive_path = expand_home_path(archive_path.trim())?;
+    let (plugin_id, version, _status) = plugin_index
+        .install_plugin_archive(&archive_path)
+        .map_err(|err| err.to_string())?;
+    Ok(InstallPluginResult {
+        plugin_id,
+        version,
+        status: app_auth::decorate_plugin_summary(&plugin_index, &app_auth),
+    })
+}
+
+#[tauri::command]
+fn set_active_plugin_version(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    version: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .set_active_plugin_version(plugin_id.trim(), version.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn set_plugin_enabled(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .set_plugin_enabled(plugin_id.trim(), enabled)
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn uninstall_plugin_version(
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+    version: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    plugin_index
+        .uninstall_plugin_version(plugin_id.trim(), version.trim())
+        .map(|_| app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn refresh_purchase_entitlements(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .refresh_entitlements(&app)
+        .inspect_err(|error| app_auth::reconcile_refresh_failure(&app_auth, error))
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn start_purchase_email_verification(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    email: String,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .start_email_verification(&app, email.trim())
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn poll_purchase_connection(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth
+        .poll_pending_request(&app)
+        .inspect_err(|error| app_auth::reconcile_refresh_failure(&app_auth, error))
+        .map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn disconnect_purchase_connection(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+) -> Result<plugins::runtime::PluginIndexSummary, String> {
+    app_auth.disconnect(&app).map_err(|err| err.to_string())?;
+    Ok(app_auth::decorate_plugin_summary(&plugin_index, &app_auth))
+}
+
+#[tauri::command]
+fn install_purchased_plugin(
+    app: tauri::AppHandle,
+    plugin_index: State<'_, PluginIndexRuntime>,
+    app_auth: State<'_, app_auth::AppAuthRuntime>,
+    plugin_id: String,
+) -> Result<InstallPluginResult, String> {
+    let (plugin_id, version, _status) = app_auth
+        .install_marketplace_plugin(&app, &plugin_index, plugin_id.trim())
+        .map_err(|err| err.to_string())?;
+    Ok(InstallPluginResult {
+        plugin_id,
+        version,
+        status: app_auth::decorate_plugin_summary(&plugin_index, &app_auth),
+    })
 }
 
 #[tauri::command]
@@ -329,12 +732,30 @@ async fn start_search(
     app: tauri::AppHandle,
     request: SearchRequest,
     sessions: State<'_, SearchSessions>,
+    plugin_index: State<'_, PluginIndexRuntime>,
 ) -> Result<u64, String> {
+    queue_plugin_scan_for_path(&plugin_index, &request.path);
     let search_id = sessions.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let session = Arc::new(SearchSession::new(search_id));
     let provider = RipgrepSidecarProvider::new(app.clone());
     let result_limit = request.max_matches.unwrap_or(UI_RESULT_LIMIT).max(1);
     let modified_after = request.modified_after;
+    let result_path_filter = crate::search::ripgrep::ResultPathFilter::from_request(&request);
+    if crate::search::debug_logging_enabled() {
+        eprintln!(
+            "searchmonkey search {search_id}: start path={} query_len={} regex={} case_sensitive={} hidden={} follow_symlinks={} multiline={} include_patterns={:?} exclude_patterns={:?} max_matches={:?}",
+            request.path,
+            request.query.len(),
+            request.regex,
+            request.case_sensitive,
+            request.hidden,
+            request.follow_symlinks,
+            request.multiline,
+            request.include_patterns,
+            request.exclude_patterns,
+            request.max_matches
+        );
+    }
     let mut child = provider.spawn(request).map_err(|err| err.to_string())?;
     let child_pid = child.id();
     let stdout = child
@@ -352,6 +773,8 @@ async fn start_search(
         .insert(search_id, session.clone());
 
     set_search_state(&session, SearchState::Running, None);
+    plugin_index.search_started();
+    let plugin_index = plugin_index.inner().clone();
 
     thread::spawn(move || {
         let summary = run_rg_child(
@@ -361,8 +784,11 @@ async fn start_search(
                 search_id,
                 result_limit,
                 modified_after,
+                plugin_registry: provider.plugin_registry(),
+                result_path_filter,
             },
             |result, total_matches| {
+                prioritize_outdated_search_result(&plugin_index, &result);
                 if let Ok(mut results) = session.results.lock() {
                     results.push(result);
                 }
@@ -374,6 +800,19 @@ async fn start_search(
 
         if let Ok(mut status) = session.status.lock() {
             status.total_matches = summary.total_matches;
+        }
+        if crate::search::debug_logging_enabled() {
+            eprintln!(
+                "searchmonkey search {search_id}: summary raw_stdout_lines={} raw_match_lines={} remapped_or_plain_matches={} skipped_result_path_filter={} total_matches={} buffered_matches={} skipped_modified={} elapsed={:.2}s",
+                summary.raw_stdout_lines,
+                summary.raw_match_lines,
+                summary.remapped_or_plain_matches,
+                summary.skipped_result_path_filter,
+                summary.total_matches,
+                summary.buffered_matches,
+                summary.skipped_modified,
+                summary.elapsed_secs
+            );
         }
         let current_state = session
             .status
@@ -390,6 +829,7 @@ async fn start_search(
         if let Ok(mut session_child_pid) = session.child_pid.lock() {
             *session_child_pid = None;
         }
+        plugin_index.search_finished();
     });
 
     Ok(search_id)
@@ -515,10 +955,52 @@ fn kill_search_process(pid: u32) -> std::io::Result<()> {
     }
 }
 
+fn queue_plugin_scan_for_path(plugin_index: &PluginIndexRuntime, path: &str) {
+    let Ok(path) = expand_home_path(path.trim()) else {
+        return;
+    };
+    if path.exists() {
+        let _ = plugin_index.request_scan(&path);
+    }
+}
+
+fn prioritize_outdated_search_results(plugin_index: &PluginIndexRuntime, results: &[SearchMatch]) {
+    for result in results {
+        prioritize_outdated_search_result(plugin_index, result);
+    }
+}
+
+fn prioritize_outdated_search_result(plugin_index: &PluginIndexRuntime, result: &SearchMatch) {
+    if result.meta_outdated != Some(true) {
+        return;
+    }
+
+    let path = Path::new(&result.path);
+    if !path.exists() {
+        return;
+    }
+
+    let _ = plugin_index.request_retry(path);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let plugin_discovery = PluginRegistry::discover_default().unwrap_or_default();
+    let mut installed_plugin_labels = plugin_discovery
+        .registry
+        .by_id
+        .values()
+        .map(|plugin| {
+            (
+                format!("{PLUGIN_MENU_ITEM_PREFIX}{}", plugin.id),
+                format!("{}…", plugin.name),
+            )
+        })
+        .collect::<Vec<_>>();
+    installed_plugin_labels.sort_by(|left, right| left.1.cmp(&right.1));
+
     tauri::Builder::default()
-        .menu(|app| {
+        .menu(move |app| {
             let app_menu = SubmenuBuilder::new(app, "Searchmonkey III")
                 .text(ABOUT_SEARCHMONKEY_MENU_ID, "About Searchmonkey III")
                 .separator()
@@ -544,10 +1026,29 @@ pub fn run() {
                 .paste()
                 .select_all()
                 .build()?;
+            let mut plugins_menu = SubmenuBuilder::new(app, "Plugins")
+                .text(BROWSE_PLUGINS_MENU_ID, "Browse Plugins")
+                .separator()
+                .text(MANAGE_PLUGINS_MENU_ID, "Manage Plugins…")
+                .text(INSTALL_PLUGIN_MENU_ID, "Install Plugin…")
+                .separator();
+            for (id, label) in &installed_plugin_labels {
+                plugins_menu = plugins_menu.text(id, label);
+            }
+            let plugins_menu = plugins_menu
+                .separator()
+                .text(
+                    PAUSE_BACKGROUND_INDEXING_MENU_ID,
+                    "Pause Background Processing",
+                )
+                .text(REBUILD_PLUGIN_CACHE_MENU_ID, "Reset All Processing Cache")
+                .text(OPEN_PLUGIN_FOLDER_MENU_ID, "Open Plugins Folder")
+                .build()?;
 
             MenuBuilder::new(app)
                 .item(&app_menu)
                 .item(&edit_menu)
+                .item(&plugins_menu)
                 .item(&help_menu)
                 .build()
         })
@@ -579,8 +1080,38 @@ pub fn run() {
             if event.id() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit("check-for-updates", ());
             }
+
+            if event.id() == BROWSE_PLUGINS_MENU_ID {
+                let _ = app.opener().open_url(PLUGINS_URL, None::<&str>);
+            }
+
+            if event.id() == MANAGE_PLUGINS_MENU_ID {
+                let _ = app.emit("open-manage-plugins", Option::<String>::None);
+            }
+
+            if event.id() == INSTALL_PLUGIN_MENU_ID {
+                let _ = app.emit("open-install-plugin", ());
+            }
+
+            if event.id() == PAUSE_BACKGROUND_INDEXING_MENU_ID {
+                let _ = app.emit("toggle-plugin-indexing", ());
+            }
+
+            if event.id() == REBUILD_PLUGIN_CACHE_MENU_ID {
+                let _ = app.emit("rebuild-plugin-index", ());
+            }
+
+            if event.id() == OPEN_PLUGIN_FOLDER_MENU_ID {
+                let _ = app.emit("open-plugin-folder", ());
+            }
+
+            if let Some(plugin_id) = event.id().0.strip_prefix(PLUGIN_MENU_ITEM_PREFIX) {
+                let _ = app.emit("open-manage-plugins", Some(plugin_id.to_string()));
+            }
         })
         .manage(SearchSessions::default())
+        .manage(PluginIndexRuntime::default())
+        .manage(app_auth::AppAuthRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -588,15 +1119,40 @@ pub fn run() {
             cancel_search,
             clear_search,
             copy_text,
+            disconnect_purchase_connection,
+            get_plugin_index_summary,
             get_results,
+            get_plugin_issue_counts,
+            get_plugin_issues,
+            get_plugin_index_status,
             get_search_status,
             home_dir,
+            ignore_plugin_issue,
+            ignore_plugin_issue_type,
+            install_plugin_package,
+            install_purchased_plugin,
+            index_file_with_plugin,
             list_directory,
             open_file_path,
+            poll_purchase_connection,
+            plugin_folder_path,
+            queue_plugin_scan,
             read_file_preview,
+            rebuild_plugin_index,
+            refresh_purchase_entitlements,
+            refresh_plugin_supported_files,
             reveal_file_path,
+            reset_plugin_cache,
             search_files,
-            start_search
+            set_active_plugin_version,
+            set_plugin_enabled,
+            set_plugin_index_paused,
+            set_plugin_issue_type_auto_ignore,
+            start_purchase_email_verification,
+            start_search,
+            retry_plugin_issue_type,
+            uninstall_plugin_version,
+            unignore_plugin_issue
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
