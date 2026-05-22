@@ -27,6 +27,7 @@ use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     Emitter, State,
 };
+use tauri_plugin_opener::OpenerExt;
 
 const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
@@ -38,12 +39,14 @@ const RELEASE_NOTES_MENU_ID: &str = "release-notes";
 const WEBSITE_MENU_ID: &str = "searchmonkey-website";
 const REPORT_ISSUE_MENU_ID: &str = "report-issue";
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
+const BROWSE_PLUGINS_MENU_ID: &str = "browse-plugins";
 const MANAGE_PLUGINS_MENU_ID: &str = "manage-plugins";
 const INSTALL_PLUGIN_MENU_ID: &str = "install-plugin";
 const PAUSE_BACKGROUND_INDEXING_MENU_ID: &str = "pause-background-indexing";
 const REBUILD_PLUGIN_CACHE_MENU_ID: &str = "rebuild-plugin-cache";
 const OPEN_PLUGIN_FOLDER_MENU_ID: &str = "open-plugin-folder";
 const PLUGIN_MENU_ITEM_PREFIX: &str = "plugin-entry:";
+const PLUGINS_URL: &str = "https://searchmonkey.dev/plugins";
 
 #[derive(Debug, Clone, Serialize)]
 struct InstallPluginResult {
@@ -1024,6 +1027,8 @@ pub fn run() {
                 .select_all()
                 .build()?;
             let mut plugins_menu = SubmenuBuilder::new(app, "Plugins")
+                .text(BROWSE_PLUGINS_MENU_ID, "Browse Plugins")
+                .separator()
                 .text(MANAGE_PLUGINS_MENU_ID, "Manage Plugins…")
                 .text(INSTALL_PLUGIN_MENU_ID, "Install Plugin…")
                 .separator();
@@ -1074,6 +1079,10 @@ pub fn run() {
 
             if event.id() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit("check-for-updates", ());
+            }
+
+            if event.id() == BROWSE_PLUGINS_MENU_ID {
+                let _ = app.opener().open_url(PLUGINS_URL, None::<&str>);
             }
 
             if event.id() == MANAGE_PLUGINS_MENU_ID {
