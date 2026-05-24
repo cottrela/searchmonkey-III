@@ -517,21 +517,42 @@ fn extract_entitlements(value: &Value) -> Vec<CachedEntitlement> {
 
 fn parse_entitlement_item(value: &Value) -> Option<CachedEntitlement> {
     let plugin_id = string_field(value, &["plugin_id", "id", "slug"])?;
+    let platform_metadata = current_platform_metadata(value);
     Some(CachedEntitlement {
         plugin_id,
         name: string_field(value, &["name", "title"]),
         owned: bool_field(value, &["owned", "purchased", "entitled", "active"]).unwrap_or(true),
-        latest_version: string_field(value, &["latest_version", "version"]),
-        download_url: string_field(
-            value,
-            &["download_url", "package_url", "install_url", "asset_url"],
-        ),
-        buy_url: string_field(
-            value,
-            &["buy_url", "product_url", "checkout_url", "purchase_url"],
-        ),
+        latest_version: string_field(value, &["latest_version", "version"])
+            .or_else(|| platform_string_field(platform_metadata, &["version", "latest_version"])),
+        download_url: string_field(value, &["download_url", "package_url", "install_url", "asset_url"])
+            .or_else(|| platform_string_field(platform_metadata, &["download_url", "package_url", "install_url", "asset_url"])),
+        buy_url: string_field(value, &["buy_url", "product_url", "checkout_url", "purchase_url"])
+            .or_else(|| deep_string_field(value, &["pricing", "purchase_url"])),
         homepage_url: string_field(value, &["homepage_url", "url", "homepage"]),
     })
+}
+
+fn current_platform_metadata<'a>(value: &'a Value) -> Option<&'a Value> {
+    value
+        .get("platforms")
+        .and_then(Value::as_object)
+        .and_then(|platforms| platforms.get(&current_platform_string()))
+}
+
+fn platform_string_field(value: Option<&Value>, keys: &[&str]) -> Option<String> {
+    let value = value?;
+    string_field(value, keys)
+}
+
+fn deep_string_field(value: &Value, path: &[&str]) -> Option<String> {
+    let nested = path
+        .iter()
+        .try_fold(value, |current, key| current.get(key))?;
+    nested
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn download_plugin_archive(download_url: &str, token: &str, plugin_id: &str) -> Result<PathBuf> {
@@ -652,5 +673,69 @@ pub fn reconcile_refresh_failure(runtime: &AppAuthRuntime, error: &anyhow::Error
     if let Ok(mut state) = runtime.load_state() {
         state.last_error = Some(message);
         let _ = runtime.write_state(&state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{current_platform_string, extract_entitlements, parse_entitlement_item};
+    use serde_json::json;
+
+    #[test]
+    fn parses_catalog_style_plugin_payload() {
+        let current_platform = current_platform_string();
+        let download_url =
+            format!("https://searchmonkey.dev/api/plugins/sm.plugin.pdf/download?platform={current_platform}");
+        let plugin = parse_entitlement_item(&json!({
+            "id": "sm.plugin.pdf",
+            "name": "PDF Extractor",
+            "latest_version": "0.2.9",
+            "homepage_url": "https://searchmonkey.dev/plugins/sm.plugin.pdf",
+            "platforms": {
+                current_platform: {
+                    "version": "0.2.9",
+                    "download_url": download_url
+                }
+            },
+            "pricing": {
+                "purchase_url": "https://buy.stripe.com/example"
+            }
+        }))
+        .expect("plugin should parse");
+
+        assert_eq!(plugin.plugin_id, "sm.plugin.pdf");
+        assert_eq!(plugin.latest_version.as_deref(), Some("0.2.9"));
+        assert_eq!(
+            plugin.download_url.as_deref(),
+            Some(download_url.as_str())
+        );
+        assert_eq!(
+            plugin.buy_url.as_deref(),
+            Some("https://buy.stripe.com/example")
+        );
+    }
+
+    #[test]
+    fn extracts_plugins_from_catalog_root() {
+        let entitlements = extract_entitlements(&json!({
+            "schema": "sm.plugin-catalog.v1",
+            "plugins": [
+                {
+                    "id": "sm.plugin.ocr",
+                    "name": "Image OCR",
+                    "latest_version": "0.1.9",
+                    "platforms": {
+                        "linux-x64": {
+                            "version": "0.1.9",
+                            "download_url": "https://searchmonkey.dev/api/plugins/sm.plugin.ocr/download?platform=linux-x64"
+                        }
+                    }
+                }
+            ]
+        }));
+
+        assert_eq!(entitlements.len(), 1);
+        assert_eq!(entitlements[0].plugin_id, "sm.plugin.ocr");
+        assert_eq!(entitlements[0].latest_version.as_deref(), Some("0.1.9"));
     }
 }
