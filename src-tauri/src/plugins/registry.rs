@@ -281,24 +281,40 @@ fn resolve_plugin_command(
     command_name: &str,
     platform: PluginPlatform,
 ) -> Result<PathBuf> {
-    let flat_command = plugin_dir.join("bin").join(command_name);
-    if flat_command.is_file() {
-        return Ok(flat_command);
+    let command_names = command_candidates(command_name, platform);
+    for command_name in &command_names {
+        let flat_command = plugin_dir.join("bin").join(command_name);
+        if flat_command.is_file() {
+            return Ok(flat_command);
+        }
+
+        let platform_command = plugin_dir
+            .join("bin")
+            .join(platform.as_str())
+            .join(command_name);
+        if platform_command.is_file() {
+            return Ok(platform_command);
+        }
     }
 
+    let flat_command = plugin_dir.join("bin").join(command_name);
     let platform_command = plugin_dir
         .join("bin")
         .join(platform.as_str())
         .join(command_name);
-    if platform_command.is_file() {
-        return Ok(platform_command);
-    }
-
     anyhow::bail!(
         "plugin entry binary is missing at {} or {}",
         flat_command.display(),
         platform_command.display()
     );
+}
+
+fn command_candidates(command_name: &str, platform: PluginPlatform) -> Vec<String> {
+    let mut candidates = vec![command_name.to_string()];
+    if platform == PluginPlatform::WindowsX64 && Path::new(command_name).extension().is_none() {
+        candidates.push(format!("{command_name}.exe"));
+    }
+    candidates
 }
 
 #[cfg(test)]
@@ -418,5 +434,39 @@ command = "sm-plugin-pdf"
         assert!(report.registry.by_id.is_empty());
         assert_eq!(report.issues.len(), 1);
         assert!(report.issues[0].message.contains("missing"));
+    }
+
+    #[test]
+    fn discovers_windows_plugin_with_exe_suffix() {
+        let temp = tempdir().unwrap();
+        let plugin_root = temp.path().join("sm.plugin.pdf/0.2.9");
+        fs::create_dir_all(plugin_root.join("bin")).unwrap();
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            r#"
+schema = "sm.plugin.v1"
+id = "sm.plugin.pdf"
+name = "PDF Plugin"
+version = "0.2.9"
+handles = [".pdf"]
+platforms = ["windows-x64"]
+
+[entry]
+kind = "process"
+command = "sm-plugin-pdf"
+"#,
+        )
+        .unwrap();
+        fs::write(plugin_root.join("bin/sm-plugin-pdf.exe"), "").unwrap();
+
+        let report = PluginRegistry::discover_for_platform(
+            &[temp.path().to_path_buf()],
+            PluginPlatform::WindowsX64,
+        )
+        .unwrap();
+
+        assert!(report.issues.is_empty());
+        let plugin = report.registry.by_id.get("sm.plugin.pdf").unwrap();
+        assert_eq!(plugin.command, plugin_root.join("bin/sm-plugin-pdf.exe"));
     }
 }

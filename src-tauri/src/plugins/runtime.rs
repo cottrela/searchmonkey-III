@@ -681,6 +681,27 @@ impl PluginIndexRuntime {
             .default_plugin_folder()
             .ok_or_else(|| anyhow::anyhow!("Could not resolve the plugin folder."))?;
         let installed = install_plugin_archive(archive_path, &plugin_root)?;
+        let discovery = discovery_report(&self.inner)?;
+        let installed_version_registered = discovery
+            .registry
+            .versions_by_id
+            .get(&installed.plugin_id)
+            .map(|versions| {
+                versions
+                    .iter()
+                    .any(|plugin| plugin.version == installed.version)
+            })
+            .unwrap_or(false);
+        if !installed_version_registered {
+            let manifest_path = installed.install_dir.join("plugin.toml");
+            let issue = discovery
+                .issues
+                .iter()
+                .find(|issue| issue.manifest_path == manifest_path)
+                .map(|issue| issue.message.as_str())
+                .unwrap_or("installed plugin was not discovered");
+            anyhow::bail!("plugin installed but could not be registered: {issue}");
+        }
         self.inner
             .state_db
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
