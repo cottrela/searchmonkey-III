@@ -79,10 +79,16 @@ fn sanitized_prefix_component(prefix: PrefixComponent<'_>) -> String {
                 )
             }
             Prefix::Verbatim(value) => {
-                format!("VERBATIM_{}", sanitize_component_text(&value.to_string_lossy()))
+                format!(
+                    "VERBATIM_{}",
+                    sanitize_component_text(&value.to_string_lossy())
+                )
             }
             Prefix::DeviceNS(value) => {
-                format!("DEVICE_{}", sanitize_component_text(&value.to_string_lossy()))
+                format!(
+                    "DEVICE_{}",
+                    sanitize_component_text(&value.to_string_lossy())
+                )
             }
         }
     }
@@ -206,12 +212,12 @@ pub fn source_path_from_mirror_text_path_with_root(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use super::source_path_from_mirror_text_path_with_root;
     use super::{
         mirror_failure_state_path, mirror_meta_path, mirror_meta_tmp_path, mirror_search_path,
         mirror_text_path, mirror_text_tmp_path,
     };
-    #[cfg(not(windows))]
-    use super::source_path_from_mirror_text_path_with_root;
     use std::path::PathBuf;
 
     #[test]

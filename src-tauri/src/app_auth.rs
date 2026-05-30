@@ -130,12 +130,15 @@ impl AppAuthRuntime {
         installed_plugins: &[InstalledPluginInfo],
     ) -> (PurchaseConnectionSummary, Vec<MarketplacePluginSummary>) {
         let state = self.load_state().unwrap_or_default();
-        let effective_state = if state.connection_state == ConnectionState::Connected && !state.has_session_token {
-            ConnectionState::Expired
-        } else {
-            state.connection_state
-        };
-        let effective_status_message = if state.connection_state == ConnectionState::Connected && !state.has_session_token {
+        let effective_state =
+            if state.connection_state == ConnectionState::Connected && !state.has_session_token {
+                ConnectionState::Expired
+            } else {
+                state.connection_state
+            };
+        let effective_status_message = if state.connection_state == ConnectionState::Connected
+            && !state.has_session_token
+        {
             Some("Reconnect purchases to restore the secure session for refresh and install actions.".to_string())
         } else {
             state.last_error.clone()
@@ -524,10 +527,21 @@ fn parse_entitlement_item(value: &Value) -> Option<CachedEntitlement> {
         owned: bool_field(value, &["owned", "purchased", "entitled", "active"]).unwrap_or(true),
         latest_version: string_field(value, &["latest_version", "version"])
             .or_else(|| platform_string_field(platform_metadata, &["version", "latest_version"])),
-        download_url: string_field(value, &["download_url", "package_url", "install_url", "asset_url"])
-            .or_else(|| platform_string_field(platform_metadata, &["download_url", "package_url", "install_url", "asset_url"])),
-        buy_url: string_field(value, &["buy_url", "product_url", "checkout_url", "purchase_url"])
-            .or_else(|| deep_string_field(value, &["pricing", "purchase_url"])),
+        download_url: string_field(
+            value,
+            &["download_url", "package_url", "install_url", "asset_url"],
+        )
+        .or_else(|| {
+            platform_string_field(
+                platform_metadata,
+                &["download_url", "package_url", "install_url", "asset_url"],
+            )
+        }),
+        buy_url: string_field(
+            value,
+            &["buy_url", "product_url", "checkout_url", "purchase_url"],
+        )
+        .or_else(|| deep_string_field(value, &["pricing", "purchase_url"])),
         homepage_url: string_field(value, &["homepage_url", "url", "homepage"]),
     })
 }
@@ -666,7 +680,10 @@ pub fn decorate_plugin_summary(
 
 pub fn reconcile_refresh_failure(runtime: &AppAuthRuntime, error: &anyhow::Error) {
     let message = error.to_string();
-    if message.contains("expired") || message.contains("401") || message.contains("Connect purchases before") {
+    if message.contains("expired")
+        || message.contains("401")
+        || message.contains("Connect purchases before")
+    {
         let _ = runtime.mark_expired(&message);
         return;
     }
@@ -705,10 +722,7 @@ mod tests {
 
         assert_eq!(plugin.plugin_id, "sm.plugin.pdf");
         assert_eq!(plugin.latest_version.as_deref(), Some("0.2.9"));
-        assert_eq!(
-            plugin.download_url.as_deref(),
-            Some(download_url.as_str())
-        );
+        assert_eq!(plugin.download_url.as_deref(), Some(download_url.as_str()));
         assert_eq!(
             plugin.buy_url.as_deref(),
             Some("https://buy.stripe.com/example")

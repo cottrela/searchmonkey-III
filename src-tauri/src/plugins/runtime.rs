@@ -8,6 +8,7 @@ use crate::plugins::index_paths::{
 };
 use crate::plugins::indexer::{self, IndexFailure};
 use crate::plugins::installer::install_plugin_archive;
+use crate::plugins::meta::SmMeta;
 use crate::plugins::registry::{
     default_plugin_roots, plugin_version_cmp, plugin_version_satisfies_selected,
     PluginDiscoveryReport, PluginRegistry,
@@ -557,6 +558,7 @@ impl PluginIndexRuntime {
                 let _ = fs::remove_file(meta_path);
             }
         }
+        let _ = remove_plugin_cache_files_from_index_roots(plugin_id, &self.inner.index_roots);
         self.inner.state_db.clear_plugin(plugin_id)?;
         self.inner.wake.notify_all();
         Ok(self.summary())
@@ -1309,6 +1311,77 @@ fn prune_missing_source(inner: &Arc<RuntimeInner>, source_path: &Path, plugin_id
     }
 }
 
+fn remove_plugin_cache_files_from_index_roots(
+    plugin_id: &str,
+    index_roots: &[PathBuf],
+) -> Result<usize> {
+    let mut removed = 0usize;
+
+    for index_root in index_roots {
+        if !index_root.exists() {
+            continue;
+        }
+
+        let walker = WalkBuilder::new(index_root)
+            .hidden(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .build();
+
+        for entry in walker {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+            let meta_path = entry.path();
+            if !meta_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(".sm.meta"))
+            {
+                continue;
+            }
+
+            let Ok(meta) = SmMeta::load(meta_path) else {
+                continue;
+            };
+            if meta.generator.plugin_id != plugin_id {
+                continue;
+            }
+
+            let text_path = resolve_recorded_meta_path(meta_path, &meta.text.path);
+            if fs::remove_file(&text_path).is_ok() {
+                removed += 1;
+            }
+            if fs::remove_file(meta_path).is_ok() {
+                removed += 1;
+            }
+            let source_path = resolve_recorded_meta_path(meta_path, &meta.source.path);
+            let _ = remove_failure_state(index_root, &source_path);
+        }
+    }
+
+    Ok(removed)
+}
+
+fn resolve_recorded_meta_path(meta_path: &Path, recorded_path: &str) -> PathBuf {
+    let recorded = Path::new(recorded_path);
+    if recorded.is_absolute() {
+        return recorded.to_path_buf();
+    }
+
+    meta_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(recorded)
+}
+
 fn scan_entry_allowed(entry: &DirEntry, plugin_roots: &[PathBuf], index_roots: &[PathBuf]) -> bool {
     let path = entry.path();
 
@@ -1618,7 +1691,11 @@ fn enqueue_job_in_lane(
                 queue.policy = policy.or_else(|| Some(default_scheduler_policy()));
             }
             queue.jobs.push_back(job);
-            if !state.user_plugin_order.iter().any(|entry| entry == &plugin_id) {
+            if !state
+                .user_plugin_order
+                .iter()
+                .any(|entry| entry == &plugin_id)
+            {
                 state.user_plugin_order.push_back(plugin_id);
             }
         }
@@ -1638,7 +1715,11 @@ fn enqueue_job_in_lane(
                 queue.policy = policy.or_else(|| Some(default_scheduler_policy()));
             }
             queue.jobs.push_back(job);
-            if !state.default_plugin_order.iter().any(|entry| entry == &plugin_id) {
+            if !state
+                .default_plugin_order
+                .iter()
+                .any(|entry| entry == &plugin_id)
+            {
                 state.default_plugin_order.push_back(plugin_id);
             }
         }
@@ -1708,10 +1789,7 @@ fn remove_default_jobs_for_plugin(state: &mut RuntimeState, plugin_id: &str) {
     );
 }
 
-fn remove_job_from_plugin_queues(
-    queues: &mut HashMap<String, DefaultPluginQueue>,
-    key: &str,
-) {
+fn remove_job_from_plugin_queues(queues: &mut HashMap<String, DefaultPluginQueue>, key: &str) {
     for queue in queues.values_mut() {
         if let Some(index) = queue
             .jobs
@@ -1802,17 +1880,15 @@ fn pop_weighted_plugin_job(
         }
 
         let plugin_id = order.pop_front()?;
-        let Some((queue_empty, burst_limit)) = queues
-            .get(&plugin_id)
-            .map(|queue| {
-                (
-                    queue.jobs.is_empty(),
-                    queue.policy
-                        .unwrap_or_else(default_scheduler_policy)
-                        .burst_limit(),
-                )
-            })
-        else {
+        let Some((queue_empty, burst_limit)) = queues.get(&plugin_id).map(|queue| {
+            (
+                queue.jobs.is_empty(),
+                queue
+                    .policy
+                    .unwrap_or_else(default_scheduler_policy)
+                    .burst_limit(),
+            )
+        }) else {
             continue;
         };
         if queue_empty {
@@ -2044,6 +2120,62 @@ mod tests {
     }
 
     #[test]
+    fn reset_removes_orphaned_generated_plugin_outputs() {
+        let temp = tempdir().unwrap();
+        let index_root = temp.path().join("index");
+        let cache_dir = index_root.join("C/Users/example/Downloads");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let source_path = temp.path().join("Downloads/report.pdf");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(&source_path, b"pdf").unwrap();
+        let text_path = cache_dir.join("report.pdf.sm.txt");
+        let meta_path = cache_dir.join("report.pdf.sm.meta");
+        fs::write(&text_path, b"hello world").unwrap();
+        let source_mtime =
+            time::OffsetDateTime::from(fs::metadata(&source_path).unwrap().modified().unwrap())
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap();
+        let source_path_json = serde_json::to_string(&source_path.to_string_lossy()).unwrap();
+        let text_path_json = serde_json::to_string(&text_path.to_string_lossy()).unwrap();
+
+        fs::write(
+            &meta_path,
+            format!(
+                r#"{{
+                  "schema": "sm.meta.v1",
+                  "source": {{
+                    "path": {source_path_json},
+                    "size": 3,
+                    "mtime": "{}"
+                  }},
+                  "generator": {{
+                    "plugin_id": "sm.plugin.pdf",
+                    "plugin_version": "1.2.3"
+                  }},
+                  "text": {{
+                    "path": {text_path_json},
+                    "encoding": "utf-8",
+                    "length_bytes": 11
+                  }},
+                  "ranges": [
+                    {{ "type": "page", "start": 0, "end": 11, "page": 1 }}
+                  ]
+                }}"#,
+                source_mtime,
+            ),
+        )
+        .unwrap();
+
+        let removed =
+            remove_plugin_cache_files_from_index_roots("sm.plugin.pdf", &[index_root]).unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(!text_path.exists());
+        assert!(!meta_path.exists());
+    }
+
+    #[test]
     fn user_jobs_are_popped_before_default_jobs() {
         let mut state = RuntimeState::default();
         let default = test_job("/tmp/default.pdf", "ocr");
@@ -2061,7 +2193,13 @@ mod tests {
 
         let user = test_job("/tmp/user.pdf", "ocr");
         let user_key = job_key(&user.source_path, &user.plugin_id);
-        enqueue_job_in_lane(&mut state, user.clone(), user_key.clone(), QueueLane::User, None);
+        enqueue_job_in_lane(
+            &mut state,
+            user.clone(),
+            user_key.clone(),
+            QueueLane::User,
+            None,
+        );
 
         assert_eq!(
             pop_weighted_user_job(&mut state).map(|job| job.source_path),

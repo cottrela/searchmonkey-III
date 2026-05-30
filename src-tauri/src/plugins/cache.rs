@@ -206,7 +206,10 @@ fn validate_cache_at_paths(
         }
     };
 
-    if !paths_equivalent(&resolve_meta_path(&meta_path, &meta.source.path), source_path) {
+    if !paths_equivalent(
+        &resolve_meta_path(&meta_path, &meta.source.path),
+        source_path,
+    ) {
         return CacheValidationResult {
             status: CacheStatus::InvalidMeta,
             source_path: source_path.to_path_buf(),
@@ -494,8 +497,7 @@ mod tests {
                 .format(&Rfc3339)
                 .unwrap();
         let source_path_json =
-            serde_json::to_string(&source_path.canonicalize().unwrap().to_string_lossy())
-                .unwrap();
+            serde_json::to_string(&source_path.canonicalize().unwrap().to_string_lossy()).unwrap();
         let text_path_json =
             serde_json::to_string(&text_path.canonicalize().unwrap().to_string_lossy()).unwrap();
 
