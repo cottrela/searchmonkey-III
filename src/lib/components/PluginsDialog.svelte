@@ -118,6 +118,7 @@
   let purchaseEmail = $state('');
   let editingPendingPurchaseEmail = $state(false);
   let pendingConfirmation = $state<PendingConfirmation | null>(null);
+  let missingDownloadUrlRefreshAttempted = $state(false);
   let issueCountsRequestId = 0;
   let attentionIssuesRequestId = 0;
   let ignoredIssuesRequestId = 0;
@@ -140,6 +141,18 @@
     if (purchaseConnection.state !== 'pending') {
       editingPendingPurchaseEmail = false;
     }
+  });
+
+  $effect(() => {
+    if (purchaseConnection.state !== 'connected') {
+      missingDownloadUrlRefreshAttempted = false;
+      return;
+    }
+    if (missingDownloadUrlRefreshAttempted || purchasesActionPending || !onRefreshPurchases) return;
+    if (!marketplacePlugins.some((plugin) => plugin.owned && !plugin.download_url)) return;
+
+    missingDownloadUrlRefreshAttempted = true;
+    void runPurchaseRefresh();
   });
 
   $effect(() => {
@@ -695,7 +708,7 @@
       return { action: 'website', label: 'Open website' } as const;
     }
     if (!activeInstalled) {
-      return { action: 'install', label: 'Install' } as const;
+      return { action: 'install', label: 'Install plugin' } as const;
     }
     if (!plugin.latest_version) {
       return { action: 'reinstall', label: 'Reinstall' } as const;

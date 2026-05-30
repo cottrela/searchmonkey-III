@@ -551,6 +551,19 @@ fn current_platform_metadata<'a>(value: &'a Value) -> Option<&'a Value> {
         .get("platforms")
         .and_then(Value::as_object)
         .and_then(|platforms| platforms.get(&current_platform_string()))
+        .or_else(|| {
+            let current_platform = current_platform_string();
+            value
+                .get("builds")
+                .and_then(Value::as_array)
+                .and_then(|builds| {
+                    builds.iter().find(|build| {
+                        string_field(build, &["platform"])
+                            .as_deref()
+                            == Some(current_platform.as_str())
+                    })
+                })
+        })
 }
 
 fn platform_string_field(value: Option<&Value>, keys: &[&str]) -> Option<String> {
@@ -751,5 +764,34 @@ mod tests {
         assert_eq!(entitlements.len(), 1);
         assert_eq!(entitlements[0].plugin_id, "sm.plugin.ocr");
         assert_eq!(entitlements[0].latest_version.as_deref(), Some("0.1.9"));
+    }
+
+    #[test]
+    fn parses_app_entitlement_builds_payload() {
+        let current_platform = current_platform_string();
+        let download_url =
+            format!("https://searchmonkey.dev/api/plugins/sm.plugin.pdf/download?platform={current_platform}");
+        let plugin = parse_entitlement_item(&json!({
+            "plugin_id": "sm.plugin.pdf",
+            "name": "PDF Extractor",
+            "latest_version": "0.2.9",
+            "builds": [
+                {
+                    "platform": "not-this-platform",
+                    "version": "0.2.9",
+                    "download_url": "https://searchmonkey.dev/nope.smplugin"
+                },
+                {
+                    "platform": current_platform,
+                    "version": "0.2.9",
+                    "download_url": download_url
+                }
+            ]
+        }))
+        .expect("plugin should parse");
+
+        assert_eq!(plugin.plugin_id, "sm.plugin.pdf");
+        assert_eq!(plugin.latest_version.as_deref(), Some("0.2.9"));
+        assert_eq!(plugin.download_url.as_deref(), Some(download_url.as_str()));
     }
 }
