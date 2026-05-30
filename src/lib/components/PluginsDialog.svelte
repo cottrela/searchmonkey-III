@@ -122,6 +122,8 @@
   let missingDownloadUrlRefreshAttempted = $state(false);
   let dismissedValidationErrors = $state<Record<string, boolean>>({});
   let widgetErrorMessage = $state('');
+  let widgetErrorPluginId = $state<string | null>(null);
+  let pluginValidationActionPending = $state(false);
   let issueCountsRequestId = 0;
   let attentionIssuesRequestId = 0;
   let ignoredIssuesRequestId = 0;
@@ -202,6 +204,9 @@
     const errors = status?.plugin_validation_errors ?? [];
     return errors.find((error) => !dismissedValidationErrors[validationErrorKey(error)]) ?? null;
   });
+  const visibleWidgetErrorMessage = $derived(
+    activeValidationError?.message ?? widgetErrorMessage
+  );
   const pluginGroups = $derived.by(() => {
     const groups = new Map<string, InstalledPluginInfo>();
     for (const plugin of installedPlugins) {
@@ -639,8 +644,10 @@
     try {
       await onActivateVersion(pluginId, version);
       widgetErrorMessage = '';
+      widgetErrorPluginId = null;
     } catch (error) {
-      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin validation failed';
+      widgetErrorMessage = pluginActionErrorMessage(error, 'Plugin validation failed');
+      widgetErrorPluginId = pluginId;
     } finally {
       pendingVersionActivations = markPending(pendingVersionActivations, key, false);
     }
@@ -879,8 +886,10 @@
     try {
       await onInstallMarketplacePlugin(plugin.plugin_id);
       widgetErrorMessage = '';
+      widgetErrorPluginId = null;
     } catch (error) {
-      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin install failed';
+      widgetErrorMessage = pluginActionErrorMessage(error, 'Plugin install failed');
+      widgetErrorPluginId = plugin.plugin_id;
     } finally {
       pendingMarketplaceInstalls = { ...pendingMarketplaceInstalls, [plugin.plugin_id]: false };
     }
@@ -920,8 +929,10 @@
     try {
       await onSetPluginEnabled(selectedPlugin.id, nextEnabled);
       widgetErrorMessage = '';
+      widgetErrorPluginId = null;
     } catch (error) {
-      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin validation failed';
+      widgetErrorMessage = pluginActionErrorMessage(error, 'Plugin validation failed');
+      widgetErrorPluginId = selectedPlugin.id;
     } finally {
       pendingPluginToggles = { ...pendingPluginToggles, [selectedPlugin.id]: false };
     }
@@ -994,11 +1005,41 @@
 
   function closeWidgetError() {
     widgetErrorMessage = '';
+    widgetErrorPluginId = null;
     if (!activeValidationError) return;
     dismissedValidationErrors = {
       ...dismissedValidationErrors,
       [validationErrorKey(activeValidationError)]: true
     };
+  }
+
+  async function reenablePluginFromError() {
+    const pluginId = activeValidationError?.plugin_id ?? widgetErrorPluginId;
+    if (!pluginId || !onSetPluginEnabled || pluginValidationActionPending) return;
+    pluginValidationActionPending = true;
+    try {
+      await onSetPluginEnabled(pluginId, true);
+      widgetErrorMessage = '';
+      widgetErrorPluginId = null;
+      if (activeValidationError) {
+        dismissedValidationErrors = {
+          ...dismissedValidationErrors,
+          [validationErrorKey(activeValidationError)]: true
+        };
+      }
+    } catch (error) {
+      const message = pluginActionErrorMessage(error, 'Plugin validation failed');
+      widgetErrorMessage = activeValidationError?.message ?? message;
+      widgetErrorPluginId = pluginId;
+    } finally {
+      pluginValidationActionPending = false;
+    }
+  }
+
+  function pluginActionErrorMessage(error: unknown, fallback: string) {
+    if (typeof error === 'string' && error.trim()) return error.trim();
+    if (error instanceof Error && error.message.trim()) return error.message.trim();
+    return fallback;
   }
 </script>
 
@@ -1757,15 +1798,24 @@
       </div>
     {/if}
 
-    {#if widgetErrorMessage || activeValidationError}
+    {#if visibleWidgetErrorMessage}
       <div class="confirm-overlay" role="presentation">
         <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="plugin-error-title">
-          <div class="confirm-copy">
+          <div class="confirm-copy plugin-error-copy">
             <h3 id="plugin-error-title">Plugin cannot run</h3>
-            <p>{widgetErrorMessage || activeValidationError?.message}</p>
+            <pre class="plugin-error-log">{visibleWidgetErrorMessage}</pre>
+            <p class="plugin-error-help">Once the issue has been fixed, re-enable plugin to re-test.</p>
           </div>
           <div class="confirm-actions">
-            <button type="button" class="primary-action" onclick={closeWidgetError}>OK</button>
+            <button type="button" class="secondary" onclick={closeWidgetError}>Close</button>
+            <button
+              type="button"
+              class="primary-action"
+              disabled={pluginValidationActionPending || !onSetPluginEnabled}
+              onclick={reenablePluginFromError}
+            >
+              {pluginValidationActionPending ? 'Re-testing…' : 'Re-enable plugin'}
+            </button>
           </div>
         </div>
       </div>
@@ -1840,6 +1890,30 @@
   .confirm-copy p {
     color: #52606b;
     line-height: 1.5;
+  }
+
+  .plugin-error-copy {
+    gap: 12px;
+  }
+
+  .plugin-error-log {
+    max-height: min(220px, 36vh);
+    overflow: auto;
+    padding: 12px 14px;
+    border: 1px solid #d8dee6;
+    border-radius: 10px;
+    background: #f6f8fa;
+    color: #2d3742;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .plugin-error-help {
+    margin: 0;
+    color: #5c6773;
+    font-size: 13px;
   }
 
   .confirm-actions {
