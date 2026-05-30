@@ -935,6 +935,7 @@ mod tests {
             root_dir: PathBuf::from("/plugins/sm.plugin.pdf"),
             command: PathBuf::from("/plugins/sm.plugin.pdf/bin/linux-x64/sm-plugin-pdf"),
             args: vec!["--job".to_string()],
+            check_args: None,
             handles: vec![".pdf".to_string()],
             requires_entitlement: false,
             timeout_seconds: 60,

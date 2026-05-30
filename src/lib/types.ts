@@ -215,6 +215,13 @@ export type PluginIssuePreference = {
   error_code: string;
 };
 
+export type PluginValidationError = {
+  plugin_id: string;
+  plugin_name: string;
+  version: string;
+  message: string;
+};
+
 export type PurchaseConnectionState = 'not_connected' | 'pending' | 'connected' | 'expired';
 
 export type PurchaseConnectionSummary = {
@@ -266,6 +273,7 @@ export type PluginIndexSummary = {
   worker_running: boolean;
   plugin_summaries: PluginHealthSummary[];
   auto_ignored_issue_types: PluginIssuePreference[];
+  plugin_validation_errors: PluginValidationError[];
   purchase_connection: PurchaseConnectionSummary;
   marketplace_plugins: MarketplacePluginSummary[];
 };

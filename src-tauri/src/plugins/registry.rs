@@ -17,6 +17,7 @@ pub struct RegisteredPlugin {
     pub root_dir: PathBuf,
     pub command: PathBuf,
     pub args: Vec<String>,
+    pub check_args: Option<Vec<String>>,
     pub handles: Vec<String>,
     pub requires_entitlement: bool,
     pub timeout_seconds: u64,
@@ -268,6 +269,13 @@ fn register_plugin(
         root_dir: plugin_dir,
         command,
         args: manifest.entry.args,
+        check_args: manifest.entry.check_args.or_else(|| {
+            if manifest.capabilities.ocr {
+                Some(vec!["--check".to_string()])
+            } else {
+                None
+            }
+        }),
         handles: manifest.handles,
         requires_entitlement: manifest.requires_entitlement,
         timeout_seconds,
@@ -468,5 +476,40 @@ command = "sm-plugin-pdf"
         assert!(report.issues.is_empty());
         let plugin = report.registry.by_id.get("sm.plugin.pdf").unwrap();
         assert_eq!(plugin.command, plugin_root.join("bin/sm-plugin-pdf.exe"));
+    }
+
+    #[test]
+    fn ocr_plugins_get_default_check_args() {
+        let temp = tempdir().unwrap();
+        let plugin_root = temp.path().join("sm.plugin.ocr/0.1.0");
+        fs::create_dir_all(plugin_root.join("bin")).unwrap();
+        fs::write(
+            plugin_root.join("plugin.toml"),
+            r#"
+schema = "sm.plugin.v1"
+id = "sm.plugin.ocr"
+name = "OCR Plugin"
+version = "0.1.0"
+handles = [".png"]
+
+[entry]
+kind = "process"
+command = "sm-plugin-ocr"
+
+[capabilities]
+ocr = true
+"#,
+        )
+        .unwrap();
+        fs::write(plugin_root.join("bin/sm-plugin-ocr"), "").unwrap();
+
+        let report = PluginRegistry::discover_for_platform(
+            &[temp.path().to_path_buf()],
+            PluginPlatform::LinuxX64,
+        )
+        .unwrap();
+
+        let plugin = report.registry.by_id.get("sm.plugin.ocr").unwrap();
+        assert_eq!(plugin.check_args, Some(vec!["--check".to_string()]));
     }
 }

@@ -852,6 +852,7 @@
       pluginDialogOpen = true;
     } catch (error) {
       pluginStatusError = normalizeError(error);
+      await refreshPluginStatus(true).catch(() => {});
       throw error;
     } finally {
       marketplaceInstallInFlight = false;
@@ -940,6 +941,8 @@
       pluginDialogOpen = true;
     } catch (error) {
       pluginStatusError = normalizeError(error);
+      await refreshPluginStatus(true).catch(() => {});
+      throw error;
     }
   }
 
@@ -960,6 +963,8 @@
       pluginDialogOpen = true;
     } catch (error) {
       pluginStatusError = normalizeError(error);
+      await refreshPluginStatus(true).catch(() => {});
+      throw error;
     }
   }
 

@@ -10,7 +10,8 @@
     PluginIndexSummary,
     PluginIssue,
     PluginIssueCount,
-    PurchaseConnectionSummary
+    PurchaseConnectionSummary,
+    PluginValidationError
   } from '$lib/types';
 
   const WEBSITE_URL = 'https://searchmonkey.dev';
@@ -119,6 +120,8 @@
   let editingPendingPurchaseEmail = $state(false);
   let pendingConfirmation = $state<PendingConfirmation | null>(null);
   let missingDownloadUrlRefreshAttempted = $state(false);
+  let dismissedValidationErrors = $state<Record<string, boolean>>({});
+  let widgetErrorMessage = $state('');
   let issueCountsRequestId = 0;
   let attentionIssuesRequestId = 0;
   let ignoredIssuesRequestId = 0;
@@ -195,6 +198,10 @@
     }
   );
   const marketplacePlugins = $derived<MarketplacePluginSummary[]>(status?.marketplace_plugins ?? []);
+  const activeValidationError = $derived.by<PluginValidationError | null>(() => {
+    const errors = status?.plugin_validation_errors ?? [];
+    return errors.find((error) => !dismissedValidationErrors[validationErrorKey(error)]) ?? null;
+  });
   const pluginGroups = $derived.by(() => {
     const groups = new Map<string, InstalledPluginInfo>();
     for (const plugin of installedPlugins) {
@@ -631,6 +638,9 @@
     pendingVersionActivations = markPending(pendingVersionActivations, key, true);
     try {
       await onActivateVersion(pluginId, version);
+      widgetErrorMessage = '';
+    } catch (error) {
+      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin validation failed';
     } finally {
       pendingVersionActivations = markPending(pendingVersionActivations, key, false);
     }
@@ -868,6 +878,9 @@
     pendingMarketplaceInstalls = { ...pendingMarketplaceInstalls, [plugin.plugin_id]: true };
     try {
       await onInstallMarketplacePlugin(plugin.plugin_id);
+      widgetErrorMessage = '';
+    } catch (error) {
+      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin install failed';
     } finally {
       pendingMarketplaceInstalls = { ...pendingMarketplaceInstalls, [plugin.plugin_id]: false };
     }
@@ -906,6 +919,9 @@
     pendingPluginToggles = { ...pendingPluginToggles, [selectedPlugin.id]: true };
     try {
       await onSetPluginEnabled(selectedPlugin.id, nextEnabled);
+      widgetErrorMessage = '';
+    } catch (error) {
+      widgetErrorMessage = error instanceof Error ? error.message : 'Plugin validation failed';
     } finally {
       pendingPluginToggles = { ...pendingPluginToggles, [selectedPlugin.id]: false };
     }
@@ -970,6 +986,19 @@
     const { resolve } = pendingConfirmation;
     pendingConfirmation = null;
     resolve(confirmed);
+  }
+
+  function validationErrorKey(error: PluginValidationError) {
+    return `${error.plugin_id}:${error.version}:${error.message}`;
+  }
+
+  function closeWidgetError() {
+    widgetErrorMessage = '';
+    if (!activeValidationError) return;
+    dismissedValidationErrors = {
+      ...dismissedValidationErrors,
+      [validationErrorKey(activeValidationError)]: true
+    };
   }
 </script>
 
@@ -1723,6 +1752,20 @@
             >
               {pendingConfirmation.confirmLabel}
             </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if widgetErrorMessage || activeValidationError}
+      <div class="confirm-overlay" role="presentation">
+        <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="plugin-error-title">
+          <div class="confirm-copy">
+            <h3 id="plugin-error-title">Plugin cannot run</h3>
+            <p>{widgetErrorMessage || activeValidationError?.message}</p>
+          </div>
+          <div class="confirm-actions">
+            <button type="button" class="primary-action" onclick={closeWidgetError}>OK</button>
           </div>
         </div>
       </div>

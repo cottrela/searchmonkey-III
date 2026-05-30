@@ -257,6 +257,7 @@ mod tests {
             root_dir: PathBuf::from("/tmp/plugin"),
             command: PathBuf::from("/tmp/plugin/bin/sm-plugin-pdf"),
             args: vec!["--job".to_string()],
+            check_args: None,
             handles: vec![".pdf".to_string()],
             requires_entitlement: false,
             timeout_seconds: 30,

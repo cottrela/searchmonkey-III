@@ -34,6 +34,7 @@ pub struct PluginEntry {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    pub check_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -203,6 +204,7 @@ timeout_seconds = 45
 kind = "process"
 command = "sm-plugin-pdf"
 args = ["--job"]
+check_args = ["--check"]
 
 [capabilities]
 text = true
@@ -212,6 +214,7 @@ layout = true
         .unwrap();
 
         assert_eq!(manifest.entry.kind, PluginEntryKind::Process);
+        assert_eq!(manifest.entry.check_args, Some(vec!["--check".to_string()]));
         assert_eq!(manifest.timeout_seconds(), 45);
         assert_eq!(manifest.permissions.len(), 2);
         assert_eq!(manifest.permissions[0], PluginPermission::ReadSourceFile);

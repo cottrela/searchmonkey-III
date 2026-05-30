@@ -11,7 +11,7 @@ use crate::plugins::installer::install_plugin_archive;
 use crate::plugins::meta::SmMeta;
 use crate::plugins::registry::{
     default_plugin_roots, plugin_version_cmp, plugin_version_satisfies_selected,
-    PluginDiscoveryReport, PluginRegistry,
+    PluginDiscoveryReport, PluginRegistry, RegisteredPlugin,
 };
 use crate::plugins::state_db::{
     is_attention_status, is_retry_ready, now_rfc3339, queued_status, ready_status,
@@ -23,18 +23,19 @@ use ignore::{DirEntry, WalkBuilder};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const WORKER_DELAY: Duration = Duration::from_millis(250);
 const RETRY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 const ACTIVE_QUEUE_TARGET: usize = 16;
 const RUN_COUNTER_START: u64 = 1;
+const PLUGIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginIndexSummary {
@@ -48,6 +49,7 @@ pub struct PluginIndexSummary {
     pub worker_running: bool,
     pub plugin_summaries: Vec<PluginHealthSummary>,
     pub auto_ignored_issue_types: Vec<PluginIssuePreferenceSummary>,
+    pub plugin_validation_errors: Vec<PluginValidationErrorSummary>,
     pub purchase_connection: PurchaseConnectionSummary,
     pub marketplace_plugins: Vec<MarketplacePluginSummary>,
 }
@@ -109,6 +111,14 @@ pub struct PluginIssueCount {
 pub struct PluginIssuePreferenceSummary {
     pub plugin_id: String,
     pub error_code: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginValidationErrorSummary {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub version: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +189,8 @@ struct RuntimeState {
     paused: bool,
     scanner_running: bool,
     active_workers: usize,
+    validated_plugin_versions: HashSet<String>,
+    plugin_validation_errors: HashMap<String, PluginValidationErrorSummary>,
 }
 
 struct RuntimeInner {
@@ -425,6 +437,11 @@ impl PluginIndexRuntime {
                 .map(|plugin| plugin_health_summary(&plugin.id, counts.get(&plugin.id)))
                 .collect(),
             auto_ignored_issue_types,
+            plugin_validation_errors: state
+                .plugin_validation_errors
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
             purchase_connection: PurchaseConnectionSummary {
                 state: "not_connected".to_string(),
                 email: None,
@@ -704,9 +721,25 @@ impl PluginIndexRuntime {
                 .unwrap_or("installed plugin was not discovered");
             anyhow::bail!("plugin installed but could not be registered: {issue}");
         }
+        let installed_plugin = discovery
+            .registry
+            .versions_by_id
+            .get(&installed.plugin_id)
+            .and_then(|versions| {
+                versions
+                    .iter()
+                    .find(|plugin| plugin.version == installed.version)
+            })
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("installed plugin was not discovered"))?;
         self.inner
             .state_db
             .set_preferred_plugin_version(&installed.plugin_id, &installed.version)?;
+        if let Err(err) = validate_plugin_for_use(&self.inner, &installed_plugin) {
+            let _ = self.inner.state_db.set_plugin_enabled(&installed.plugin_id, false);
+            drop_runtime_jobs_for_plugin(&self.inner, &installed.plugin_id);
+            anyhow::bail!("{err}");
+        }
         self.restart_queued_work_from_scan_roots(QueueLane::Default)?;
         Ok((installed.plugin_id, installed.version, self.summary()))
     }
@@ -722,6 +755,11 @@ impl PluginIndexRuntime {
             anyhow::bail!("plugin {plugin_id} is not installed");
         }
 
+        if enabled {
+            let plugin = preferred_plugin_from_discovery(&self.inner, &discovery, plugin_id)
+                .ok_or_else(|| anyhow::anyhow!("plugin {plugin_id} is not installed"))?;
+            validate_plugin_for_use(&self.inner, &plugin)?;
+        }
         self.inner.state_db.set_plugin_enabled(plugin_id, enabled)?;
         if enabled {
             self.request_all_scan_roots_in_lane(QueueLane::Default)?;
@@ -744,6 +782,12 @@ impl PluginIndexRuntime {
         if !versions.iter().any(|plugin| plugin.version == version) {
             anyhow::bail!("plugin {plugin_id} version {version} is not installed");
         }
+        let plugin = versions
+            .iter()
+            .find(|plugin| plugin.version == version)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("plugin {plugin_id} version {version} is not installed"))?;
+        validate_plugin_for_use(&self.inner, &plugin)?;
         self.inner
             .state_db
             .set_preferred_plugin_version(plugin_id, version)?;
@@ -1420,6 +1464,9 @@ fn scan_file(
         return None;
     }
     let plugin = registry.by_id.get(&plugin_id)?;
+    if validate_plugin_for_scan(inner, plugin).is_err() {
+        return None;
+    }
     let metadata = fs::metadata(path).ok()?;
     let source_size = metadata.len() as i64;
     let source_mtime = system_time_rfc3339(metadata.modified().ok()?);
@@ -1504,6 +1551,175 @@ fn scan_file(
     }
 
     Some(key)
+}
+
+fn preferred_plugin_from_discovery(
+    inner: &Arc<RuntimeInner>,
+    discovery: &PluginDiscoveryReport,
+    plugin_id: &str,
+) -> Option<RegisteredPlugin> {
+    let versions = discovery.registry.versions_by_id.get(plugin_id)?;
+    let preferred = inner
+        .state_db
+        .preferred_plugin_versions()
+        .ok()
+        .and_then(|preferences| preferences.get(plugin_id).cloned());
+    if let Some(preferred) = preferred {
+        if let Some(plugin) = versions.iter().find(|plugin| plugin.version == preferred) {
+            return Some(plugin.clone());
+        }
+    }
+    versions.first().cloned()
+}
+
+fn validate_plugin_for_scan(inner: &Arc<RuntimeInner>, plugin: &RegisteredPlugin) -> Result<()> {
+    validate_plugin_for_use_internal(inner, plugin, false)
+}
+
+fn validate_plugin_for_use(inner: &Arc<RuntimeInner>, plugin: &RegisteredPlugin) -> Result<()> {
+    validate_plugin_for_use_internal(inner, plugin, true)
+}
+
+fn validate_plugin_for_use_internal(
+    inner: &Arc<RuntimeInner>,
+    plugin: &RegisteredPlugin,
+    retry_after_failure: bool,
+) -> Result<()> {
+    if plugin.check_args.is_none() {
+        clear_plugin_validation_error(inner, &plugin.id);
+        return Ok(());
+    }
+
+    let validation_key = plugin_validation_key(plugin);
+    {
+        let state = inner.state.lock().expect("plugin runtime lock poisoned");
+        if state.validated_plugin_versions.contains(&validation_key) {
+            return Ok(());
+        }
+        if !retry_after_failure {
+            if let Some(error) = state.plugin_validation_errors.get(&plugin.id) {
+                if error.version == plugin.version {
+                    anyhow::bail!("{}", error.message);
+                }
+            }
+        }
+    }
+
+    match run_plugin_check(plugin) {
+        Ok(()) => {
+            let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+            state.validated_plugin_versions.insert(validation_key);
+            state.plugin_validation_errors.remove(&plugin.id);
+            Ok(())
+        }
+        Err(err) => {
+            let message = format!("{} cannot run: {}", plugin.name, err);
+            {
+                let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+                state.validated_plugin_versions.remove(&validation_key);
+                state.plugin_validation_errors.insert(
+                    plugin.id.clone(),
+                    PluginValidationErrorSummary {
+                        plugin_id: plugin.id.clone(),
+                        plugin_name: plugin.name.clone(),
+                        version: plugin.version.clone(),
+                        message: message.clone(),
+                    },
+                );
+            }
+            let _ = inner.state_db.set_plugin_enabled(&plugin.id, false);
+            drop_runtime_jobs_for_plugin(inner, &plugin.id);
+            anyhow::bail!("{message}");
+        }
+    }
+}
+
+fn clear_plugin_validation_error(inner: &Arc<RuntimeInner>, plugin_id: &str) {
+    let mut state = inner.state.lock().expect("plugin runtime lock poisoned");
+    state.plugin_validation_errors.remove(plugin_id);
+}
+
+fn plugin_validation_key(plugin: &RegisteredPlugin) -> String {
+    format!("{}\0{}", plugin.id, plugin.version)
+}
+
+fn run_plugin_check(plugin: &RegisteredPlugin) -> Result<()> {
+    let Some(check_args) = plugin.check_args.as_ref() else {
+        return Ok(());
+    };
+
+    let mut child = Command::new(&plugin.command)
+        .args(check_args)
+        .current_dir(&plugin.root_dir)
+        .env("SM_PLUGIN_ROOT", &plugin.root_dir)
+        .env("SM_PLUGIN_ID", &plugin.id)
+        .env("SM_PLUGIN_VERSION", &plugin.version)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("failed to start validation check: {err}"))?;
+
+    let deadline = Instant::now() + PLUGIN_CHECK_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let output = read_validation_output(&mut child);
+            if status.success() {
+                return Ok(());
+            }
+            if output.is_empty() {
+                anyhow::bail!("validation check exited with status {status}");
+            }
+            anyhow::bail!("{}", clean_plugin_check_output(&output));
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let output = read_validation_output(&mut child);
+            if output.is_empty() {
+                anyhow::bail!(
+                    "validation check timed out after {} seconds",
+                    PLUGIN_CHECK_TIMEOUT.as_secs()
+                );
+            }
+            anyhow::bail!(
+                "validation check timed out after {} seconds: {}",
+                PLUGIN_CHECK_TIMEOUT.as_secs(),
+                clean_plugin_check_output(&output)
+            );
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn read_validation_output(child: &mut std::process::Child) -> String {
+    let mut parts = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        if !text.trim().is_empty() {
+            parts.push(text.trim().to_string());
+        }
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        if !text.trim().is_empty() {
+            parts.push(text.trim().to_string());
+        }
+    }
+    parts.join("\n")
+}
+
+fn clean_plugin_check_output(output: &str) -> String {
+    output
+        .trim()
+        .strip_prefix("Error:")
+        .unwrap_or(output.trim())
+        .trim()
+        .to_string()
 }
 
 fn enqueue_job(
