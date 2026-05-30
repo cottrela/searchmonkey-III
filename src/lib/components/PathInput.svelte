@@ -31,6 +31,7 @@
 
   const MAX_VISIBLE_SUGGESTIONS = 80;
   const separatorPattern = /[\\/]/;
+  const windowsDriveRootPattern = /^[A-Za-z]:[\\/]?$/;
 
   type PathContext = {
     basePath: string;
@@ -70,7 +71,8 @@
     const beforeCursor = pathValue.slice(0, boundedCursor);
     const lastSlash = Math.max(beforeCursor.lastIndexOf('/'), beforeCursor.lastIndexOf('\\'));
     const nextSlashOffset = pathValue.slice(boundedCursor).search(separatorPattern);
-    const segmentStart = lastSlash + 1;
+    const drivePrefixLength = /^[A-Za-z]:/.test(pathValue) ? 2 : 0;
+    const segmentStart = Math.max(lastSlash + 1, drivePrefixLength);
     const segmentEnd = nextSlashOffset === -1 ? pathValue.length : boundedCursor + nextSlashOffset;
     const basePath = segmentStart === 0 ? '.' : pathValue.slice(0, segmentStart);
     const query = pathValue.slice(segmentStart, boundedCursor);
@@ -184,7 +186,11 @@
   }
 
   function isCursorAtEndOfDirectory(pathValue: string, cursor: number) {
-    return pathValue.length > 0 && cursor === pathValue.length && !/[\\/]$/.test(pathValue);
+    return (
+      pathValue.length > 0 &&
+      cursor === pathValue.length &&
+      (!/[\\/]$/.test(pathValue) || windowsDriveRootPattern.test(pathValue))
+    );
   }
 
   function ensureTrailingSeparator(pathValue: string) {
@@ -308,6 +314,26 @@
 
   function buildPathSegments(pathValue: string): PathSegment[] {
     const separator = preferredPathSeparator(pathValue);
+    const driveRoot = pathValue.match(/^([A-Za-z]:)([\\/])?/);
+    if (driveRoot) {
+      const root = `${driveRoot[1]}${separator}`;
+      const rest = pathValue.slice(driveRoot[0].length);
+      const rawSegments = rest.split(separatorPattern).filter(Boolean);
+      let current = root;
+      const segments: PathSegment[] = [{ label: root, path: root }];
+
+      for (const segment of rawSegments) {
+        current = ensureTrailingPathSeparator(current);
+        current = `${current}${segment}${separator}`;
+        segments.push({
+          label: segment,
+          path: current.replace(/[\\/]+$/, '')
+        });
+      }
+
+      return segments;
+    }
+
     const rawSegments = pathValue.split(separatorPattern).filter(Boolean);
     let current = pathValue.startsWith('/') || pathValue.startsWith('\\') ? separator : '';
     const segments: PathSegment[] =

@@ -70,7 +70,9 @@ fn sanitized_prefix_component(prefix: PrefixComponent<'_>) -> String {
         use std::path::Prefix;
 
         match prefix.kind() {
-            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => char::from(drive).to_string(),
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                char::from(drive).to_ascii_uppercase().to_string()
+            }
             Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
                 format!(
                     "UNC_{}_{}",
@@ -273,6 +275,22 @@ mod tests {
             mirror_text_path(&root, &source),
             PathBuf::from(
                 r"C:\Users\acottrell\AppData\Roaming\Searchmonkey-3\index\C\Users\acottrell\Downloads\valid.pdf.sm.txt"
+            )
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uppercases_windows_drive_prefixes_in_mirror_paths() {
+        let root = PathBuf::from(r"C:\Users\acottrell\AppData\Roaming\Searchmonkey-3\index");
+        let upper = PathBuf::from(r"E:\Downloads\valid.pdf");
+        let lower = PathBuf::from(r"e:\Downloads\valid.pdf");
+
+        assert_eq!(mirror_text_path(&root, &upper), mirror_text_path(&root, &lower));
+        assert_eq!(
+            mirror_text_path(&root, &lower),
+            PathBuf::from(
+                r"C:\Users\acottrell\AppData\Roaming\Searchmonkey-3\index\E\Downloads\valid.pdf.sm.txt"
             )
         );
     }

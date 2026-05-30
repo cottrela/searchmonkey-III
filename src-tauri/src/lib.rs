@@ -239,6 +239,12 @@ async fn list_directory(path: String, include_hidden: bool) -> Result<Vec<String
 
 fn list_directory_entries(path: String, include_hidden: bool) -> Result<Vec<String>, String> {
     let path = expand_home_path(&path)?;
+    if path.as_os_str().is_empty() {
+        return Ok(list_windows_drive_roots()
+            .into_iter()
+            .take(DIRECTORY_SUGGESTION_LIMIT)
+            .collect());
+    }
     let entries = std::fs::read_dir(path).map_err(|err| err.to_string())?;
     let mut suggestions = Vec::new();
 
@@ -269,6 +275,21 @@ fn list_directory_entries(path: String, include_hidden: bool) -> Result<Vec<Stri
         .take(DIRECTORY_SUGGESTION_LIMIT)
         .map(|name| format!("{name}{MAIN_SEPARATOR}"))
         .collect())
+}
+
+#[cfg(windows)]
+fn list_windows_drive_roots() -> Vec<String> {
+    ('A'..='Z')
+        .filter_map(|drive| {
+            let root = format!("{drive}:\\");
+            Path::new(&root).is_dir().then_some(root)
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn list_windows_drive_roots() -> Vec<String> {
+    Vec::new()
 }
 
 fn expand_home_path(path: &str) -> Result<PathBuf, String> {
