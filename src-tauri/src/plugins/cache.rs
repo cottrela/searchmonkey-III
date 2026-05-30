@@ -206,7 +206,7 @@ fn validate_cache_at_paths(
         }
     };
 
-    if resolve_meta_path(&meta_path, &meta.source.path) != source_path {
+    if !paths_equivalent(&resolve_meta_path(&meta_path, &meta.source.path), source_path) {
         return CacheValidationResult {
             status: CacheStatus::InvalidMeta,
             source_path: source_path.to_path_buf(),
@@ -276,7 +276,7 @@ fn validate_cache_at_paths(
         }
     }
 
-    if resolve_meta_path(&meta_path, &meta.text.path) != text_path {
+    if !paths_equivalent(&resolve_meta_path(&meta_path, &meta.text.path), &text_path) {
         let recorded_text_path = meta.text.path.clone();
         let expected_text_path = text_path.display().to_string();
         return CacheValidationResult {
@@ -342,7 +342,7 @@ pub fn validate_generated_text_cache(
         .unwrap_or_else(|| text_path.to_path_buf());
     let mut validation = validate_cache_with_plugin(&source_path, Some(plugin));
 
-    if validation.text_path != text_path {
+    if !paths_equivalent(&validation.text_path, text_path) {
         validation.status = CacheStatus::InvalidMeta;
         return validation;
     }
@@ -392,6 +392,21 @@ fn resolve_meta_path(meta_path: &Path, recorded_path: &str) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new(""))
         .join(recorded)
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        if let (Ok(left), Ok(right)) = (left.canonicalize(), right.canonicalize()) {
+            return left == right;
+        }
+    }
+
+    false
 }
 
 fn normalize_mtime(value: OffsetDateTime) -> OffsetDateTime {
@@ -462,6 +477,57 @@ mod tests {
         assert_eq!(validation.status, CacheStatus::Ready);
         assert!(validation.is_ready());
         assert!(validation.meta.is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_verbatim_paths_recorded_in_meta() {
+        let temp = tempdir().unwrap();
+        let source_path = temp.path().join("report.pdf");
+        let text_path = temp.path().join("report.pdf.sm.txt");
+        let meta_path = temp.path().join("report.pdf.sm.meta");
+
+        fs::write(&source_path, b"pdf").unwrap();
+        fs::write(&text_path, b"hello world").unwrap();
+        let source_mtime =
+            OffsetDateTime::from(fs::metadata(&source_path).unwrap().modified().unwrap())
+                .format(&Rfc3339)
+                .unwrap();
+        let source_path_json =
+            serde_json::to_string(&source_path.canonicalize().unwrap().to_string_lossy())
+                .unwrap();
+        let text_path_json =
+            serde_json::to_string(&text_path.canonicalize().unwrap().to_string_lossy()).unwrap();
+
+        fs::write(
+            &meta_path,
+            format!(
+                r#"{{
+                  "schema": "sm.meta.v1",
+                  "source": {{
+                    "path": {source_path_json},
+                    "size": 3,
+                    "mtime": "{source_mtime}"
+                  }},
+                  "generator": {{
+                    "plugin_id": "sm.plugin.pdf",
+                    "plugin_version": "1.2.3"
+                  }},
+                  "text": {{
+                    "path": {text_path_json},
+                    "encoding": "utf-8",
+                    "length_bytes": 11
+                  }},
+                  "ranges": [
+                    {{ "type": "page", "start": 0, "end": 11, "page": 8 }}
+                  ]
+                }}"#
+            ),
+        )
+        .unwrap();
+
+        let validation = validate_cache(&source_path, &plugin());
+        assert_eq!(validation.status, CacheStatus::Ready);
     }
 
     #[test]

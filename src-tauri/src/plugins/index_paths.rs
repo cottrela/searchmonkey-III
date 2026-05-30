@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, PrefixComponent};
 
 pub fn default_index_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -53,7 +53,7 @@ pub fn mirror_relative_path(source_path: &Path) -> PathBuf {
             Component::Normal(part) => relative.push(part),
             Component::ParentDir => relative.push(".."),
             Component::Prefix(prefix) => {
-                let sanitized = prefix.as_os_str().to_string_lossy().replace(':', "");
+                let sanitized = sanitized_prefix_component(prefix);
                 if !sanitized.is_empty() {
                     relative.push(sanitized);
                 }
@@ -62,6 +62,45 @@ pub fn mirror_relative_path(source_path: &Path) -> PathBuf {
     }
 
     relative
+}
+
+fn sanitized_prefix_component(prefix: PrefixComponent<'_>) -> String {
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+
+        match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => char::from(drive).to_string(),
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                format!(
+                    "UNC_{}_{}",
+                    sanitize_component_text(&server.to_string_lossy()),
+                    sanitize_component_text(&share.to_string_lossy())
+                )
+            }
+            Prefix::Verbatim(value) => {
+                format!("VERBATIM_{}", sanitize_component_text(&value.to_string_lossy()))
+            }
+            Prefix::DeviceNS(value) => {
+                format!("DEVICE_{}", sanitize_component_text(&value.to_string_lossy()))
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        sanitize_component_text(&prefix.as_os_str().to_string_lossy())
+    }
+}
+
+fn sanitize_component_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            ':' | '\\' | '/' => '_',
+            _ => character,
+        })
+        .collect()
 }
 
 pub fn mirror_text_path(index_root: &Path, source_path: &Path) -> PathBuf {
@@ -169,8 +208,10 @@ pub fn source_path_from_mirror_text_path_with_root(
 mod tests {
     use super::{
         mirror_failure_state_path, mirror_meta_path, mirror_meta_tmp_path, mirror_search_path,
-        mirror_text_path, mirror_text_tmp_path, source_path_from_mirror_text_path_with_root,
+        mirror_text_path, mirror_text_tmp_path,
     };
+    #[cfg(not(windows))]
+    use super::source_path_from_mirror_text_path_with_root;
     use std::path::PathBuf;
 
     #[test]
@@ -204,6 +245,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn recovers_unix_source_path_from_mirror_text_path() {
         let root = PathBuf::from("/index");
@@ -212,6 +254,20 @@ mod tests {
         assert_eq!(
             source_path_from_mirror_text_path_with_root(&text, &root).unwrap(),
             PathBuf::from("/Users/acottrell/sm-test/valid.pdf")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn maps_verbatim_windows_source_paths_under_index_root() {
+        let root = PathBuf::from(r"C:\Users\acottrell\AppData\Roaming\Searchmonkey-3\index");
+        let source = PathBuf::from(r"\\?\C:\Users\acottrell\Downloads\valid.pdf");
+
+        assert_eq!(
+            mirror_text_path(&root, &source),
+            PathBuf::from(
+                r"C:\Users\acottrell\AppData\Roaming\Searchmonkey-3\index\C\Users\acottrell\Downloads\valid.pdf.sm.txt"
+            )
         );
     }
 }

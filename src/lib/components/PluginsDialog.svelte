@@ -1095,6 +1095,7 @@
                       ? purchasesActionPending === 'start' ? 'Sending…' : 'Reconnect purchases'
                       : purchasesActionPending === 'start' ? 'Sending…' : 'Connect purchases'}
                   </button>
+                  <button type="button" class="secondary" onclick={openPluginCatalog}>Browse plugins</button>
                 {/if}
               {/if}
             </div>
@@ -1142,25 +1143,12 @@
                 </article>
               {/each}
             </section>
-          {:else}
+          {:else if purchaseConnection.state === 'connected'}
             <div class="empty-state plugin-content">
-              <div class="empty-illustration" aria-hidden="true">
-                <span class="empty-glyph">◎</span>
-              </div>
-              <h3>Connect your Searchmonkey purchases</h3>
-              <p>Install and update plugins linked to your Searchmonkey purchases.</p>
-              <ol class="empty-steps">
-                <li>Enter the email used at checkout</li>
-                <li>Verify the email link</li>
-                <li>Install plugins directly in Searchmonkey</li>
-              </ol>
+              <h3>No plugins available</h3>
+              <p>Your connected library has no plugins to install right now.</p>
               <div class="empty-actions">
                 <button type="button" class="secondary" onclick={openPluginCatalog}>Browse plugins</button>
-              {#if purchaseConnection.state !== 'connected' && purchaseConnection.state !== 'pending'}
-                <button type="button" class="primary-action empty-cta" disabled={purchasesActionPending !== null || !purchaseEmail.trim()} onclick={startEmailVerification}>
-                  {purchasesActionPending === 'start' ? 'Sending…' : 'Connect purchases'}
-                </button>
-              {/if}
               </div>
             </div>
           {/if}

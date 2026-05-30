@@ -43,6 +43,18 @@ This makes it particularly useful for:
 pnpm install
 ```
 
+Download the ripgrep sidecar used by the Tauri app:
+
+```sh
+scripts/pull-rg-bin.sh
+```
+
+On Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\pull-rg-bin.ps1
+```
+
 ### Run (development)
 
 ```sh
