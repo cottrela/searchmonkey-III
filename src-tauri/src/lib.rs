@@ -999,8 +999,30 @@ fn queue_plugin_scan_for_path(plugin_index: &PluginIndexRuntime, path: &str) {
     let Ok(path) = expand_home_path(path.trim()) else {
         return;
     };
+    if should_skip_automatic_plugin_scan(&path) {
+        return;
+    }
     if path.exists() {
         let _ = plugin_index.request_scan(&path);
+    }
+}
+
+fn should_skip_automatic_plugin_scan(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if path == Path::new("/") || path == Path::new("/Users") {
+            return true;
+        }
+
+        return home_dir()
+            .map(|home| path == Path::new(&home))
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
     }
 }
 

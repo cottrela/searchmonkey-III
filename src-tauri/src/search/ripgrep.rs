@@ -169,6 +169,7 @@ impl RipgrepSidecarProvider {
             args.push("--no-ignore".to_string());
         }
 
+        apply_platform_default_excludes(&mut args, Path::new(&path));
         plugin_filter.apply_to_args(&mut args);
         args.push(query);
         args.push(path.clone());
@@ -458,6 +459,66 @@ pub fn sidecar_path(program: &str) -> Result<PathBuf> {
 
 fn normalize_glob_pattern(pattern: String) -> String {
     pattern.replace('\\', "/")
+}
+
+fn apply_platform_default_excludes(args: &mut Vec<String>, search_path: &Path) {
+    for pattern in platform_default_excludes(search_path) {
+        args.push("--glob".to_string());
+        args.push(pattern.to_string());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_default_excludes(search_path: &Path) -> Vec<&'static str> {
+    if !is_broad_macos_search_root(search_path) {
+        return Vec::new();
+    }
+
+    vec![
+        "!Desktop/**",
+        "!Documents/**",
+        "!Downloads/**",
+        "!Library/**",
+        "!Movies/**",
+        "!Music/**",
+        "!Pictures/**",
+        "!Public/**",
+        "!Applications/**",
+        "!System/**",
+        "!Volumes/**",
+        "!Users/*/Desktop/**",
+        "!Users/*/Documents/**",
+        "!Users/*/Downloads/**",
+        "!Users/*/Library/**",
+        "!Users/*/Movies/**",
+        "!Users/*/Music/**",
+        "!Users/*/Pictures/**",
+        "!Users/*/Public/**",
+        "!*/Desktop/**",
+        "!*/Documents/**",
+        "!*/Downloads/**",
+        "!*/Library/**",
+        "!*/Movies/**",
+        "!*/Music/**",
+        "!*/Pictures/**",
+        "!*/Public/**",
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_default_excludes(_search_path: &Path) -> Vec<&'static str> {
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn is_broad_macos_search_root(search_path: &Path) -> bool {
+    if search_path == Path::new("/") || search_path == Path::new("/Users") {
+        return true;
+    }
+
+    home_dir()
+        .map(|home| search_path == Path::new(&home))
+        .unwrap_or(false)
 }
 
 impl ResultPathFilter {

@@ -145,7 +145,6 @@
   let pluginStatusPollInFlight = false;
   let purchasePollTimer: ReturnType<typeof setTimeout> | null = null;
   let purchasePollInFlight = false;
-  let startupPluginScanTimer: ReturnType<typeof setTimeout> | null = null;
   let reindexingPaths = $state<Set<string>>(new Set());
   let appVisible = $state(true);
   let marketplaceInstallInFlight = $state(false);
@@ -160,7 +159,6 @@
   const PLUGIN_STATUS_IDLE_POLL_MS = 5000;
   const PLUGIN_STATUS_ACTIVE_POLL_MS = 1000;
   const PLUGIN_STATUS_HEAVY_POLL_MS = 500;
-  const STARTUP_PLUGIN_SCAN_DELAY_MS = 1500;
   const REINDEX_FEEDBACK_MS = 3000;
   const MAX_DISPLAYED_MATCHES = 100000;
   const RECENT_SEARCHES_KEY = 'searchmonkey:recent-searches';
@@ -555,11 +553,9 @@
       .then((home) => {
         defaultHomePath = home;
         if (!path) path = home;
-        scheduleStartupPluginScan();
       })
       .catch(() => {
         if (!path) path = '/';
-        scheduleStartupPluginScan();
       });
     if (pluginDialogOpen && appVisible) {
       void refreshPluginStatus();
@@ -575,7 +571,6 @@
       clearStatusPollTimer();
       clearPluginStatusPollTimer();
       clearPurchasePollTimer();
-      clearStartupPluginScanTimer();
       clearElapsedTimer();
       clearResultFlushTimer();
       improveMenuEventUnlisten?.();
@@ -665,30 +660,6 @@
       purchasePollTimer = null;
       void pollPendingPurchaseConnection();
     }, 1000);
-  }
-
-  function scheduleStartupPluginScan() {
-    clearStartupPluginScanTimer();
-    startupPluginScanTimer = setTimeout(() => {
-      startupPluginScanTimer = null;
-      if (hasSearched || activeSearchId !== null || searchState !== 'idle') return;
-      const targetPath = path.trim() || defaultHomePath;
-      if (!targetPath) return;
-      void queuePluginScan(targetPath)
-        .then((status) => {
-          pluginStatus = status;
-          pluginStatusError = '';
-        })
-        .catch((error) => {
-          pluginStatusError = normalizeError(error);
-        });
-    }, STARTUP_PLUGIN_SCAN_DELAY_MS);
-  }
-
-  function clearStartupPluginScanTimer() {
-    if (!startupPluginScanTimer) return;
-    clearTimeout(startupPluginScanTimer);
-    startupPluginScanTimer = null;
   }
 
   $effect(() => {

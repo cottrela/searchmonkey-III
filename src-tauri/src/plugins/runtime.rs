@@ -1281,12 +1281,15 @@ fn scan_root_internal(
         .cloned()
         .collect::<Vec<_>>();
     let index_roots = inner.index_roots.clone();
+    let scan_root = root.to_path_buf();
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(false)
         .git_global(false)
         .git_exclude(false)
-        .filter_entry(move |entry| scan_entry_allowed(entry, &plugin_roots, &index_roots))
+        .filter_entry(move |entry| {
+            scan_entry_allowed(entry, &scan_root, &plugin_roots, &index_roots)
+        })
         .build();
 
     for entry in walker {
@@ -1426,10 +1429,19 @@ fn resolve_recorded_meta_path(meta_path: &Path, recorded_path: &str) -> PathBuf 
         .join(recorded)
 }
 
-fn scan_entry_allowed(entry: &DirEntry, plugin_roots: &[PathBuf], index_roots: &[PathBuf]) -> bool {
+fn scan_entry_allowed(
+    entry: &DirEntry,
+    scan_root: &Path,
+    plugin_roots: &[PathBuf],
+    index_roots: &[PathBuf],
+) -> bool {
     let path = entry.path();
 
     if has_ignored_path_component(path) {
+        return false;
+    }
+
+    if is_default_protected_macos_scan_entry(scan_root, path) {
         return false;
     }
 
@@ -1447,6 +1459,60 @@ fn scan_entry_allowed(entry: &DirEntry, plugin_roots: &[PathBuf], index_roots: &
     }
 
     true
+}
+
+#[cfg(target_os = "macos")]
+fn is_default_protected_macos_scan_entry(scan_root: &Path, path: &Path) -> bool {
+    if path == scan_root || !is_broad_macos_scan_root(scan_root) {
+        return false;
+    }
+
+    let protected_names = [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Library",
+        "Movies",
+        "Music",
+        "Pictures",
+        "Public",
+        "Applications",
+        "System",
+        "Volumes",
+    ];
+
+    if scan_root == Path::new("/") {
+        return path
+            .strip_prefix("/")
+            .ok()
+            .and_then(|relative| relative.components().next())
+            .is_some_and(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| protected_names.contains(&name))
+            });
+    }
+
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| protected_names.contains(&name))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_default_protected_macos_scan_entry(_scan_root: &Path, _path: &Path) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn is_broad_macos_scan_root(path: &Path) -> bool {
+    if path == Path::new("/") || path == Path::new("/Users") {
+        return true;
+    }
+
+    std::env::var("HOME")
+        .map(|home| path == Path::new(&home))
+        .unwrap_or(false)
 }
 
 fn scan_file(
