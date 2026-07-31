@@ -540,7 +540,7 @@
     grid-template-columns: minmax(120px, 1fr) auto auto;
     gap: 8px;
     align-items: center;
-    min-height: 56px;
+    min-height: 68px;
     border-bottom: 1px solid var(--border);
     padding: 7px 10px 7px 14px;
     background: var(--preview-bg);
@@ -813,7 +813,6 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     min-height: 0;
-    padding: 14px;
     overflow: hidden;
   }
 
@@ -824,7 +823,7 @@
   }
 
   .wrap-message {
-    margin-top: 6px;
+    padding: 6px 10px;
     color: var(--muted);
     font-size: 12px;
     line-height: 16px;
@@ -833,9 +832,6 @@
   .preview {
     flex: 1 1 auto;
     min-height: 0;
-    margin: 12px 0 0;
-    border: 1px solid var(--border);
-    border-radius: 6px;
     overflow: auto;
     color: var(--text);
     background: var(--code-bg);
@@ -1063,16 +1059,11 @@
       font-size: 11px;
     }
 
-    .preview-body {
-      padding: 8px;
-    }
-
     .wrap-message {
       display: none;
     }
 
     .preview {
-      margin-top: 0;
       font-size: 12px;
       line-height: 17px;
     }
