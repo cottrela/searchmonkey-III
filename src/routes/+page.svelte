@@ -50,6 +50,7 @@
   import { normalizeExcludePatterns, normalizeIncludePatterns } from '$lib/patterns';
   import { filename, normalizeGlobPattern, parentPath } from '$lib/paths';
   import { loadTelemetryState, syncTelemetryConsent, type TelemetryState } from '$lib/telemetry';
+  import { shouldAllowNativeContextMenu } from '$lib/ui-policy';
   import { getAvailableUpdate, type AvailableUpdate } from '$lib/update-check';
   import { defaultSearchOptions } from '$lib/types';
   import type {
@@ -1582,6 +1583,12 @@
     }
   }
 
+  function handleContextMenu(event: MouseEvent) {
+    if (!shouldAllowNativeContextMenu(event.target)) {
+      event.preventDefault();
+    }
+  }
+
   function selectMatch(match: SearchMatch) {
     scheduleResultFlush(SEARCH_RESULT_FLUSH_WHILE_PREVIEW_LOADING_MS);
     previewViewport = updateViewportForMatch(match);
@@ -1939,7 +1946,7 @@
   <title>Searchmonkey III</title>
 </svelte:head>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleContextMenu} />
 
 <main class="app-shell" class:full-layout={activeLayoutMode === 'full'} class:has-update={Boolean(availableUpdate)}>
   <SearchBar

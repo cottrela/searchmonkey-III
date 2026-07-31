@@ -532,7 +532,6 @@
     min-width: 0;
     min-height: 0;
     background: var(--preview-bg);
-    box-shadow: inset 1px 0 0 var(--border);
     overflow: hidden;
   }
 

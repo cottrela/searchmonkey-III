@@ -3,6 +3,7 @@
   import { open } from '@tauri-apps/plugin-dialog';
   import { listDirectory } from '$lib/search';
   import { ensureTrailingPathSeparator, preferredPathSeparator } from '$lib/paths';
+  import { shouldOpenPathSuggestions } from '$lib/ui-policy';
 
   let {
     id,
@@ -28,6 +29,7 @@
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let suggestionContext: PathContext | null = null;
   let breadcrumbsExpanded = $state(false);
+  let suggestionsSuppressed = false;
 
   const MAX_VISIBLE_SUGGESTIONS = 80;
   const separatorPattern = /[\\/]/;
@@ -102,7 +104,11 @@
           };
           suggestions = entries;
           activeIndex = 0;
-          openSuggestions = document.activeElement === inputElement && suggestions.length > 0;
+          openSuggestions = shouldOpenPathSuggestions(
+            suggestionsSuppressed,
+            document.activeElement === inputElement,
+            suggestions.length
+          );
           return;
         } catch {
           // Fall back to sibling completion for partial directory names.
@@ -117,7 +123,11 @@
       suggestionContext = context;
       suggestions = entries.filter((entry) => entry.toLocaleLowerCase().startsWith(query));
       activeIndex = 0;
-      openSuggestions = document.activeElement === inputElement && suggestions.length > 0;
+      openSuggestions = shouldOpenPathSuggestions(
+        suggestionsSuppressed,
+        document.activeElement === inputElement,
+        suggestions.length
+      );
     } catch {
       if (currentRequest !== requestId) return;
       suggestionContext = null;
@@ -208,6 +218,8 @@
 
     value = selected;
     cursorPosition = selected.length;
+    suggestionsSuppressed = true;
+    openSuggestions = false;
 
     await tick();
     inputElement?.focus();
@@ -215,13 +227,18 @@
   }
 
   function handleInput() {
+    suggestionsSuppressed = false;
     updateCursor();
     openSuggestions = true;
   }
 
   function handleFocus() {
     updateCursor();
-    openSuggestions = suggestions.length > 0;
+    openSuggestions = shouldOpenPathSuggestions(
+      suggestionsSuppressed,
+      true,
+      suggestions.length
+    );
   }
 
   function handleBlur() {
