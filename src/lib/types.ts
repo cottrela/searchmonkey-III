@@ -21,6 +21,19 @@ export type SearchRequest = {
   ignore_build_artifacts: boolean;
 };
 
+export type CliLaunchRequest = {
+  query: string | null;
+  path: string | null;
+  regex: boolean;
+  case_sensitive: boolean;
+  globs: string[];
+  hidden: boolean;
+  follow_symlinks: boolean;
+  context_lines: number | null;
+  no_ignore: boolean;
+  start: boolean;
+};
+
 export type SearchMatch = {
   path: string;
   preview_path?: string | null;

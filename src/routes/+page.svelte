@@ -44,6 +44,7 @@
     setPluginIssueTypeAutoIgnore,
     startPurchaseEmailVerification,
     startSearch as startSearchCommand,
+    takeCliLaunch,
     uninstallPluginVersion,
     unignorePluginIssue
   } from '$lib/search';
@@ -56,6 +57,7 @@
   import type {
     FileResultGroup,
     FilePreview,
+    CliLaunchRequest,
     PreviewState,
     PluginIndexSummary,
     SearchBufferUpdatedEvent,
@@ -97,6 +99,8 @@
   let rebuildPluginIndexMenuEventUnlisten: (() => void) | null = null;
   let openPluginFolderMenuEventUnlisten: (() => void) | null = null;
   let appAuthUpdatedEventUnlisten: (() => void) | null = null;
+  let cliLaunchEventUnlisten: (() => void) | null = null;
+  let cliLaunchErrorEventUnlisten: (() => void) | null = null;
   let previewData = $state<FilePreview | null>(null);
   let previewError = $state('');
   let loadedPreviewKey = '';
@@ -150,6 +154,7 @@
   let reindexingPaths = $state<Set<string>>(new Set());
   let appVisible = $state(true);
   let marketplaceInstallInFlight = $state(false);
+  let cliSearchQueued = false;
   const reindexFeedbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const PREVIEW_CONTEXT_LINES = 50;
@@ -439,6 +444,36 @@
     void openUrl(availableUpdate.releaseUrl).catch(() => {});
   }
 
+  function applyCliLaunch(request: CliLaunchRequest) {
+    if (request.query !== null) query = request.query;
+    if (request.path !== null) path = request.path;
+
+    const includeGlobs = request.globs.filter((glob) => !glob.startsWith('!'));
+    const excludeGlobs = request.globs.filter((glob) => glob.startsWith('!')).map((glob) => glob.slice(1));
+    includePatterns = includeGlobs;
+    excludePatterns = excludeGlobs;
+    contextLines = request.context_lines ?? 0;
+    options = {
+      ...options,
+      regex: request.regex,
+      search_mode: request.regex ? 'regex' : 'literal',
+      case_sensitive: request.case_sensitive,
+      hidden: request.hidden,
+      follow_symlinks: request.follow_symlinks,
+      context_lines: request.context_lines ?? 0,
+      respect_gitignore: !request.no_ignore
+    };
+
+    if (request.start) {
+      if (isSearchActive(searchState)) {
+        cliSearchQueued = true;
+        void cancelSearch();
+      } else {
+        void startSearch();
+      }
+    }
+  }
+
   onMount(() => {
     const oneUpMedia = window.matchMedia('(max-width: 849px)');
     const fullMedia = window.matchMedia('(min-width: 1100px)');
@@ -537,6 +572,27 @@
     }).then((unlisten) => {
       appAuthUpdatedEventUnlisten = unlisten;
     });
+    void listen<CliLaunchRequest>('cli-launch', (event) => {
+      applyCliLaunch(event.payload);
+    }).then((unlisten) => {
+      cliLaunchEventUnlisten = unlisten;
+    });
+    void listen<string>('cli-launch-error', (event) => {
+      errorMessage = `Command line: ${event.payload}`;
+    }).then((unlisten) => {
+      cliLaunchErrorEventUnlisten = unlisten;
+    });
+    void takeCliLaunch().then(async (request) => {
+      if (!request) return;
+      if (request.path === null && !path) {
+        try {
+          path = await homeDir();
+        } catch {
+          path = '/';
+        }
+      }
+      applyCliLaunch(request);
+    });
     telemetryState = loadTelemetryState();
     if (!telemetryState.prompted || !telemetryState.consent) {
       telemetryFirstRun = true;
@@ -599,6 +655,10 @@
       rebuildPluginIndexMenuEventUnlisten = null;
       openPluginFolderMenuEventUnlisten?.();
       openPluginFolderMenuEventUnlisten = null;
+      cliLaunchEventUnlisten?.();
+      cliLaunchEventUnlisten = null;
+      cliLaunchErrorEventUnlisten?.();
+      cliLaunchErrorEventUnlisten = null;
       appAuthUpdatedEventUnlisten?.();
       appAuthUpdatedEventUnlisten = null;
       clearReindexFeedbackTimers();
@@ -1348,6 +1408,10 @@
     finishingSearchId = null;
     void cleanupSearchListeners();
     stopElapsedTimer();
+    if (cliSearchQueued) {
+      cliSearchQueued = false;
+      void startSearch();
+    }
   }
 
   async function pullResults(searchId: number, immediateRender = false) {
