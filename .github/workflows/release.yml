@@ -21,7 +21,7 @@ jobs:
             args: --target universal-apple-darwin
 
           - platform: ubuntu-22.04
-            args: ""
+            args: --bundles appimage,deb
 
           - platform: windows-latest
             args: ""
@@ -84,7 +84,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            rpm
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -180,6 +181,33 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Build RPM using the system ripgrep package
+        if: matrix.platform == 'ubuntu-22.04'
+        run: pnpm tauri build --bundles rpm --config src-tauri/tauri.rpm.conf.json
+
+      - name: Verify RPM does not own rg
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+
+          rpm_file="$(find src-tauri/target/release/bundle/rpm -type f -name '*.rpm' -print -quit)"
+          test -n "$rpm_file"
+
+          if rpm -qpl "$rpm_file" | grep -Fx /usr/bin/rg; then
+            echo "RPM must not install /usr/bin/rg" >&2
+            exit 1
+          fi
+
+          rpm -qpR "$rpm_file" | grep -Fx ripgrep
+
+      - name: Upload RPM
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rpm_file="$(find src-tauri/target/release/bundle/rpm -type f -name '*.rpm' -print -quit)"
+          gh release upload "${{ github.ref_name }}" "$rpm_file" --clobber
 
       - name: Find b292 rg after AppImage build
         if: matrix.platform == 'ubuntu-22.04'
