@@ -47,11 +47,15 @@
     ['\\berror\\b', 'the word error, not terror'],
     ['foo.*bar', 'foo then bar on the same line']
   ];
+
+  function closeFromBackdrop(event: MouseEvent) {
+    if (event.target === event.currentTarget) {
+      onClose?.();
+    }
+  }
 </script>
 
-<div class="modal-layer" role="presentation">
-  <button class="modal-backdrop" type="button" aria-label="Close regex cheat sheet" onclick={onClose}></button>
-
+<div class="modal-layer" role="presentation" onclick={closeFromBackdrop}>
   <div class="cheat-sheet-dialog" role="dialog" aria-modal="true" aria-labelledby="regex-cheat-sheet-title">
     <header>
       <h2 id="regex-cheat-sheet-title">Regex Cheat Sheet</h2>
@@ -95,18 +99,17 @@
 <style>
   .modal-layer {
     position: fixed;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     z-index: 46;
     display: grid;
+    box-sizing: border-box;
     place-items: center;
     padding: 20px;
-  }
-
-  .modal-backdrop {
-    position: absolute;
-    inset: 0;
-    border: 0;
     background: rgba(30, 37, 45, 0.22);
+    overflow: auto;
   }
 
   .cheat-sheet-dialog {
@@ -114,8 +117,8 @@
     z-index: 1;
     display: grid;
     width: min(720px, 100%);
-    max-width: calc(100vw - 24px);
-    max-height: min(760px, calc(100vh - 32px));
+    max-width: 100%;
+    max-height: min(760px, 100%);
     grid-template-rows: auto minmax(0, 1fr);
     border: 1px solid #dfe5e0;
     border-radius: 12px;
@@ -243,8 +246,8 @@
     }
 
     .cheat-sheet-dialog {
-      max-width: calc(100vw - 12px);
-      max-height: calc(100vh - 20px);
+      max-width: 100%;
+      max-height: 100%;
     }
 
     .content {
