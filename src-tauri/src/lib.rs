@@ -22,7 +22,7 @@ use search::{
     FilePreview, FilePreviewLine, FilePreviewPageBreak, SearchMatch, SearchProvider, SearchRequest,
     SearchState, SearchStatus,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
     Emitter, State,
@@ -33,6 +33,7 @@ const UI_RESULT_LIMIT: usize = 100_000;
 const PREVIEW_MAX_SCAN_LINES: u64 = 250_000;
 const DIRECTORY_SUGGESTION_LIMIT: usize = 500;
 const IMPROVE_MENU_ID: &str = "improve-searchmonkey";
+const FILE_OPENING_SETTINGS_MENU_ID: &str = "file-opening-settings";
 const ABOUT_SEARCHMONKEY_MENU_ID: &str = "about-searchmonkey-iii";
 const REGEX_CHEAT_SHEET_MENU_ID: &str = "regex-cheat-sheet";
 const RELEASE_NOTES_MENU_ID: &str = "release-notes";
@@ -53,6 +54,16 @@ struct InstallPluginResult {
     plugin_id: String,
     version: String,
     status: plugins::runtime::PluginIndexSummary,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenFileRequest {
+    path: String,
+    line: Option<u64>,
+    column: Option<u64>,
+    command: Option<String>,
+    arguments: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -337,10 +348,131 @@ fn expand_home_path(path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn open_file_path(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || open_path_native(path))
+async fn open_file_path(request: OpenFileRequest) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_path(request))
         .await
         .map_err(|err| err.to_string())?
+}
+
+fn open_path(request: OpenFileRequest) -> Result<(), String> {
+    let path = existing_path(request.path)?;
+    let Some(command) = request
+        .command
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return open_path_native(path.to_string_lossy().to_string());
+    };
+
+    let path_value = path.to_string_lossy();
+    let line = request.line.unwrap_or(1).max(1).to_string();
+    let column = request.column.unwrap_or(1).max(1).to_string();
+    let arguments = request
+        .arguments
+        .unwrap_or_else(|| vec!["{path}".to_string()]);
+    if !arguments.iter().any(|argument| argument.contains("{path}")) {
+        return Err("Custom opener arguments must include {path}.".to_string());
+    }
+    let arguments = arguments.into_iter().map(|argument| {
+        argument
+            .replace("{path}", &path_value)
+            .replace("{line}", &line)
+            .replace("{column}", &column)
+    });
+
+    let executable = resolve_file_opener_command(&command)?;
+    Command::new(executable)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("Could not launch custom file opener: {err}"))
+}
+
+#[tauri::command]
+fn validate_file_opener_command(command: String) -> Result<(), String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("Enter an application or executable.".to_string());
+    }
+
+    resolve_file_opener_command(command).map(|_| ())
+}
+
+fn resolve_file_opener_command(command: &str) -> Result<PathBuf, String> {
+    let path = expand_home_path(command)?;
+    #[cfg(target_os = "macos")]
+    if path.is_dir()
+        && path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return macos_app_executable(&path);
+    }
+
+    if path.is_absolute() || path.components().count() > 1 {
+        return path
+            .is_file()
+            .then_some(path.clone())
+            .ok_or_else(|| format!("Executable does not exist: {}", path.display()));
+    }
+
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .flat_map(|directory| executable_candidates(&directory, command))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| format!("Executable was not found in PATH: {command}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_executable(app_path: &Path) -> Result<PathBuf, String> {
+    let info_plist = app_path.join("Contents").join("Info.plist");
+    let output = Command::new("plutil")
+        .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
+        .arg(&info_plist)
+        .output()
+        .map_err(|err| format!("Could not inspect application bundle: {err}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Application bundle has no readable executable: {}",
+            app_path.display()
+        ));
+    }
+
+    let executable_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let executable = app_path
+        .join("Contents")
+        .join("MacOS")
+        .join(executable_name);
+    executable.is_file().then_some(executable).ok_or_else(|| {
+        format!(
+            "Application bundle executable does not exist: {}",
+            app_path.display()
+        )
+    })
+}
+
+fn executable_candidates(directory: &Path, command: &str) -> Vec<PathBuf> {
+    let candidate = directory.join(command);
+    #[cfg(windows)]
+    {
+        if Path::new(command).extension().is_some() {
+            return vec![candidate];
+        }
+        let extensions =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        return extensions
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| directory.join(format!("{command}{extension}")))
+            .collect();
+    }
+    #[cfg(not(windows))]
+    vec![candidate]
 }
 
 #[tauri::command]
@@ -1098,6 +1230,8 @@ pub fn run() {
             let app_menu = SubmenuBuilder::new(app, "Searchmonkey III")
                 .text(ABOUT_SEARCHMONKEY_MENU_ID, "About Searchmonkey III")
                 .separator()
+                .text(FILE_OPENING_SETTINGS_MENU_ID, "Settings…")
+                .separator()
                 .quit()
                 .build()?;
             let help_menu = SubmenuBuilder::new(app, "Help")
@@ -1149,6 +1283,10 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id() == IMPROVE_MENU_ID {
                 let _ = app.emit("open-improve-searchmonkey", ());
+            }
+
+            if event.id() == FILE_OPENING_SETTINGS_MENU_ID {
+                let _ = app.emit("open-file-opening-settings", ());
             }
 
             if event.id() == ABOUT_SEARCHMONKEY_MENU_ID {
@@ -1246,7 +1384,8 @@ pub fn run() {
             start_search,
             retry_plugin_issue_type,
             uninstall_plugin_version,
-            unignore_plugin_issue
+            unignore_plugin_issue,
+            validate_file_opener_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
