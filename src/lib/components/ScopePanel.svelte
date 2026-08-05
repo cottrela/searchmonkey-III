@@ -172,6 +172,7 @@
           <select id="encoding" bind:value={options.encoding}>
             <option value="auto">Auto</option>
             <option value="utf-8">UTF-8</option>
+            <option value="windows-1250">Central European (Windows-1250)</option>
             <option value="ascii">ASCII</option>
           </select>
         </div>

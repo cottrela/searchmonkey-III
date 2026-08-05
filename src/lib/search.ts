@@ -20,9 +20,10 @@ export async function searchFiles(request: SearchRequest): Promise<SearchMatch[]
 export async function readFilePreview(
   path: string,
   startLine: number,
-  endLine: number
+  endLine: number,
+  encoding: string
 ): Promise<FilePreview> {
-  return invoke<FilePreview>('read_file_preview', { path, startLine, endLine });
+  return invoke<FilePreview>('read_file_preview', { path, startLine, endLine, encoding });
 }
 
 export async function openFilePath(path: string): Promise<void> {

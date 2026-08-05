@@ -3661,6 +3661,7 @@ version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
+ "encoding_rs",
  "globset",
  "grep",
  "ignore",

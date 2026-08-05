@@ -160,7 +160,7 @@ impl RipgrepSidecarProvider {
             args.push("--text".to_string());
         }
 
-        if encoding == "utf-8" || encoding == "ascii" {
+        if matches!(encoding.as_str(), "utf-8" | "windows-1250" | "ascii") {
             args.push("--encoding".to_string());
             args.push(encoding);
         }
@@ -632,8 +632,8 @@ fn home_dir() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_search_path, ResultPathFilter};
-    use crate::search::SearchRequest;
+    use super::{expand_search_path, ResultPathFilter, RipgrepSidecarProvider};
+    use crate::{plugins::registry::PluginRegistry, search::SearchRequest};
     use std::path::Path;
 
     #[test]
@@ -641,6 +641,34 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         assert_eq!(expand_search_path("~"), home);
         assert!(expand_search_path("~/sm-test").ends_with("/sm-test"));
+    }
+
+    #[test]
+    fn passes_windows_1250_encoding_to_ripgrep() {
+        let request = SearchRequest {
+            query: "Problémy".to_string(),
+            path: "/tmp".to_string(),
+            regex: false,
+            case_sensitive: false,
+            hidden: false,
+            include_patterns: vec![],
+            exclude_patterns: vec![],
+            follow_symlinks: false,
+            multiline: false,
+            context_lines: 0,
+            min_file_size: String::new(),
+            max_file_size: String::new(),
+            modified_after: None,
+            skip_binary: false,
+            encoding: "windows-1250".to_string(),
+            max_matches: None,
+            respect_gitignore: true,
+            ignore_node_modules: false,
+            ignore_build_artifacts: false,
+        };
+
+        let args = RipgrepSidecarProvider::args(request, &PluginRegistry::default());
+        assert!(args.windows(2).any(|pair| pair == ["--encoding", "windows-1250"]));
     }
 
     #[test]

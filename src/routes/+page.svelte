@@ -1899,7 +1899,7 @@
 
     if (!nextViewport) return;
 
-    const previewKey = `${filePath}:${nextViewport.start}:${nextViewport.end}`;
+    const previewKey = `${filePath}:${nextViewport.start}:${nextViewport.end}:${options.encoding}`;
 
     if (loadedPreviewKey === previewKey) {
       return;
@@ -1912,7 +1912,7 @@
     previewIsLoading = true;
 
     withTimeout(
-      readFilePreview(filePath, nextViewport.start, nextViewport.end),
+      readFilePreview(filePath, nextViewport.start, nextViewport.end, options.encoding),
       PREVIEW_LOAD_TIMEOUT_MS,
       'Preview is taking too long. Search is still usable; try another result or a smaller file.'
     )

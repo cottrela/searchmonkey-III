@@ -108,13 +108,14 @@ async fn read_file_preview(
     path: String,
     start_line: u64,
     end_line: u64,
+    encoding: String,
 ) -> Result<FilePreview, String> {
     if start_line == 0 || end_line == 0 || start_line > end_line {
         return Err("Preview line range is invalid.".to_string());
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        read_file_preview_range(path, start_line, end_line)
+        read_file_preview_range(path, start_line, end_line, encoding)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -124,6 +125,7 @@ fn read_file_preview_range(
     path: String,
     start_line: u64,
     end_line: u64,
+    encoding: String,
 ) -> Result<FilePreview, String> {
     let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
     let mut reader = BufReader::new(file);
@@ -163,7 +165,7 @@ fn read_file_preview_range(
         }
 
         let trimmed = trim_line_ending(&buffer);
-        let text = String::from_utf8_lossy(trimmed).to_string();
+        let text = decode_preview_line(trimmed, &encoding, preview_meta.is_some());
 
         lines.push(FilePreviewLine {
             number,
@@ -186,6 +188,36 @@ fn read_file_preview_range(
         lines,
         truncated: start_line > 1 || saw_after_window,
     })
+}
+
+fn decode_preview_line(bytes: &[u8], encoding: &str, is_plugin_preview: bool) -> String {
+    if encoding == "windows-1250" && !is_plugin_preview {
+        let (text, _, _) = encoding_rs::WINDOWS_1250.decode(bytes);
+        text.into_owned()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod preview_encoding_tests {
+    use super::decode_preview_line;
+
+    #[test]
+    fn decodes_windows_1250_preview_text() {
+        assert_eq!(
+            decode_preview_line(b"Probl\xe9my", "windows-1250", false),
+            "Problémy"
+        );
+    }
+
+    #[test]
+    fn keeps_generated_plugin_previews_as_utf8() {
+        assert_eq!(
+            decode_preview_line("Problémy".as_bytes(), "windows-1250", true),
+            "Problémy"
+        );
+    }
 }
 
 fn trim_line_ending(bytes: &[u8]) -> &[u8] {

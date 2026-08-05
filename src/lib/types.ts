@@ -13,7 +13,7 @@ export type SearchRequest = {
   max_file_size: string;
   modified_after: number | null;
   skip_binary: boolean;
-  encoding: 'auto' | 'utf-8' | 'ascii';
+  encoding: 'auto' | 'utf-8' | 'windows-1250' | 'ascii';
   max_matches: number;
   respect_gitignore: boolean;
   ignore_node_modules: boolean;
