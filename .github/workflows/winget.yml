@@ -1,0 +1,111 @@
+name: Publish to WinGet
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to submit (for example, v0.3.4)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winget-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    name: Submit WinGet update
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
+
+    steps:
+      - name: Resolve release details
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:RELEASE_TAG -notmatch '^v(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+            throw "Release tag '$env:RELEASE_TAG' must use the form v1.2.3."
+          }
+
+          $version = $Matches.version
+          $installerName = "Searchmonkey_${version}_x64-setup.exe"
+          $installerUrl = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/$installerName"
+
+          "tag=$env:RELEASE_TAG" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "installer_name=$installerName" >> $env:GITHUB_OUTPUT
+          "installer_url=$installerUrl" >> $env:GITHUB_OUTPUT
+
+      - name: Check submission token
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) {
+            throw 'Add WINGET_CREATE_GITHUB_TOKEN as a repository Actions secret before publishing a release.'
+          }
+
+      - name: Download and verify installer
+        id: installer
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.release.outputs.installer_name }}
+          INSTALLER_URL: ${{ steps.release.outputs.installer_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $env:INSTALLER_NAME
+
+          $sha256 = (Get-FileHash -Path $env:INSTALLER_NAME -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$sha256" >> $env:GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Download WingetCreate
+        shell: pwsh
+        run: Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Create WinGet pull request
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ steps.release.outputs.installer_url }}
+          PACKAGE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\wingetcreate.exe update Axonara.Searchmonkey `
+            --urls $env:INSTALLER_URL `
+            --version $env:PACKAGE_VERSION `
+            --token $env:WINGET_CREATE_GITHUB_TOKEN `
+            --submit
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "WingetCreate exited with code $LASTEXITCODE."
+          }
+
+      - name: Write workflow summary
+        if: always()
+        shell: pwsh
+        env:
+          INSTALLER_URL: ${{ steps.release.outputs.installer_url }}
+          PACKAGE_VERSION: ${{ steps.release.outputs.version }}
+          INSTALLER_SHA256: ${{ steps.installer.outputs.sha256 }}
+        run: |
+          @"
+          ## Searchmonkey WinGet submission
+
+          - Version: ``$env:PACKAGE_VERSION``
+          - Installer: [$env:INSTALLER_URL]($env:INSTALLER_URL)
+          - SHA-256: ``$env:INSTALLER_SHA256``
+          - [Search open WinGet pull requests](https://github.com/microsoft/winget-pkgs/pulls?q=is%3Apr+is%3Aopen+Axonara.Searchmonkey)
+          "@ >> $env:GITHUB_STEP_SUMMARY
