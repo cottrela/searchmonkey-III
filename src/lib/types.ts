@@ -1,5 +1,6 @@
 export type SearchRequest = {
   query: string;
+  path_query: string;
   path: string;
   regex: boolean;
   case_sensitive: boolean;
@@ -118,6 +119,7 @@ export type SearchCriteria = {
   id: string;
   name: string;
   query: string;
+  pathQuery: string;
   path: string;
   includePatterns: string[];
   excludePatterns: string[];

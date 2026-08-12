@@ -13,6 +13,8 @@ pub fn debug_logging_enabled() -> bool {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
+    #[serde(default)]
+    pub path_query: String,
     pub path: String,
     pub regex: bool,
     pub case_sensitive: bool,
