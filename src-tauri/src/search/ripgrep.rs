@@ -29,6 +29,8 @@ pub struct RipgrepSidecarProvider {
 #[derive(Clone, Default)]
 pub struct ResultPathFilter {
     search_root: PathBuf,
+    path_query: String,
+    case_sensitive: bool,
     include_patterns: Vec<CompiledGlobPattern>,
     exclude_patterns: Vec<CompiledGlobPattern>,
 }
@@ -528,12 +530,30 @@ impl ResultPathFilter {
 
         Self {
             search_root,
+            path_query: if request.case_sensitive {
+                request.path_query.trim().to_string()
+            } else {
+                request.path_query.trim().to_lowercase()
+            },
+            case_sensitive: request.case_sensitive,
             include_patterns: compile_glob_patterns(&request.include_patterns),
             exclude_patterns: compile_glob_patterns(&request.exclude_patterns),
         }
     }
 
     pub fn matches_path(&self, path: &Path) -> bool {
+        if !self.path_query.is_empty() {
+            let normalized_path = path.to_string_lossy().replace('\\', "/");
+            let candidate = if self.case_sensitive {
+                normalized_path
+            } else {
+                normalized_path.to_lowercase()
+            };
+            if !candidate.contains(&self.path_query) {
+                return false;
+            }
+        }
+
         let include_matches = self.include_patterns.is_empty()
             || self
                 .include_patterns
@@ -551,8 +571,9 @@ impl ResultPathFilter {
 
     pub fn debug_summary(&self) -> String {
         format!(
-            "search_root={} include_count={} exclude_count={}",
+            "search_root={} path_query_len={} include_count={} exclude_count={}",
             self.search_root.display(),
+            self.path_query.len(),
             self.include_patterns.len(),
             self.exclude_patterns.len()
         )
@@ -647,6 +668,7 @@ mod tests {
     fn passes_windows_1250_encoding_to_ripgrep() {
         let request = SearchRequest {
             query: "Problémy".to_string(),
+            path_query: String::new(),
             path: "/tmp".to_string(),
             regex: false,
             case_sensitive: false,
@@ -668,13 +690,16 @@ mod tests {
         };
 
         let args = RipgrepSidecarProvider::args(request, &PluginRegistry::default());
-        assert!(args.windows(2).any(|pair| pair == ["--encoding", "windows-1250"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--encoding", "windows-1250"]));
     }
 
     #[test]
     fn includes_match_source_extension_after_remap() {
         let filter = ResultPathFilter::from_request(&SearchRequest {
             query: "needle".to_string(),
+            path_query: String::new(),
             path: "/Users/acottrell/ocr-test".to_string(),
             regex: false,
             case_sensitive: false,
@@ -703,6 +728,7 @@ mod tests {
     fn excludes_are_applied_to_source_paths() {
         let filter = ResultPathFilter::from_request(&SearchRequest {
             query: "needle".to_string(),
+            path_query: String::new(),
             path: "/Users/acottrell/ocr-test".to_string(),
             regex: false,
             case_sensitive: false,
@@ -725,5 +751,48 @@ mod tests {
 
         assert!(!filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.jpg")));
         assert!(filter.matches_path(Path::new("/Users/acottrell/ocr-test/invoices/page-1.png")));
+    }
+
+    #[test]
+    fn path_query_matches_file_or_parent_directory_names() {
+        let request = SearchRequest {
+            query: "needle".to_string(),
+            path_query: "MY_TEST".to_string(),
+            path: "/workspace".to_string(),
+            regex: false,
+            case_sensitive: false,
+            hidden: false,
+            include_patterns: vec![],
+            exclude_patterns: vec![],
+            follow_symlinks: false,
+            multiline: false,
+            context_lines: 0,
+            min_file_size: String::new(),
+            max_file_size: String::new(),
+            modified_after: None,
+            skip_binary: true,
+            encoding: "auto".to_string(),
+            max_matches: None,
+            respect_gitignore: true,
+            ignore_node_modules: false,
+            ignore_build_artifacts: false,
+        };
+        let filter = ResultPathFilter::from_request(&request);
+
+        assert!(filter.matches_path(Path::new("/workspace/docs/my_test_file.txt")));
+        assert!(filter.matches_path(Path::new("/workspace/my_test_dir/readme.md")));
+        assert!(!filter.matches_path(Path::new("/workspace/docs/readme.md")));
+
+        let root_filter = ResultPathFilter::from_request(&SearchRequest {
+            path_query: "workspace".to_string(),
+            ..request.clone()
+        });
+        assert!(root_filter.matches_path(Path::new("/workspace/docs/readme.md")));
+
+        let case_sensitive_filter = ResultPathFilter::from_request(&SearchRequest {
+            case_sensitive: true,
+            ..request
+        });
+        assert!(!case_sensitive_filter.matches_path(Path::new("/workspace/docs/my_test_file.txt")));
     }
 }

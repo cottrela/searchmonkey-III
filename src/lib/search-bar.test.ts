@@ -13,4 +13,15 @@ describe('search bar', () => {
     expect(searchBar).toContain('aria-label="Search text"');
     expect(searchBar).toContain('placeholder="Search text"');
   });
+
+  it('keeps the optional file or folder name refinement compact', () => {
+    const searchBar = readFileSync(
+      new URL('./components/SearchBar.svelte', import.meta.url),
+      'utf8'
+    );
+
+    expect(searchBar).toContain('>+ Name</button>');
+    expect(searchBar).toContain('aria-label="File or folder name"');
+    expect(searchBar).toContain('{#if showPathQuery}');
+  });
 });
