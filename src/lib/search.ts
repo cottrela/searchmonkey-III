@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   FilePreview,
+  CliLaunchRequest,
   InstallPluginResult,
   PluginIndexSummary,
   PluginIssue,
@@ -12,6 +13,10 @@ import type {
   SearchStatus,
   SearchStatusChangedEvent
 } from './types';
+
+export async function takeCliLaunch(): Promise<CliLaunchRequest | null> {
+  return invoke<CliLaunchRequest | null>('take_cli_launch');
+}
 
 export async function searchFiles(request: SearchRequest): Promise<SearchMatch[]> {
   return invoke<SearchMatch[]>('search_files', { request });
