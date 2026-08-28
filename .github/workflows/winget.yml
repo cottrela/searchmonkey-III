@@ -68,7 +68,7 @@ jobs:
           "sha256=$sha256" >> $env:GITHUB_OUTPUT
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 6.0.x
 
@@ -77,21 +77,234 @@ jobs:
         run: Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
 
       - name: Create WinGet pull request
+        id: submit
         shell: pwsh
         env:
           INSTALLER_URL: ${{ steps.release.outputs.installer_url }}
           PACKAGE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\wingetcreate.exe update Axonara.Searchmonkey `
+
+          $sourceHeaders = @{
+            Authorization = "Bearer $env:SOURCE_GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $submissionHeaders = @{
+            Authorization = "Bearer $env:WINGET_CREATE_GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" `
+            -Headers $sourceHeaders
+          $releaseNotes = if ([string]::IsNullOrWhiteSpace($release.body)) {
+            "Updates Searchmonkey III to version $env:PACKAGE_VERSION."
+          } else {
+            $release.body.Trim()
+          }
+
+          $upstreamRef = Invoke-RestMethod `
+            -Uri 'https://api.github.com/repos/microsoft/winget-pkgs/git/ref/heads/master' `
+            -Headers $submissionHeaders
+          $upstreamSha = $upstreamRef.object.sha
+
+          # Start with Microsoft's current template so new or modified review
+          # questions remain visible rather than being overwritten by a stale copy.
+          $templateResponse = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/microsoft/winget-pkgs/contents/.github/PULL_REQUEST_TEMPLATE.md?ref=$upstreamSha" `
+            -Headers $submissionHeaders
+          $templateBytes = [Convert]::FromBase64String(($templateResponse.content -replace '\s', ''))
+          $templateText = [Text.Encoding]::UTF8.GetString($templateBytes)
+          $prLines = [Collections.Generic.List[string]]::new()
+          foreach ($line in ($templateText -split "\r?\n")) {
+            $prLines.Add($line)
+          }
+
+          # Check only questions whose meaning we recognize. Unknown or newly
+          # introduced questions remain unchecked for the human review stage.
+          for ($index = 0; $index -lt $prLines.Count; $index++) {
+            if ($prLines[$index] -notmatch '^(?<prefix>\s*-\s*)\[\s\](?<label>.*)$') {
+              continue
+            }
+
+            $prefix = $Matches.prefix
+            $label = $Matches.label
+            $knownCompletedItem = $label -match `
+              '(?i)\bsigned\b|\bCLA\b|other open|only modifies|\bvalidated\b|\btested\b|\bconforms\b|\bschema\b'
+            $isIssueItem = $label -match '(?i)link(?:ed)?\b.*\bissue|\bissue\b.*applicable'
+
+            if ($knownCompletedItem -and -not $isIssueItem) {
+              $prLines[$index] = "$prefix[x]$label"
+            }
+          }
+
+          $descriptionHeadingIndex = -1
+          for ($index = 0; $index -lt $prLines.Count; $index++) {
+            if ($prLines[$index] -match '(?i)^##\s+.*description\s*$') {
+              $descriptionHeadingIndex = $index
+              break
+            }
+          }
+          if ($descriptionHeadingIndex -lt 0) {
+            throw "Microsoft's pull request template no longer contains a recognizable Description section."
+          }
+
+          $descriptionInsertIndex = $descriptionHeadingIndex + 1
+          while (
+            $descriptionInsertIndex -lt $prLines.Count -and
+            ($prLines[$descriptionInsertIndex] -match '^\s*$' -or
+             $prLines[$descriptionInsertIndex] -match '^\s*<!--.*-->\s*$')
+          ) {
+            $descriptionInsertIndex++
+          }
+          $prLines.Insert($descriptionInsertIndex, $releaseNotes)
+          $prLines.Insert($descriptionInsertIndex, '')
+          $prBody = $prLines -join "`n"
+          $prTitle = "Update: Axonara.Searchmonkey to $env:PACKAGE_VERSION"
+
+          $forkOwner = 'cottrela'
+          $packageId = 'Axonara.Searchmonkey'
+          $branchName = "winget-$packageId-$env:PACKAGE_VERSION"
+          $encodedBranchName = [uri]::EscapeDataString($branchName)
+          $manifestPath = "manifests/a/Axonara/Searchmonkey/$env:PACKAGE_VERSION"
+
+          # A deterministic branch makes reruns fail closed. Deliberate cleanup is
+          # required after any partial submission instead of creating a duplicate PR.
+          $existingBranch = Invoke-WebRequest `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/ref/heads/$encodedBranchName" `
+            -Headers $submissionHeaders `
+            -SkipHttpErrorCheck
+          if ($existingBranch.StatusCode -eq 200) {
+            throw "WinGet branch '$branchName' already exists. Resolve or delete it manually before retrying."
+          }
+          if ($existingBranch.StatusCode -ne 404) {
+            throw "Unable to check WinGet branch '$branchName': HTTP $($existingBranch.StatusCode)."
+          }
+
+          $legacyBranchPrefix = [uri]::EscapeDataString("$packageId-$env:PACKAGE_VERSION-")
+          $legacyBranches = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/matching-refs/heads/$legacyBranchPrefix" `
+            -Headers $submissionHeaders
+          if (@($legacyBranches).Count -gt 0) {
+            $legacyBranchNames = @($legacyBranches | ForEach-Object { $_.ref -replace '^refs/heads/', '' }) -join ', '
+            throw "A legacy WinGet submission branch already exists ($legacyBranchNames). Resolve or delete it manually before retrying."
+          }
+
+          $openPrQuery = [uri]::EscapeDataString(
+            "repo:microsoft/winget-pkgs is:pr is:open author:$forkOwner in:title $packageId $env:PACKAGE_VERSION"
+          )
+          $openPrs = Invoke-RestMethod `
+            -Uri "https://api.github.com/search/issues?q=$openPrQuery" `
+            -Headers $submissionHeaders
+          if ($openPrs.total_count -gt 0) {
+            $openPrUrls = @($openPrs.items | ForEach-Object { $_.html_url }) -join ', '
+            throw "An open WinGet PR already exists for $packageId $env:PACKAGE_VERSION ($openPrUrls). Resolve it manually before retrying."
+          }
+
+          $existingManifest = Invoke-WebRequest `
+            -Uri "https://api.github.com/repos/microsoft/winget-pkgs/contents/$manifestPath" `
+            -Headers $submissionHeaders `
+            -SkipHttpErrorCheck
+          if ($existingManifest.StatusCode -eq 200) {
+            throw "$packageId version $env:PACKAGE_VERSION already exists in microsoft/winget-pkgs."
+          }
+          if ($existingManifest.StatusCode -ne 404) {
+            throw "Unable to check the upstream manifest: HTTP $($existingManifest.StatusCode)."
+          }
+
+          $outputRoot = Join-Path $PWD 'winget-output'
+          & .\wingetcreate.exe update $packageId `
             --urls $env:INSTALLER_URL `
             --version $env:PACKAGE_VERSION `
             --token $env:WINGET_CREATE_GITHUB_TOKEN `
-            --submit
+            --out $outputRoot
 
           if ($LASTEXITCODE -ne 0) {
             throw "WingetCreate exited with code $LASTEXITCODE."
           }
+
+          $manifestDirectory = Join-Path $outputRoot $manifestPath
+          $manifestFiles = @(Get-ChildItem -Path $manifestDirectory -File)
+          if ($manifestFiles.Count -eq 0) {
+            throw "No generated manifests were found at '$manifestDirectory'."
+          }
+
+          $upstreamCommit = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/microsoft/winget-pkgs/git/commits/$upstreamSha" `
+            -Headers $submissionHeaders
+
+          $newRefPayload = @{
+            ref = "refs/heads/$branchName"
+            sha = $upstreamSha
+          } | ConvertTo-Json
+          Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/refs" `
+            -Headers $submissionHeaders `
+            -ContentType 'application/json' `
+            -Body $newRefPayload | Out-Null
+
+          $treeItems = @($manifestFiles | ForEach-Object {
+            $relativePath = [IO.Path]::GetRelativePath($outputRoot, $_.FullName).Replace('\', '/')
+            @{
+              path = $relativePath
+              mode = '100644'
+              type = 'blob'
+              content = Get-Content -Path $_.FullName -Raw
+            }
+          })
+          $treePayload = @{
+            base_tree = $upstreamCommit.tree.sha
+            tree = $treeItems
+          } | ConvertTo-Json -Depth 10
+          $newTree = Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/trees" `
+            -Headers $submissionHeaders `
+            -ContentType 'application/json' `
+            -Body $treePayload
+
+          $commitPayload = @{
+            message = $prTitle
+            tree = $newTree.sha
+            parents = @($upstreamSha)
+          } | ConvertTo-Json
+          $newCommit = Invoke-RestMethod `
+            -Method Post `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/commits" `
+            -Headers $submissionHeaders `
+            -ContentType 'application/json' `
+            -Body $commitPayload
+
+          $updateRefPayload = @{
+            sha = $newCommit.sha
+            force = $false
+          } | ConvertTo-Json
+          Invoke-RestMethod `
+            -Method Patch `
+            -Uri "https://api.github.com/repos/$forkOwner/winget-pkgs/git/refs/heads/$encodedBranchName" `
+            -Headers $submissionHeaders `
+            -ContentType 'application/json' `
+            -Body $updateRefPayload | Out-Null
+
+          $pullRequestPayload = @{
+            title = $prTitle
+            body = $prBody
+            head = "${forkOwner}:$branchName"
+            base = 'master'
+          } | ConvertTo-Json
+          $createdPr = Invoke-RestMethod `
+            -Method Post `
+            -Uri 'https://api.github.com/repos/microsoft/winget-pkgs/pulls' `
+            -Headers $submissionHeaders `
+            -ContentType 'application/json' `
+            -Body $pullRequestPayload
+
+          "pr_number=$($createdPr.number)" >> $env:GITHUB_OUTPUT
+          "pr_url=$($createdPr.html_url)" >> $env:GITHUB_OUTPUT
 
       - name: Write workflow summary
         if: always()
@@ -107,5 +320,6 @@ jobs:
           - Version: ``$env:PACKAGE_VERSION``
           - Installer: [$env:INSTALLER_URL]($env:INSTALLER_URL)
           - SHA-256: ``$env:INSTALLER_SHA256``
+          - Pull request: ${{ steps.submit.outputs.pr_url }}
           - [Search open WinGet pull requests](https://github.com/microsoft/winget-pkgs/pulls?q=is%3Apr+is%3Aopen+Axonara.Searchmonkey)
           "@ >> $env:GITHUB_STEP_SUMMARY
