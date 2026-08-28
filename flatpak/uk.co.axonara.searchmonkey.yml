@@ -12,6 +12,8 @@ finish-args:
   - --socket=x11
   - --device=dri
   - --filesystem=home
+  - --talk-name=org.uk_co_axonara_searchmonkey.SingleInstance
+  - --own-name=org.uk_co_axonara_searchmonkey.SingleInstance
 
 modules:
   - name: searchmonkey
@@ -27,4 +29,3 @@ modules:
       - type: archive
         url: https://github.com/cottrela/searchmonkey-III/releases/download/v0.1.4/Searchmonkey_linux_x86_64.tar.gz
         sha256: bce2d3278893fafaee8e5dac9dd202237d058254bd03cf3f9d81662211fe8d71 
-

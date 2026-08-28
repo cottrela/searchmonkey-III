@@ -1,4 +1,5 @@
 pub mod app_auth;
+pub mod cli;
 pub mod plugins;
 pub mod search;
 
@@ -25,7 +26,7 @@ use search::{
 use serde::Serialize;
 use tauri::{
     menu::{MenuBuilder, SubmenuBuilder},
-    Emitter, State,
+    Emitter, Manager, State,
 };
 use tauri_plugin_opener::OpenerExt;
 
@@ -53,6 +54,13 @@ struct InstallPluginResult {
     plugin_id: String,
     version: String,
     status: plugins::runtime::PluginIndexSummary,
+}
+
+struct InitialCliLaunch(Mutex<Option<cli::CliLaunchRequest>>);
+
+#[tauri::command]
+fn take_cli_launch(state: State<'_, InitialCliLaunch>) -> Option<cli::CliLaunchRequest> {
+    state.0.lock().ok()?.take()
 }
 
 #[derive(Default)]
@@ -1079,6 +1087,18 @@ fn prioritize_outdated_search_result(plugin_index: &PluginIndexRuntime, result: 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let initial_cli_launch = match cli::parse(std::env::args(), &cwd) {
+        Ok(cli::CliAction::Launch(request)) => request,
+        Ok(cli::CliAction::Print(message)) => {
+            println!("{message}");
+            return;
+        }
+        Err(message) => {
+            eprintln!("searchmonkey: {message}\nTry 'searchmonkey --help' for more information.");
+            std::process::exit(2);
+        }
+    };
     let plugin_discovery = PluginRegistry::discover_default().unwrap_or_default();
     let mut installed_plugin_labels = plugin_discovery
         .registry
@@ -1094,6 +1114,23 @@ pub fn run() {
     installed_plugin_labels.sort_by(|left, right| left.1.cmp(&right.1));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let cwd = Path::new(&cwd);
+            match cli::parse(args, cwd) {
+                Ok(cli::CliAction::Launch(Some(request))) => {
+                    let _ = app.emit("cli-launch", request);
+                }
+                Err(message) => {
+                    let _ = app.emit("cli-launch-error", message);
+                }
+                _ => {}
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .menu(move |app| {
             let app_menu = SubmenuBuilder::new(app, "Searchmonkey III")
                 .text(ABOUT_SEARCHMONKEY_MENU_ID, "About Searchmonkey III")
@@ -1204,6 +1241,7 @@ pub fn run() {
             }
         })
         .manage(SearchSessions::default())
+        .manage(InitialCliLaunch(Mutex::new(initial_cli_launch)))
         .manage(PluginIndexRuntime::default())
         .manage(app_auth::AppAuthRuntime::default())
         .plugin(tauri_plugin_dialog::init())
@@ -1244,6 +1282,7 @@ pub fn run() {
             set_plugin_issue_type_auto_ignore,
             start_purchase_email_verification,
             start_search,
+            take_cli_launch,
             retry_plugin_issue_type,
             uninstall_plugin_version,
             unignore_plugin_issue

@@ -67,6 +67,41 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+## Command line
+
+Searchmonkey accepts a small, ripgrep-inspired command line that opens the desktop interface. A pattern starts the search immediately; passing only a path populates the path field without searching.
+
+```sh
+# Open with a directory selected (useful for file-manager actions)
+searchmonkey --path /my/path
+
+# Search using a regular expression
+searchmonkey 'TODO|FIXME' --path ~/projects
+
+# Search for literal text in log files
+searchmonkey --fixed-strings 'connection failed' --path /var/log --glob '*.log'
+```
+
+Available options:
+
+```text
+Usage: searchmonkey [OPTIONS] [PATTERN]
+
+  -p, --path <PATH>            File or directory to search
+  -F, --fixed-strings          Treat PATTERN as literal text
+  -s, --case-sensitive         Enable case-sensitive matching
+  -g, --glob <GLOB>            Include or exclude a glob; repeatable
+  -H, --hidden                 Search hidden files and directories
+  -L, --follow                 Follow symbolic links
+  -C, --context <LINES>        Show surrounding context (maximum 20)
+      --no-ignore              Do not respect ignore files
+      --no-start               Populate the form without starting the search
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
+Relative `--path` values are resolved from the invoking process's working directory. With no path option, Searchmonkey retains its normal home-directory default. If the app is already running, another invocation focuses the existing window and applies the new search.
+
 ---
 
 ## How it works
