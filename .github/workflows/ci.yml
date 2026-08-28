@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RG_VERSION: "15.1.0"
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -67,6 +70,27 @@ jobs:
 
       - name: Install frontend dependencies from lockfile
         run: pnpm install --frozen-lockfile
+
+      - name: Download Linux ripgrep sidecar
+        run: |
+          set -euo pipefail
+
+          download_target="x86_64-unknown-linux-musl"
+          tauri_target="x86_64-unknown-linux-gnu"
+          archive="ripgrep-${RG_VERSION}-${download_target}.tar.gz"
+
+          mkdir -p src-tauri/binaries /tmp/searchmonkey-ci-rg
+          curl -fL \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          tar -xzf "/tmp/${archive}" \
+            -C /tmp/searchmonkey-ci-rg \
+            --strip-components=1
+          install -Dm755 \
+            /tmp/searchmonkey-ci-rg/rg \
+            "src-tauri/binaries/rg-${tauri_target}"
+
+          "src-tauri/binaries/rg-${tauri_target}" --version
 
       - name: Verify frontend
         run: |
