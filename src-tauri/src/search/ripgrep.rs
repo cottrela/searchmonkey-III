@@ -95,6 +95,7 @@ impl RipgrepSidecarProvider {
             exclude_patterns,
             follow_symlinks,
             multiline,
+            search_supported_documents,
             skip_binary,
             encoding,
             respect_gitignore,
@@ -176,11 +177,13 @@ impl RipgrepSidecarProvider {
         args.push(query);
         args.push(path.clone());
         let mut mirror_paths = Vec::new();
-        for index_root in default_index_roots() {
-            let mirror_path = mirror_search_path(&index_root, Path::new(&path));
-            if mirror_path.exists() {
-                mirror_paths.push(mirror_path.to_string_lossy().to_string());
-                args.push(mirror_path.to_string_lossy().to_string());
+        if search_supported_documents {
+            for index_root in default_index_roots() {
+                let mirror_path = mirror_search_path(&index_root, Path::new(&path));
+                if mirror_path.exists() {
+                    mirror_paths.push(mirror_path.to_string_lossy().to_string());
+                    args.push(mirror_path.to_string_lossy().to_string());
+                }
             }
         }
 
@@ -681,6 +684,7 @@ mod tests {
             min_file_size: String::new(),
             max_file_size: String::new(),
             modified_after: None,
+            search_supported_documents: true,
             skip_binary: false,
             encoding: "windows-1250".to_string(),
             max_matches: None,
@@ -712,6 +716,7 @@ mod tests {
             min_file_size: String::new(),
             max_file_size: String::new(),
             modified_after: None,
+            search_supported_documents: true,
             skip_binary: false,
             encoding: "auto".to_string(),
             max_matches: None,
@@ -741,6 +746,7 @@ mod tests {
             min_file_size: String::new(),
             max_file_size: String::new(),
             modified_after: None,
+            search_supported_documents: true,
             skip_binary: false,
             encoding: "auto".to_string(),
             max_matches: None,
@@ -770,6 +776,7 @@ mod tests {
             min_file_size: String::new(),
             max_file_size: String::new(),
             modified_after: None,
+            search_supported_documents: true,
             skip_binary: true,
             encoding: "auto".to_string(),
             max_matches: None,

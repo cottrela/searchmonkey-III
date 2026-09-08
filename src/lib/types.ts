@@ -13,6 +13,7 @@ export type SearchRequest = {
   min_file_size: string;
   max_file_size: string;
   modified_after: number | null;
+  search_supported_documents: boolean;
   skip_binary: boolean;
   encoding: 'auto' | 'utf-8' | 'windows-1250' | 'ascii';
   max_matches: number;
@@ -110,6 +111,7 @@ export type SearchOptions = Pick<
   | 'min_file_size'
   | 'max_file_size'
   | 'modified_after'
+  | 'search_supported_documents'
   | 'skip_binary'
   | 'encoding'
   | 'max_matches'
@@ -150,6 +152,7 @@ export function defaultSearchOptions(): SearchOptions {
     min_file_size: '',
     max_file_size: '10M',
     modified_after: null,
+    search_supported_documents: true,
     skip_binary: true,
     encoding: 'auto',
     max_matches: 100000,

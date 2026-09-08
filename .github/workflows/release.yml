@@ -243,6 +243,11 @@ jobs:
 
           install -Dm755 "$good_rg" "$appdir/usr/bin/rg"
 
+          # Core Wayland libraries must match the host compositor and Mesa stack.
+          # Bundling Ubuntu 22.04 copies can abort on rolling distributions with
+          # "Could not create surfaceless EGL display: EGL_BAD_ALLOC".
+          find "$appdir" \( -type f -o -type l \) -name 'libwayland-*.so*' -delete
+
           echo "Patched AppDir rg:"
           sha256sum "$good_rg"
           sha256sum "$appdir/usr/bin/rg"
@@ -267,6 +272,11 @@ jobs:
       
           sha256sum squashfs-root/usr/bin/rg
           squashfs-root/usr/bin/rg --version
+
+          if find squashfs-root \( -type f -o -type l \) -name 'libwayland-*.so*' | grep -q .; then
+            echo "AppImage must not bundle host-sensitive Wayland libraries" >&2
+            exit 1
+          fi
 
       - name: Upload patched AppImage
         if: matrix.platform == 'ubuntu-22.04'

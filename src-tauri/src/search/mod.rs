@@ -27,12 +27,18 @@ pub struct SearchRequest {
     pub min_file_size: String,
     pub max_file_size: String,
     pub modified_after: Option<u64>,
+    #[serde(default = "default_true")]
+    pub search_supported_documents: bool,
     pub skip_binary: bool,
     pub encoding: String,
     pub max_matches: Option<usize>,
     pub respect_gitignore: bool,
     pub ignore_node_modules: bool,
     pub ignore_build_artifacts: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]

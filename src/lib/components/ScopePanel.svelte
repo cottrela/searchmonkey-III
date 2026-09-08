@@ -152,8 +152,12 @@
       <section class="advanced-section">
         <h3>Performance</h3>
         <label class="check-row">
+          <input type="checkbox" bind:checked={options.search_supported_documents} />
+          <span>Search supported document formats</span>
+        </label>
+        <label class="check-row">
           <input type="checkbox" bind:checked={options.skip_binary} />
-          <span>Skip binary files</span>
+          <span>Skip unsupported binary files</span>
         </label>
         <label class="check-row">
           <input type="checkbox" bind:checked={options.respect_gitignore} />
@@ -177,7 +181,7 @@
           </select>
         </div>
         <div class="field">
-          <label for="max-matches">Max matches</label>
+          <label for="max-matches">Maximum total matches</label>
           <input id="max-matches" type="number" min="1" max="100000" bind:value={options.max_matches} />
         </div>
       </section>
